@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Selah
+Comment=A local-first personal archive
+Exec=selah
+Icon=io.github.el3ctricfx.selah
+Terminal=false
+Type=Application
+Categories=Office;TextEditor;
+StartupNotify=true

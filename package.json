@@ -1,0 +1,53 @@
+{
+  "name": "selah",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@blocknote/core": "^0.55.0",
+    "@blocknote/mantine": "^0.55.0",
+    "@blocknote/react": "^0.55.0",
+    "@blocknote/xl-multi-column": "^0.55.0",
+    "@tailwindcss/postcss": "^4.3.3",
+    "@tauri-apps/api": "^2.12.0",
+    "@tauri-apps/plugin-dialog": "^2.8.0",
+    "@tauri-apps/plugin-fs": "^2.6.0",
+    "@tauri-apps/plugin-opener": "^2.6.0",
+    "@tiptap/extension-dropcursor": "^2.27.3",
+    "@tiptap/extension-image": "^2.27.3",
+    "@tiptap/react": "^2.27.3",
+    "@tiptap/starter-kit": "^2.27.3",
+    "@tiptap/suggestion": "^2.27.3",
+    "emoji-picker-react": "^4.22.2",
+    "html-to-image": "^1.11.13",
+    "jspdf": "^4.2.1",
+    "lucide-react": "^1.48.0",
+    "node-emoji": "^2.2.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-resizable-panels": "^4.14.0",
+    "tauri-plugin-libmpv-api": "^0.3.2",
+    "tiptap-markdown": "^0.8.10"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "@types/node-emoji": "^1.8.2",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "@vitejs/plugin-react": "^6.0.2",
+    "autoprefixer": "^10.6.1",
+    "postcss": "^8.5.28",
+    "tailwindcss": "^4.3.3",
+    "typescript": "~6.0.3",
+    "vite": "^8.0.16"
+  },
+  "allowScripts": {
+    "core-js": false
+  }
+}

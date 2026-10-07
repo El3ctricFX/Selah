@@ -1,0 +1,87 @@
+@import "tailwindcss";
+
+html, body, #root {
+  background-color: #0f1315 !important;
+  color: #d1d5db !important;
+  margin: 0;
+  padding: 0;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* TipTap Editor Typography & Elements */
+.ProseMirror h1 { 
+  font-size: 2.25rem; 
+  font-weight: 700; 
+  margin-top: 1em; 
+  margin-bottom: 0.5em; 
+  color: #f3f4f6; 
+}
+
+.ProseMirror h2 { 
+  font-size: 1.875rem; 
+  font-weight: 600; 
+  margin-top: 1em; 
+  margin-bottom: 0.5em; 
+  color: #e5e7eb; 
+}
+
+.ProseMirror ul { 
+  list-style-type: disc; 
+  padding-left: 1.5rem; 
+  margin: 0.5em 0; 
+}
+
+.ProseMirror ol { 
+  list-style-type: decimal; 
+  padding-left: 1.5rem; 
+  margin: 0.5em 0; 
+}
+
+.ProseMirror p { 
+  margin: 0.5em 0; 
+}
+
+.ProseMirror img { 
+  max-width: 100%; 
+  border-radius: 0.5rem; 
+  margin: 1em 0; 
+  border: 1px solid #2a3136; 
+}
+
+/* Columns: let @blocknote/xl-multi-column drive the layout. The library
+   already renders its own flex row + resize handles, and the column width
+   is stored on each column's `width` prop. We deliberately do NOT force
+   flex behavior here, because that would fight the user's resize. */
+
+/* Remove BlockNote Default Gray Card Background & Borders */
+.bn-container {
+  background-color: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+.bn-editor {
+  background-color: transparent !important;
+}
+
+.bn-root[data-color-scheme="dark"] {
+  --bn-colors-editor-background: transparent !important;
+}
+
+/* Wiki-style note links. The brackets are hidden; only the name shows. */
+.note-link-bracket {
+  display: none;
+}
+
+.note-link {
+  color: #60a5fa;
+  cursor: pointer;
+  border-bottom: 1px solid rgba(96, 165, 250, 0.35);
+}
+
+.note-link:hover {
+  background: rgba(96, 165, 250, 0.15);
+  border-bottom-color: rgba(96, 165, 250, 0.75);
+}
