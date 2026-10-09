@@ -1,23 +1,13 @@
 // src/MpvPlayer.tsx
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  Play,
-  Pause,
-  Volume2,
-  VolumeX,
-  SkipBack,
-  SkipForward,
-  AlertTriangle,
-  ExternalLink,
+  Play, Pause, Volume2, VolumeX, SkipBack, SkipForward,
+  AlertTriangle, ExternalLink, Maximize2,
 } from "lucide-react";
 import { openPath } from "@tauri-apps/plugin-opener";
 import {
-  init,
-  command,
-  setProperty,
-  observeProperties,
-  type MpvConfig,
-  type MpvObservableProperty,
+  init, command, setProperty, observeProperties,
+  type MpvConfig, type MpvObservableProperty,
 } from "tauri-plugin-libmpv-api";
 
 const OBSERVED_PROPERTIES = [
@@ -28,20 +18,25 @@ const OBSERVED_PROPERTIES = [
   ["volume", "double"],
   ["idle-active", "flag"],
   ["filename", "string", "none"],
+  ["width", "int64", "none"],
+  ["height", "int64", "none"],
 ] as const satisfies MpvObservableProperty[];
 
+// Two configs — audio-only (used by AbbaView's sermon player) and
+// audio+video (used by the VideoBlock). The plugin only supports one init
+// per process, so we go with the video-capable config and let the audio
+// player ignore the extra fields.
 const MPV_CONFIG: MpvConfig = {
   initialOptions: {
-    // CRITICAL: this triggers the plugin's audio-only detection, which
-    // tells it to skip window embedding (which doesn't work on Linux).
-    vid: "no",
-    vo: "null",
+    // Do NOT set vid/vo to disable video — that would break the video block.
+    // Instead, let mpv auto-detect.
     "audio-display": "no",
     "force-window": "no",
     idle: "yes",
     "keep-open": "yes",
     "no-terminal": "yes",
     "gapless-audio": "yes",
+    "vo": "gpu-next,gpu,libmpv",
   },
   observedProperties: OBSERVED_PROPERTIES,
 };
@@ -52,22 +47,20 @@ function fmtTime(seconds: number | null | undefined): string {
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
   const sec = s % 60;
-  if (h > 0) {
-    return `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
-  }
+  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
   return `${m}:${String(sec).padStart(2, "0")}`;
 }
 
-// Module-level singleton flag so we don't call mpv init twice if two
-// players mount at once (which happens in dev with StrictMode).
 let mpvInitialized = false;
 
 export default function MpvPlayer({
   filePath,
   fileName,
+  mode = "audio",
 }: {
   filePath: string;
   fileName: string;
+  mode?: "audio" | "video";
 }) {
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -77,18 +70,16 @@ export default function MpvPlayer({
   const [volume, setVolume] = useState(100);
   const [muted, setMuted] = useState(false);
   const [scrubValue, setScrubValue] = useState<number | null>(null);
+  const [videoDims, setVideoDims] = useState<{ w: number; h: number } | null>(null);
 
-  // Debug state
   const [mpvFilename, setMpvFilename] = useState<string | null>(null);
   const [idleActive, setIdleActive] = useState<boolean | null>(null);
 
   const unlistenRef = useRef<(() => void) | null>(null);
   const loadedPathRef = useRef<string | null>(null);
 
-  // ---- initialize once, subscribe to properties ----
   useEffect(() => {
     let cancelled = false;
-
     (async () => {
       if (!mpvInitialized) {
         mpvInitialized = true;
@@ -99,64 +90,51 @@ export default function MpvPlayer({
         } catch (e: any) {
           console.error("[mpv] init failed:", e);
           mpvInitialized = false;
-          if (!cancelled) {
-            setError(e?.message ?? String(e));
-          }
+          if (!cancelled) setError(e?.message ?? String(e));
           return;
         }
       }
-
       if (cancelled) return;
-
-      // Mark ready as soon as init resolved so the UI works even if
-      // property observation lags.
       setReady(true);
 
       if (!unlistenRef.current) {
         try {
-          console.log("[mpv] observeProperties() starting");
           const unlisten = await observeProperties(
             OBSERVED_PROPERTIES,
             ({ name, data }) => {
               switch (name) {
-                case "pause":
-                  setPaused(Boolean(data));
+                case "pause": setPaused(Boolean(data)); break;
+                case "time-pos": setPosition(typeof data === "number" ? data : 0); break;
+                case "duration": setDuration(typeof data === "number" ? data : 0); break;
+                case "volume": setVolume(typeof data === "number" ? data : 100); break;
+                case "eof-reached": if (data === true) setPaused(true); break;
+                case "idle-active": setIdleActive(Boolean(data)); break;
+                case "filename": setMpvFilename(typeof data === "string" ? data : null); break;
+                case "width":
+                  setVideoDims((d) => {
+                    const w = typeof data === "number" ? data : 0;
+                    return w > 0 ? { w, h: d?.h ?? 0 } : d;
+                  });
                   break;
-                case "time-pos":
-                  setPosition(typeof data === "number" ? data : 0);
-                  break;
-                case "duration":
-                  setDuration(typeof data === "number" ? data : 0);
-                  break;
-                case "volume":
-                  setVolume(typeof data === "number" ? data : 100);
-                  break;
-                case "eof-reached":
-                  if (data === true) setPaused(true);
-                  break;
-                case "idle-active":
-                  setIdleActive(Boolean(data));
-                  break;
-                case "filename":
-                  setMpvFilename(typeof data === "string" ? data : null);
+                case "height":
+                  setVideoDims((d) => {
+                    const h = typeof data === "number" ? data : 0;
+                    return h > 0 ? { w: d?.w ?? 0, h } : d;
+                  });
                   break;
               }
             }
           );
           unlistenRef.current = unlisten;
-          console.log("[mpv] observeProperties() resolved");
         } catch (e) {
           console.warn("[mpv] observeProperties failed:", e);
         }
       }
     })();
-
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, []);
 
-  // ---- load the file whenever filePath changes ----
+  // Load the file whenever filePath changes.
   useEffect(() => {
     if (!ready || !filePath) return;
     if (loadedPathRef.current === filePath) return;
@@ -164,8 +142,18 @@ export default function MpvPlayer({
 
     (async () => {
       try {
-        // filePath is now a plain path (no file:// prefix).
-        console.log("[mpv] loadfile:", filePath);
+        console.log("[mpv] loadfile:", filePath, "mode:", mode);
+        // If we want a video surface, force a video output. Otherwise leave
+        // audio-only.
+        if (mode === "video") {
+          // Reset to auto-detect; the init config already has vo set to a
+          // list of possible backends.
+          try { await setProperty("vid", "auto"); } catch {}
+          try { await setProperty("vo", "gpu-next,gpu,libmpv"); } catch {}
+        } else {
+          try { await setProperty("vid", "no"); } catch {}
+          try { await setProperty("vo", "null"); } catch {}
+        }
         await command("loadfile", [filePath, "replace"]);
         await setProperty("pause", true);
         setPaused(true);
@@ -174,20 +162,14 @@ export default function MpvPlayer({
         setError(e?.message ?? String(e));
       }
     })();
-  }, [ready, filePath]);
+  }, [ready, filePath, mode]);
 
-  // ---- cleanup on unmount ----
   useEffect(() => {
     return () => {
       (async () => {
         try {
           unlistenRef.current?.();
           unlistenRef.current = null;
-          // Do NOT destroy the instance here. In dev, React StrictMode
-          // mounts, unmounts, then remounts. Destroying on the first
-          // unmount tears down the mpv instance while the second mount's
-          // loadfile is still in flight, which leaves mpv in a broken
-          // state. We let the instance live for the lifetime of the app.
         } catch (e) {
           console.warn("[mpv] cleanup failed:", e);
         }
@@ -200,60 +182,43 @@ export default function MpvPlayer({
       const next = !paused;
       await setProperty("pause", next);
       setPaused(next);
-    } catch (e) {
-      console.error("[mpv] toggle pause failed:", e);
-    }
+    } catch (e) { console.error("[mpv] toggle pause failed:", e); }
   }, [paused]);
 
   const seekTo = useCallback(async (seconds: number) => {
     try {
       await command("seek", [seconds, "absolute"]);
       setPosition(seconds);
-    } catch (e) {
-      console.error("[mpv] seek failed:", e);
-    }
+    } catch (e) { console.error("[mpv] seek failed:", e); }
   }, []);
 
-  const skip = useCallback(
-    async (delta: number) => {
-      const target = Math.max(0, Math.min(duration || 0, position + delta));
-      await seekTo(target);
-    },
-    [position, duration, seekTo]
-  );
+  const skip = useCallback(async (delta: number) => {
+    const target = Math.max(0, Math.min(duration || 0, position + delta));
+    await seekTo(target);
+  }, [position, duration, seekTo]);
 
-  const changeVolume = useCallback(
-    async (v: number) => {
-      const clamped = Math.max(0, Math.min(100, v));
-      try {
-        await setProperty("volume", clamped);
-        setVolume(clamped);
-        if (muted && clamped > 0) {
-          await setProperty("mute", false);
-          setMuted(false);
-        }
-      } catch (e) {
-        console.error("[mpv] set volume failed:", e);
+  const changeVolume = useCallback(async (v: number) => {
+    const clamped = Math.max(0, Math.min(100, v));
+    try {
+      await setProperty("volume", clamped);
+      setVolume(clamped);
+      if (muted && clamped > 0) {
+        await setProperty("mute", false);
+        setMuted(false);
       }
-    },
-    [muted]
-  );
+    } catch (e) { console.error("[mpv] set volume failed:", e); }
+  }, [muted]);
 
   const toggleMute = useCallback(async () => {
     try {
       const next = !muted;
       await setProperty("mute", next);
       setMuted(next);
-    } catch (e) {
-      console.error("[mpv] toggle mute failed:", e);
-    }
+    } catch (e) { console.error("[mpv] toggle mute failed:", e); }
   }, [muted]);
 
   const openExternal = () => {
-    // filePath is a plain path now, so we can pass it straight through.
-    openPath(filePath).catch((e) =>
-      console.error("[mpv] openPath failed:", e)
-    );
+    openPath(filePath).catch((e) => console.error("[mpv] openPath failed:", e));
   };
 
   const handleScrub = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -271,18 +236,11 @@ export default function MpvPlayer({
       <div className="mt-3 flex items-start gap-3 rounded-lg border border-red-500/30 bg-red-500/5 p-3">
         <AlertTriangle size={16} className="text-red-400 flex-shrink-0 mt-0.5" />
         <div className="flex-1 min-w-0">
-          <div className="text-xs text-red-300 font-medium">
-            Could not start audio player.
-          </div>
-          <div className="text-[10px] text-red-400/70 mt-0.5 break-words">
-            {error}
-          </div>
+          <div className="text-xs text-red-300 font-medium">Could not start player.</div>
+          <div className="text-[10px] text-red-400/70 mt-0.5 break-words">{error}</div>
         </div>
-        <button
-          type="button"
-          onClick={openExternal}
-          className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 bg-[#2a3136] hover:bg-[#30363d] border border-[#30363d] rounded text-gray-200 flex-shrink-0"
-        >
+        <button type="button" onClick={openExternal}
+          className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 bg-[#2a3136] hover:bg-[#30363d] border border-[#30363d] rounded text-gray-200 flex-shrink-0">
           <ExternalLink size={11} /> Open externally
         </button>
       </div>
@@ -293,107 +251,102 @@ export default function MpvPlayer({
   const pct = duration > 0 ? (shownPosition / duration) * 100 : 0;
 
   return (
-    <div className="mt-3 rounded-lg border border-[#2a3136] bg-[#161a1d] p-3 select-none">
-      <div className="text-xs text-gray-300 truncate mb-2">{fileName}</div>
-
-      <div className="flex items-center gap-2 mb-2">
-        <span className="text-[10px] text-gray-500 tabular-nums w-9 text-right flex-shrink-0">
-          {fmtTime(shownPosition)}
-        </span>
-        <div className="relative flex-1 h-1.5">
-          <div className="absolute inset-0 rounded-full bg-[#2a3136]" />
-          <div
-            className="absolute inset-y-0 left-0 rounded-full bg-blue-500"
-            style={{ width: `${pct}%` }}
-          />
-          <input
-            type="range"
-            min={0}
-            max={Math.max(duration, 1)}
-            step={0.1}
-            value={shownPosition}
-            disabled={!ready || duration <= 0}
-            onChange={handleScrub}
-            onMouseUp={commitScrub}
-            className="absolute inset-0 w-full h-1.5 opacity-0 cursor-pointer disabled:cursor-not-allowed"
-          />
-        </div>
-        <span className="text-[10px] text-gray-500 tabular-nums w-9 flex-shrink-0">
-          {fmtTime(duration)}
-        </span>
-      </div>
-
-      <div className="flex items-center gap-1.5">
-        <button
-          type="button"
-          onClick={() => skip(-10)}
-          disabled={!ready}
-          className="p-2 rounded-full text-gray-400 hover:text-gray-100 hover:bg-[#2a3136] transition-colors disabled:opacity-40"
-          title="Back 10s"
+    <div className="rounded-lg border border-[#2a3136] bg-[#161a1d] select-none overflow-hidden">
+      {/* Video surface placeholder — mpv renders into the window at this
+          location on Linux via vo=libmpv. If your build of the plugin
+          doesn't support embedding, the video may appear as a separate
+          window instead. */}
+      {mode === "video" && (
+        <div
+          className="w-full bg-black flex items-center justify-center"
+          style={{ aspectRatio: videoDims ? `${videoDims.w}/${videoDims.h}` : "16/9" }}
         >
-          <SkipBack size={14} />
-        </button>
-
-        <button
-          type="button"
-          onClick={togglePlay}
-          disabled={!ready}
-          className="flex items-center justify-center w-9 h-9 rounded-full bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white transition-colors flex-shrink-0"
-          title={paused ? "Play" : "Pause"}
-        >
-          {paused ? (
-            <Play size={16} fill="currentColor" className="ml-0.5" />
-          ) : (
-            <Pause size={16} fill="currentColor" />
+          {!videoDims && (
+            <div className="text-[10px] text-gray-600">
+              Video surface — press play. If nothing appears here, the video
+              is playing in a separate window.
+            </div>
           )}
-        </button>
+        </div>
+      )}
 
-        <button
-          type="button"
-          onClick={() => skip(10)}
-          disabled={!ready}
-          className="p-2 rounded-full text-gray-400 hover:text-gray-100 hover:bg-[#2a3136] transition-colors disabled:opacity-40"
-          title="Forward 10s"
-        >
-          <SkipForward size={14} />
-        </button>
+      <div className="p-3">
+        <div className="text-xs text-gray-300 truncate mb-2 flex items-center gap-2">
+          <span className="truncate flex-1">{fileName}</span>
+          {mode === "video" && (
+            <button
+              type="button"
+              onClick={openExternal}
+              className="p-1 rounded text-gray-500 hover:text-gray-200 hover:bg-[#2a3136]"
+              title="Open in a real mpv window"
+            >
+              <Maximize2 size={12} />
+            </button>
+          )}
+        </div>
 
-        <div className="flex-1" />
+        <div className="flex items-center gap-2 mb-2">
+          <span className="text-[10px] text-gray-500 tabular-nums w-9 text-right flex-shrink-0">
+            {fmtTime(shownPosition)}
+          </span>
+          <div className="relative flex-1 h-1.5">
+            <div className="absolute inset-0 rounded-full bg-[#2a3136]" />
+            <div className="absolute inset-y-0 left-0 rounded-full bg-blue-500" style={{ width: `${pct}%` }} />
+            <input
+              type="range" min={0} max={Math.max(duration, 1)} step={0.1}
+              value={shownPosition}
+              disabled={!ready || duration <= 0}
+              onChange={handleScrub}
+              onMouseUp={commitScrub}
+              className="absolute inset-0 w-full h-1.5 opacity-0 cursor-pointer disabled:cursor-not-allowed"
+            />
+          </div>
+          <span className="text-[10px] text-gray-500 tabular-nums w-9 flex-shrink-0">
+            {fmtTime(duration)}
+          </span>
+        </div>
 
-        <button
-          type="button"
-          onClick={openExternal}
-          className="p-2 rounded-full text-gray-400 hover:text-gray-100 hover:bg-[#2a3136] transition-colors"
-          title="Open in system player"
-        >
-          <ExternalLink size={13} />
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button type="button" onClick={() => skip(-10)} disabled={!ready}
+            className="p-2 rounded-full text-gray-400 hover:text-gray-100 hover:bg-[#2a3136] transition-colors disabled:opacity-40" title="Back 10s">
+            <SkipBack size={14} />
+          </button>
 
-        <button
-          type="button"
-          onClick={toggleMute}
-          disabled={!ready}
-          className="p-2 rounded-full text-gray-400 hover:text-gray-100 hover:bg-[#2a3136] transition-colors disabled:opacity-40"
-          title={muted ? "Unmute" : "Mute"}
-        >
-          {muted ? <VolumeX size={14} /> : <Volume2 size={14} />}
-        </button>
+          <button type="button" onClick={togglePlay} disabled={!ready}
+            className="flex items-center justify-center w-9 h-9 rounded-full bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white transition-colors flex-shrink-0"
+            title={paused ? "Play" : "Pause"}>
+            {paused ? <Play size={16} fill="currentColor" className="ml-0.5" /> : <Pause size={16} fill="currentColor" />}
+          </button>
 
-        <input
-          type="range"
-          min={0}
-          max={100}
-          step={1}
-          value={muted ? 0 : volume}
-          disabled={!ready}
-          onChange={(e) => changeVolume(Number(e.target.value))}
-          className="w-20 accent-blue-500 cursor-pointer disabled:cursor-not-allowed"
-        />
-      </div>
+          <button type="button" onClick={() => skip(10)} disabled={!ready}
+            className="p-2 rounded-full text-gray-400 hover:text-gray-100 hover:bg-[#2a3136] transition-colors disabled:opacity-40" title="Forward 10s">
+            <SkipForward size={14} />
+          </button>
 
-      {/* Debug line — remove once it works */}
-      <div className="mt-2 text-[9px] text-gray-600 font-mono truncate">
-        ready={String(ready)} idle={String(idleActive)} loaded={mpvFilename || "—"}
+          <div className="flex-1" />
+
+          <button type="button" onClick={openExternal}
+            className="p-2 rounded-full text-gray-400 hover:text-gray-100 hover:bg-[#2a3136] transition-colors"
+            title="Open in system player">
+            <ExternalLink size={13} />
+          </button>
+
+          <button type="button" onClick={toggleMute} disabled={!ready}
+            className="p-2 rounded-full text-gray-400 hover:text-gray-100 hover:bg-[#2a3136] transition-colors disabled:opacity-40"
+            title={muted ? "Unmute" : "Mute"}>
+            {muted ? <VolumeX size={14} /> : <Volume2 size={14} />}
+          </button>
+
+          <input type="range" min={0} max={100} step={1}
+            value={muted ? 0 : volume}
+            disabled={!ready}
+            onChange={(e) => changeVolume(Number(e.target.value))}
+            className="w-20 accent-blue-500 cursor-pointer disabled:cursor-not-allowed" />
+        </div>
+
+        <div className="mt-2 text-[9px] text-gray-600 font-mono truncate">
+          ready={String(ready)} idle={String(idleActive)} loaded={mpvFilename || "—"} dims={videoDims ? `${videoDims.w}x${videoDims.h}` : "—"}
+        </div>
       </div>
     </div>
   );

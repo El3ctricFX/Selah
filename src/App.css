@@ -11,49 +11,44 @@ html, body, #root {
 }
 
 /* TipTap Editor Typography & Elements */
-.ProseMirror h1 { 
-  font-size: 2.25rem; 
-  font-weight: 700; 
-  margin-top: 1em; 
-  margin-bottom: 0.5em; 
-  color: #f3f4f6; 
+.ProseMirror h1 {
+  font-size: 2.25rem;
+  font-weight: 700;
+  margin-top: 1em;
+  margin-bottom: 0.5em;
+  color: #f3f4f6;
 }
 
-.ProseMirror h2 { 
-  font-size: 1.875rem; 
-  font-weight: 600; 
-  margin-top: 1em; 
-  margin-bottom: 0.5em; 
-  color: #e5e7eb; 
+.ProseMirror h2 {
+  font-size: 1.875rem;
+  font-weight: 600;
+  margin-top: 1em;
+  margin-bottom: 0.5em;
+  color: #e5e7eb;
 }
 
-.ProseMirror ul { 
-  list-style-type: disc; 
-  padding-left: 1.5rem; 
-  margin: 0.5em 0; 
+.ProseMirror ul {
+  list-style-type: disc;
+  padding-left: 1.5rem;
+  margin: 0.5em 0;
 }
 
-.ProseMirror ol { 
-  list-style-type: decimal; 
-  padding-left: 1.5rem; 
-  margin: 0.5em 0; 
+.ProseMirror ol {
+  list-style-type: decimal;
+  padding-left: 1.5rem;
+  margin: 0.5em 0;
 }
 
-.ProseMirror p { 
-  margin: 0.5em 0; 
+.ProseMirror p {
+  margin: 0.5em 0;
 }
 
-.ProseMirror img { 
-  max-width: 100%; 
-  border-radius: 0.5rem; 
-  margin: 1em 0; 
-  border: 1px solid #2a3136; 
+.ProseMirror img {
+  max-width: 100%;
+  border-radius: 0.5rem;
+  margin: 1em 0;
+  border: 1px solid #2a3136;
 }
-
-/* Columns: let @blocknote/xl-multi-column drive the layout. The library
-   already renders its own flex row + resize handles, and the column width
-   is stored on each column's `width` prop. We deliberately do NOT force
-   flex behavior here, because that would fight the user's resize. */
 
 /* Remove BlockNote Default Gray Card Background & Borders */
 .bn-container {
@@ -84,4 +79,63 @@ html, body, #root {
 .note-link:hover {
   background: rgba(96, 165, 250, 0.15);
   border-bottom-color: rgba(96, 165, 250, 0.75);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   MULTI-COLUMN — RESIZE HANDLE FIX
+
+   Why this exists:
+     @blocknote/xl-multi-column draws a thin drag handle at each column
+     boundary. BlockNote's image/video/bookmark blocks render inside a
+     `contentEditable={false}` wrapper that covers the whole block area.
+     When a column contains ONLY one of those blocks, the wrapper sits
+     directly on top of the handle and swallows every pointer event —
+     you can't grab it, so the column appears frozen and centered.
+
+   What we do:
+     1. Reserve a gutter on the right edge of every column so the handle
+        always has empty real estate to live in, regardless of what's
+        inside the column.
+     2. Cap the width of any media block inside a column so it doesn't
+        fill into that gutter.
+     3. Raise anything that looks like a resize handle above the media
+        wrapper with a very broad selector set, so we don't have to know
+        the library's exact class names.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* 1. Gutter on the right edge of every column. The handle lives in this
+      strip, which is why we make it wide enough to actually hit. */
+.bn-block-column,
+.bn-block-column-list > .bn-block-column {
+  padding-right: 14px !important;
+  box-sizing: border-box !important;
+}
+
+/* 2. Don't let a media block fill the gutter. */
+.bn-block-column [data-content-type="image"] img,
+.bn-block-column [data-content-type="video"] video,
+.bn-block-column [data-content-type="bookmark"],
+.bn-block-column [data-content-type="callout"] {
+  max-width: calc(100% - 6px) !important;
+}
+
+/* 3. Raise the handle above anything a block might render on top of it.
+      Broad on purpose — different versions of the library use different
+      class names, and z-index is harmless if we over-match. */
+[class*="resize" i],
+[class*="Resize"],
+[data-column-resize-handle],
+[data-column-resize],
+[style*="col-resize"],
+[style*="ew-resize"],
+[style*="col-resize" i],
+.bn-column-handle {
+  z-index: 100 !important;
+  pointer-events: auto !important;
+}
+
+/* 4. Belt-and-braces: the handle is often absolutely positioned inside
+      the column list. Make sure the list itself doesn't clip it. */
+.bn-block-column-list {
+  overflow: visible !important;
 }

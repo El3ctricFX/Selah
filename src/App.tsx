@@ -9,6 +9,8 @@ import GalleryView from "./GalleryView";
 import AbbaView from "./AbbaView";
 import NotesView from "./NotesView";
 import "./App.css";
+import VaultWelcome from "./VaultWelcome";
+import { useRecentVaults } from "./useRecentVaults";
 
 type JournalFocus = { year: number; month: number; day: number };
 
@@ -28,7 +30,7 @@ const MONTH_NAMES = [
 function parseJournalDayFilename(
   name: string
 ): { year: number; month: number; day: number } | null {
-  const m = name.match(/^([A-Za-z]+)\s+(\d{1,2}),\s*(\d{4})\.(note|md)$/);
+  const m = name.match(/^([A-Za-z]+)\s+(\d{1,2}),\s*(\d{4})\.(selah|md)$/);
   if (!m) return null;
   const monthIdx = MONTH_NAMES.findIndex(
     (x) => x.toLowerCase() === m[1].toLowerCase()
@@ -47,6 +49,12 @@ export default function App() {
   const [todayNonce, setTodayNonce] = useState(0);
   const [focusMode, setFocusMode] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  const {
+    vaults: recentVaults,
+    add: addRecentVault,
+    remove: removeRecentVault,
+  } = useRecentVaults();
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -72,9 +80,15 @@ export default function App() {
   }, []);
 
   const handleSelectVault = async () => {
-    const selected = await open({ directory: true, multiple: false, title: "Select Vault" });
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: "Select Vault",
+    });
     if (selected) {
-      setVaultPath(selected as string);
+      const path = selected as string;
+      setVaultPath(path);
+      addRecentVault(path);
       setActiveView(null);
       setActiveCategoryId(null);
       setFocusMode(false);
@@ -82,18 +96,23 @@ export default function App() {
     }
   };
 
+  const handleOpenRecentVault = (path: string) => {
+    setVaultPath(path);
+    addRecentVault(path); // bumps to top + updates lastOpened
+    setActiveView(null);
+    setActiveCategoryId(null);
+    setFocusMode(false);
+    setSidebarCollapsed(false);
+  };
+
   if (!vaultPath) {
     return (
-      <div className="w-screen h-screen bg-[#0f1315] flex flex-col items-center justify-center text-gray-200">
-        <h1 className="text-4xl font-bold mb-4">Note Workspace</h1>
-        <p className="text-gray-400 mb-8">Select a folder to act as your root vault.</p>
-        <button
-          onClick={handleSelectVault}
-          className="bg-[#1e2327] hover:bg-[#2a3136] border border-[#30363d] px-6 py-3 rounded text-sm font-medium transition-colors cursor-pointer"
-        >
-          Open Vault
-        </button>
-      </div>
+      <VaultWelcome
+        recentVaults={recentVaults}
+        onOpenVault={handleSelectVault}
+        onSelectVault={handleOpenRecentVault}
+        onRemoveVault={removeRecentVault}
+      />
     );
   }
 
@@ -109,7 +128,7 @@ export default function App() {
 
   const openNoteByPath = (path: string) => {
     const normalized = path.replace(/\\/g, "/");
-    const name = normalized.split("/").pop() || "note.note";
+    const name = normalized.split("/").pop() || "note.selah";
 
     const dayInfo = parseJournalDayFilename(name);
     if (dayInfo) {

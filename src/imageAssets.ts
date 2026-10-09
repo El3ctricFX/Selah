@@ -10,7 +10,7 @@ export async function assetsDirForNote(notePath: string): Promise<string> {
   const lastSlash = Math.max(notePath.lastIndexOf("/"), notePath.lastIndexOf("\\"));
   const noteDir = notePath.substring(0, lastSlash);
   const fileName = notePath.substring(lastSlash + 1);
-  const baseName = fileName.replace(/\.(note|md)$/i, "");
+  const baseName = fileName.replace(/\.(selah|md)$/i, "");
   return await join(noteDir, ASSETS_DIR, baseName);
 }
 
@@ -101,7 +101,7 @@ export function isInsideNoteAssets(absolutePath: string, notePath: string): bool
   const noteSlash = Math.max(notePath.lastIndexOf("/"), notePath.lastIndexOf("\\"));
   const noteDir = notePath.substring(0, noteSlash);
   const noteFileName = notePath.substring(noteSlash + 1);
-  const baseName = noteFileName.replace(/\.(note|md)$/i, "");
+  const baseName = noteFileName.replace(/\.(selah|md)$/i, "");
 
   const prefix = `${noteDir}/${ASSETS_DIR}/${baseName}/`.replace(/\\/g, "/");
   const normalized = absolutePath.replace(/\\/g, "/");
@@ -166,5 +166,42 @@ export function markdownImagesToRelativePaths(md: string, noteDir: string): stri
     const rel = normAbs.slice(normNote.length + 1);
     const encoded = rel.replace(/ /g, "%20");
     return `![${alt}](${encoded})`;
+  });
+}
+
+// ─── Generic file save (video, audio, anything) ─────────────────────────────
+// saveImageToNoteAssets doesn't actually check extensions — it just copies
+// a file into the note's assets folder. This alias exists so the call sites
+// read correctly for non-image files.
+export const saveFileToNoteAssets = saveImageToNoteAssets;
+
+// ─── Video src transforms ───────────────────────────────────────────────────
+// The video block stores an asset:// URL while in memory. When we save, we
+// rewrite the src to a relative path so the note is portable. On load, we
+// do the reverse.
+
+export function videoSrcsToAssetUrls(md: string, noteDir: string): string {
+  return md.replace(/(::: video\b[^\n]*?\bsrc=")([^"]+)(")/g, (_m, pre, src, post) => {
+    if (/^(https?:|data:|blob:|asset:)/i.test(src)) return pre + src + post;
+    const decoded = safeDecode(src);
+    const sep = noteDir.includes("\\") ? "\\" : "/";
+    const abs = noteDir.replace(/[\\/]+$/, "") + sep + decoded;
+    try {
+      return pre + convertFileSrc(abs) + post;
+    } catch {
+      return pre + src + post;
+    }
+  });
+}
+
+export function videoSrcsToRelativePaths(md: string, noteDir: string): string {
+  return md.replace(/(::: video\b[^\n]*?\bsrc=")([^"]+)(")/g, (_m, pre, url, post) => {
+    const absPath = assetUrlToAbsolutePath(url);
+    if (!absPath) return pre + url + post;
+    const normNote = noteDir.replace(/\\/g, "/").replace(/\/+$/, "");
+    const normAbs = absPath.replace(/\\/g, "/");
+    if (!normAbs.startsWith(normNote + "/")) return pre + url + post;
+    const rel = normAbs.slice(normNote.length + 1);
+    return pre + rel.replace(/ /g, "%20") + post;
   });
 }

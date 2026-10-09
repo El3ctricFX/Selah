@@ -55,8 +55,12 @@ function formatDayName(year: number, month: number, day: number): string {
   return `${monthName} ${day}, ${year}`;
 }
 
-const NEW_DAY_RE = /^([A-Za-z]+)\s+(\d{1,2}),\s*(\d{4})\.(note|md)$/;
-const OLD_DAY_RE = /^(\d{4})-(\d{2})-(\d{2})\.(note|md)$/;
+const NEW_DAY_RE = /^([A-Za-z]+)\s+(\d{1,2}),\s*(\d{4})\.(selah|md)$/;
+
+
+const OLD_DAY_RE = /^(\d{4})-(\d{2})-(\d{2})\.(selah|md)$/;
+
+
 
 function parseDayFile(name: string): { day: number } | null {
   const nm = name.match(NEW_DAY_RE);
@@ -674,10 +678,14 @@ function NotesTree({
     for (const e of entries) {
       if (!e.name || e.name.startsWith('.')) continue;
       if (e.isDirectory) { folders.push(e.name); continue; }
-      if (!e.name.endsWith('.note')) continue;
+      if (!e.name.endsWith('.selah')) continue;
+
+
       const full = await join(absPath, e.name);
       const meta = await readNoteMeta(full);
-      const base = e.name.replace(/\.note$/i, '');
+      const base = e.name.replace(/\.selah$/i, '');
+
+
       notes.push({
         fileName: e.name,
         path: full,
@@ -806,8 +814,12 @@ function NotesTree({
         for (const n of children[folderPath].notes) existing.add(n.fileName);
       }
       let i = 1;
-      let fileName = `Untitled-${i}.note`;
-      while (existing.has(fileName)) { i++; fileName = `Untitled-${i}.note`; }
+      let fileName = `Untitled-${i}.selah`;
+
+
+      while (existing.has(fileName)) { i++; fileName = `Untitled-${i}.selah`; }
+
+
       const full = await join(folderPath, fileName);
       const now = new Date().toISOString();
       await writeTextFile(full, `---\ncreated: ${now}\nmodified: ${now}\n---\n\n`);
@@ -1529,7 +1541,7 @@ function JournalTree({
 
   const yearNotePath = async (year: string) => {
     const dir = await categoryDir(category);
-    return join(dir, year, `_${year}-Year.note`);
+    return join(dir, year, `_${year}-Year.selah`);
   };
 
   const readYears = async () => {
@@ -1540,7 +1552,9 @@ function JournalTree({
       const ys = entries.filter((e) => e.isDirectory).map((e) => e.name).sort((a, b) => Number(b) - Number(a));
       const status: Record<string, { icon: string; color: string } | null> = {};
       for (const y of ys) {
-        const candidates = [await join(dir, y, `_${y}-Year.note`), await join(dir, y, `_${y}-Year.md`)];
+        const candidates = [await join(dir, y, `_${y}-Year.selah`), await join(dir, y, `_${y}-Year.md`)];
+
+
         let found: string | null = null;
         for (const p of candidates) {
           try { if (await exists(p)) { found = p; break; } } catch {}
@@ -1630,7 +1644,9 @@ function JournalTree({
         }
       }
       for (const year of Object.keys(yearNotes)) {
-        if (p.endsWith(`_${year}-Year.note`)) {
+        if (p.endsWith(`_${year}-Year.selah`)) {
+
+
           const found = await readNoteMeta(p);
           setYearNotes((prev) => ({ ...prev, [year]: found }));
           break;
@@ -1717,7 +1733,9 @@ function JournalTree({
       }
       for (const y of Object.keys(yearNotes)) {
         const yn = yearNotes[y];
-        if (yn && picker.notePath.endsWith(`_${y}-Year.note`)) {
+        if (yn && picker.notePath.endsWith(`_${y}-Year.selah`)) {
+
+
           return picker.kind === 'icon' ? yn.icon : yn.color || 'default';
         }
       }
@@ -1792,7 +1810,7 @@ function JournalTree({
     if (!Number.isInteger(dayNum) || dayNum < 1 || dayNum > 31) { await confirmAsync('Invalid day.'); return; }
     const maxDay = new Date(y, m, 0).getDate();
     if (dayNum > maxDay) { await confirmAsync(`Max is ${maxDay}.`); return; }
-    const fileName = `${formatDayName(y, m, dayNum)}.note`;
+    const fileName = `${formatDayName(y, m, dayNum)}.selah`;
     const dir = await categoryDir(category);
     const monthPath = await join(dir, year, month);
     await ensureFolder(monthPath, 'month');
@@ -1815,7 +1833,7 @@ function JournalTree({
 
   const openYearNote = async (year: string) => {
     const path = await yearNotePath(year);
-    onOpenNote(category, { path, name: `_${year}-Year.note` });
+    onOpenNote(category, { path, name: `_${year}-Year.selah` });
   };
 
   const addYearNote = async (year: string) => {
@@ -1826,14 +1844,16 @@ function JournalTree({
     setYearNotes((p) => ({ ...p, [year]: { icon: '', color: '' } }));
     const dir = await categoryDir(category);
     window.dispatchEvent(new CustomEvent('folder-changed', { detail: { path: await join(dir, year) } }));
-    onOpenNote(category, { path, name: `_${year}-Year.note` });
+    onOpenNote(category, { path, name: `_${year}-Year.selah` });
   };
 
   const deleteYearNote = async (year: string) => {
     const ok = await confirmAsync(`Move the ${year} year note to the trash?`);
     if (!ok) return;
     const dir = await categoryDir(category);
-    for (const p of [await join(dir, year, `_${year}-Year.note`), await join(dir, year, `_${year}-Year.md`)]) {
+    for (const p of [await join(dir, year, `_${year}-Year.selah`), await join(dir, year, `_${year}-Year.md`)]) {
+
+
       try { if (await exists(p)) await moveToTrash(p); } catch {}
     }
     setYearNotes((p) => ({ ...p, [year]: null }));
@@ -1879,7 +1899,9 @@ function JournalTree({
     setCtx(null);
     const dir = await categoryDir(category);
     const monthPath = await join(dir, year, month);
-    for (const p of [await join(monthPath, `_${year}-${month}-Month.note`), await join(monthPath, `_${year}-${month}-Month.md`)]) {
+    for (const p of [await join(monthPath, `_${year}-${month}-Month.selah`), await join(monthPath, `_${year}-${month}-Month.md`)]) {
+
+
       try { if (await exists(p)) await moveToTrash(p); } catch {}
     }
     window.dispatchEvent(new CustomEvent('folder-changed', { detail: { path: monthPath } }));
@@ -1972,10 +1994,10 @@ function JournalTree({
 
           {ctx.kind === 'day' && (
             <>
-              <button onClick={async () => { const { year, month, file } = ctx; const path = await dayFilePath(year, month, file); openPicker('icon', { notePath: path, label: file.replace(/\.(note|md)$/, '') }, ctx.x, ctx.y); }} className="w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-[#2a3136] flex items-center space-x-2">
+              <button onClick={async () => { const { year, month, file } = ctx; const path = await dayFilePath(year, month, file); openPicker('icon', { notePath: path, label: file.replace(/\.(selah|md)$/, '') }, ctx.x, ctx.y); }} className="w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-[#2a3136] flex items-center space-x-2">
                 <Smile size={13} /> <span>Change icon</span>
               </button>
-              <button onClick={async () => { const { year, month, file } = ctx; const path = await dayFilePath(year, month, file); openPicker('color', { notePath: path, label: file.replace(/\.(note|md)$/, '') }, ctx.x, ctx.y); }} className="w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-[#2a3136] flex items-center space-x-2 border-b border-[#2a3136]">
+              <button onClick={async () => { const { year, month, file } = ctx; const path = await dayFilePath(year, month, file); openPicker('color', { notePath: path, label: file.replace(/\.(selah|md)$/, '') }, ctx.x, ctx.y); }} className="w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-[#2a3136] flex items-center space-x-2 border-b border-[#2a3136]">
                 <Pencil size={13} /> <span>Change color</span>
               </button>
               <button onClick={deleteDay} className="w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-[#2a3136] flex items-center space-x-2">

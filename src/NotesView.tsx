@@ -112,11 +112,15 @@ export default function NotesView({
           folderList.push({ name: e.name, path: await join(dir, e.name) });
           continue;
         }
-        if (!e.name.endsWith(".note")) continue;
+        if (!e.name.endsWith(".selah")) continue;
+
+
 
         const full = await join(dir, e.name);
         let icon = "";
-        let title = e.name.replace(/\.note$/i, "");
+        let title = e.name.replace(/\.selah$/i, "");
+
+
         let wordCount = 0;
         try {
           const raw = await readTextFile(full);
@@ -202,7 +206,9 @@ export default function NotesView({
     const existing = new Set(notes.map((n) => n.fileName));
     let i = 1;
     while (true) {
-      const candidate = `Untitled-${i}.note`;
+      const candidate = `Untitled-${i}.selah`;
+
+
       if (!existing.has(candidate)) return candidate;
       i++;
     }

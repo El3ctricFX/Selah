@@ -4,7 +4,7 @@ import { readTextFile, readDir, stat, mkdir, rename, exists } from "@tauri-apps/
 import { join } from "@tauri-apps/api/path";
 import {
   AlertTriangle, Check, ChevronDown, ChevronRight,
-  Loader2, Sparkles, X, Wand2, Shield,
+  Loader2, Sparkles, X, Shield, Trash2, Move,
 } from "lucide-react";
 import { moveToTrash } from "./trash";
 import { parseNoteFile } from "./noteFormat";
@@ -16,12 +16,13 @@ interface CatLike {
   dirName: string;
 }
 
-type ActionType = "delete" | "organize" | "skip";
+type ActionType = "delete" | "organize";
 
 interface FileEntry {
   path: string;
   displayName: string;
   size: number;
+  /** What the scanner thinks should happen. */
   suggested: ActionType;
   target?: string;
   reason: string;
@@ -48,9 +49,10 @@ interface Props {
 const MEDIA_EXT = new Set([
   "png", "jpg", "jpeg", "webp", "gif", "avif", "bmp", "svg",
   "mp3", "wav", "m4a", "aac", "flac", "ogg", "opus", "webm",
+  "mp4", "mov", "mkv", "m4v", "avi", "ogv", "wmv", "flv",
 ]);
 
-const SAFE_EXT = new Set(["note", "md", "json", "txt", "pdf"]);
+const SAFE_EXT = new Set(["selah", "md", "json", "txt", "pdf"]);
 
 function extOf(name: string): string {
   const idx = name.lastIndexOf(".");
@@ -121,10 +123,6 @@ async function scanGalleryWithFix(dir: string): Promise<FileEntry[]> {
   const filenameToItemId = new Map<string, string>();
   const itemIds = new Set<string>();
 
-  /**
-   * Register a filename as belonging to an item. First owner wins, so if
-   * two items somehow claim the same file we don't clobber the map.
-   */
   const claim = (filename: unknown, id: string) => {
     if (typeof filename !== "string" || !filename) return;
     if (!filenameToItemId.has(filename)) filenameToItemId.set(filename, id);
@@ -139,33 +137,28 @@ async function scanGalleryWithFix(dir: string): Promise<FileEntry[]> {
         if (!id) continue;
         itemIds.add(id);
 
-        // 1. Main images (fall back to legacy single `image` field).
         const main: string[] = Array.isArray(it.mainImages)
           ? it.mainImages.filter((x: any) => typeof x === "string")
           : (typeof it.image === "string" && it.image ? [it.image] : []);
         for (const f of main) claim(f, id);
 
-        // 2. Reference images.
         const refs: string[] = Array.isArray(it.referenceImages)
           ? it.referenceImages.filter((x: any) => typeof x === "string")
           : [];
         for (const f of refs) claim(f, id);
 
-        // 3. Version snapshots — this is what was missing.
         if (Array.isArray(it.versions)) {
           for (const v of it.versions) {
             if (v && typeof v.image === "string") claim(v.image, id);
           }
         }
 
-        // 4. Progress entries — each may have an attached photo.
         if (Array.isArray(it.progress)) {
           for (const p of it.progress) {
             if (p && typeof p.image === "string") claim(p.image, id);
           }
         }
 
-        // 5. Inline images embedded in the backstory markdown.
         if (typeof it.backstory === "string" && it.backstory) {
           const re = /!\[[^\]]*\]\(([^)]+)\)/g;
           let m: RegExpExecArray | null;
@@ -175,7 +168,6 @@ async function scanGalleryWithFix(dir: string): Promise<FileEntry[]> {
             let decoded = ref;
             try { decoded = decodeURIComponent(ref); } catch {}
             claim(decoded, id);
-            // Also claim the raw form in case it was stored without encoding.
             if (decoded !== ref) claim(ref, id);
           }
         }
@@ -293,15 +285,12 @@ const ABBA_SECTIONS = ["sermons", "prayers", "testimonies", "studies", "events",
 
 interface AbbaNoteRec {
   section: string;
-  /** The id from frontmatter (or filename base if missing). */
   id: string;
-  /** The actual file on disk. */
   fileName: string;
   content: string;
 }
 
 async function scanAbbaWithFix(dir: string): Promise<FileEntry[]> {
-  // Map: "section/id" -> note
   const noteByKey = new Map<string, AbbaNoteRec>();
   const allNotes: AbbaNoteRec[] = [];
 
@@ -315,9 +304,9 @@ async function scanAbbaWithFix(dir: string): Promise<FileEntry[]> {
     }
     for (const e of entries) {
       if (!e.name || e.isDirectory) continue;
-      if (!e.name.endsWith(".note")) continue;
+      if (!e.name.endsWith(".selah")) continue;
       const fileName = e.name;
-      const fileNameBase = fileName.replace(/\.note$/i, "");
+      const fileNameBase = fileName.replace(/\.selah$/i, "");
 
       let content = "";
       try {
@@ -326,7 +315,6 @@ async function scanAbbaWithFix(dir: string): Promise<FileEntry[]> {
         continue;
       }
 
-      // Extract id from frontmatter. Falls back to the filename base.
       let id = fileNameBase;
       try {
         const { frontmatter } = parseNoteFile(content);
@@ -338,10 +326,8 @@ async function scanAbbaWithFix(dir: string): Promise<FileEntry[]> {
       const rec: AbbaNoteRec = { section, id, fileName, content };
       allNotes.push(rec);
 
-      // Key by id (canonical, matches asset folder names).
       const idKey = `${section}/${id}`;
       if (!noteByKey.has(idKey)) noteByKey.set(idKey, rec);
-      // Also key by filename base, in case older notes use that layout.
       const fnKey = `${section}/${fileNameBase}`;
       if (!noteByKey.has(fnKey)) noteByKey.set(fnKey, rec);
     }
@@ -357,8 +343,6 @@ async function scanAbbaWithFix(dir: string): Promise<FileEntry[]> {
     return [];
   }
 
-  // Helper: given a set of filenames to test, find every note that mentions
-  // any of them. Used to detect whether a flat file belongs to a specific note.
   const findOwner = (filename: string, section?: string): AbbaNoteRec[] => {
     const pool = section
       ? allNotes.filter((n) => n.section === section)
@@ -371,7 +355,6 @@ async function scanAbbaWithFix(dir: string): Promise<FileEntry[]> {
     const full = await join(assetsDir, e.name);
 
     if (!e.isDirectory) {
-      // Flat file directly in assets/.
       if (!isMediaFile(e.name)) continue;
 
       const owners = findOwner(e.name);
@@ -396,7 +379,6 @@ async function scanAbbaWithFix(dir: string): Promise<FileEntry[]> {
           safe: true,
         });
       }
-      // Multiple owners → ambiguous, skip.
       continue;
     }
 
@@ -429,7 +411,6 @@ async function scanAbbaWithFix(dir: string): Promise<FileEntry[]> {
       continue;
     }
 
-    // Known section folder.
     let sectionEntries: any[] = [];
     try {
       sectionEntries = await readDir(full);
@@ -442,7 +423,6 @@ async function scanAbbaWithFix(dir: string): Promise<FileEntry[]> {
       const sePath = await join(full, se.name);
 
       if (!se.isDirectory) {
-        // Stray file at section level.
         if (!isMediaFile(se.name)) continue;
 
         const owners = findOwner(se.name, sectionName);
@@ -470,7 +450,6 @@ async function scanAbbaWithFix(dir: string): Promise<FileEntry[]> {
         continue;
       }
 
-      // Per-note asset folder. Its name is the note's *id*, not its filename.
       const folderId = se.name;
       const note = noteByKey.get(`${sectionName}/${folderId}`);
 
@@ -488,10 +467,6 @@ async function scanAbbaWithFix(dir: string): Promise<FileEntry[]> {
 
         if (note && contentMentions(note.content, sf.name)) continue;
 
-        // If we can't find the note by id, try a broader match: is any note
-        // in the same section referencing this exact filename? If yes, we
-        // assume the file is fine and skip it (avoids false positives when
-        // the folder name and note id have drifted apart).
         if (!note) {
           const owners = findOwner(sf.name, sectionName);
           if (owners.length > 0) continue;
@@ -511,7 +486,7 @@ async function scanAbbaWithFix(dir: string): Promise<FileEntry[]> {
           displayName: sf.name,
           size: await fileSizeSafe(sfPath),
           suggested: "delete",
-          reason: `Not referenced by note “${note.fileName.replace(/\.note$/, "")}”`,
+          reason: `Not referenced by note “${note.fileName.replace(/\.selah$/, "")}”`,
           safe: true,
         });
       }
@@ -550,13 +525,6 @@ async function scanJournal(dir: string): Promise<FileEntry[]> {
       const monthDir = await join(yearDir, monthEntry.name);
       const assetsDir = await join(monthDir, "assets");
 
-      let assetsEntries: any[] = [];
-      try {
-        assetsEntries = await readDir(assetsDir);
-      } catch {
-        continue;
-      }
-
       let monthFiles: any[] = [];
       try {
         monthFiles = await readDir(monthDir);
@@ -566,8 +534,8 @@ async function scanJournal(dir: string): Promise<FileEntry[]> {
 
       const noteContents: { name: string; content: string }[] = [];
       for (const f of monthFiles) {
-        if (f.isDirectory || !f.name || !/\.(note|md)$/i.test(f.name)) continue;
-        const baseName = f.name.replace(/\.(note|md)$/i, "");
+        if (f.isDirectory || !f.name || !/\.(selah|md)$/i.test(f.name)) continue;
+        const baseName = f.name.replace(/\.(selah|md)$/i, "");
         let content = "";
         try {
           content = await readTextFile(await join(monthDir, f.name));
@@ -575,66 +543,128 @@ async function scanJournal(dir: string): Promise<FileEntry[]> {
         noteContents.push({ name: baseName, content });
       }
 
+      const isReferenced = (filename: string): boolean =>
+        noteContents.some((nc) => contentMentions(nc.content, filename));
+
+      let assetsEntries: any[] = [];
+      try {
+        assetsEntries = await readDir(assetsDir);
+      } catch {
+        continue;
+      }
+
       for (const subEntry of assetsEntries) {
         if (!subEntry.name || subEntry.name.startsWith(".")) continue;
 
         if (!subEntry.isDirectory) {
-          if (!isMediaFile(subEntry.name)) continue;
-          const referenced = noteContents.some((nc) =>
-            contentMentions(nc.content, subEntry.name)
-          );
-          if (!referenced) {
+          if (/\.tmp$/i.test(subEntry.name)) {
             const full = await join(assetsDir, subEntry.name);
             out.push({
               path: full,
               displayName: subEntry.name,
               size: await fileSizeSafe(full),
               suggested: "delete",
-              reason: "Not referenced by any entry in this month",
+              reason: "Leftover partial conversion",
               safe: true,
             });
+            continue;
           }
+          if (!isMediaFile(subEntry.name)) continue;
+          if (isReferenced(subEntry.name)) continue;
+          const full = await join(assetsDir, subEntry.name);
+          out.push({
+            path: full,
+            displayName: subEntry.name,
+            size: await fileSizeSafe(full),
+            suggested: "delete",
+            reason: "Not referenced by any note in this month",
+            safe: true,
+          });
           continue;
         }
 
-        const noteBaseName = subEntry.name;
-        const match = noteContents.find((nc) => nc.name === noteBaseName);
-        const subDirPath = await join(assetsDir, noteBaseName);
+        const folderName = subEntry.name;
+        const folderPath = await join(assetsDir, folderName);
 
         let subFiles: any[] = [];
         try {
-          subFiles = await readDir(subDirPath);
+          subFiles = await readDir(folderPath);
         } catch {
           continue;
         }
 
-        for (const assetFile of subFiles) {
-          if (assetFile.isDirectory || !assetFile.name || assetFile.name.startsWith(".")) continue;
-          if (!isMediaFile(assetFile.name)) continue;
-          const full = await join(subDirPath, assetFile.name);
+        for (const sf of subFiles) {
+          if (!sf.name || sf.name.startsWith(".")) continue;
 
-          if (!match) {
+          if (sf.isDirectory) {
+            if (sf.name !== "proxy videos") continue;
+            const proxyDir = await join(folderPath, sf.name);
+
+            let proxyFiles: any[] = [];
+            try {
+              proxyFiles = await readDir(proxyDir);
+            } catch {
+              continue;
+            }
+
+            for (const pf of proxyFiles) {
+              if (pf.isDirectory || !pf.name || pf.name.startsWith(".")) continue;
+
+              if (/\.tmp$/i.test(pf.name)) {
+                const full = await join(proxyDir, pf.name);
+                out.push({
+                  path: full,
+                  displayName: pf.name,
+                  size: await fileSizeSafe(full),
+                  suggested: "delete",
+                  reason: "Leftover partial conversion",
+                  safe: true,
+                });
+                continue;
+              }
+
+              if (!isMediaFile(pf.name)) continue;
+              const original = pf.name.replace(/\.(webm|ogv)$/i, "");
+              if (isReferenced(original)) continue;
+
+              const full = await join(proxyDir, pf.name);
+              out.push({
+                path: full,
+                displayName: pf.name,
+                size: await fileSizeSafe(full),
+                suggested: "delete",
+                reason: `Proxy for unreferenced "${original}"`,
+                safe: true,
+              });
+            }
+            continue;
+          }
+
+          if (/\.tmp$/i.test(sf.name)) {
+            const full = await join(folderPath, sf.name);
             out.push({
               path: full,
-              displayName: assetFile.name,
+              displayName: sf.name,
               size: await fileSizeSafe(full),
               suggested: "delete",
-              reason: `Entry “${noteBaseName}” no longer exists`,
+              reason: "Leftover partial conversion",
               safe: true,
             });
             continue;
           }
 
-          if (!contentMentions(match.content, assetFile.name)) {
-            out.push({
-              path: full,
-              displayName: assetFile.name,
-              size: await fileSizeSafe(full),
-              suggested: "delete",
-              reason: `Not used by “${noteBaseName}”`,
-              safe: true,
-            });
-          }
+          if (!isMediaFile(sf.name)) continue;
+          if (isReferenced(sf.name)) continue;
+
+          const full = await join(folderPath, sf.name);
+          out.push({
+            path: full,
+            displayName: sf.name,
+            size: await fileSizeSafe(full),
+            suggested: "delete",
+            reason: `Not referenced by any note (in "${folderName}")`,
+            safe: true,
+          });
         }
       }
     }
@@ -668,7 +698,8 @@ async function scanOne(cat: CatLike, vaultPath: string): Promise<Result> {
 // ---------- apply one action ----------
 
 async function applyAction(f: FileEntry, action: ActionType): Promise<boolean> {
-  if (!isMediaFile(f.displayName)) {
+  const isTmp = /\.tmp$/i.test(f.displayName);
+  if (!isTmp && !isMediaFile(f.displayName)) {
     console.warn("[cleanup] refusing non-media file:", f.path);
     return false;
   }
@@ -708,10 +739,19 @@ export default function CleanupPanel({
   const [results, setResults] = useState<Result[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [appliedCount, setAppliedCount] = useState(0);
+  const [appliedLabel, setAppliedLabel] = useState<"fixed" | "deleted">("fixed");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
-  const [actions, setActions] = useState<Record<string, ActionType>>({});
   const [included, setIncluded] = useState<Record<string, boolean>>({});
+
+  const runScan = async () => {
+    const all: Result[] = [];
+    for (const cat of categories) {
+      const r = await scanOne(cat, vaultPath);
+      all.push(r);
+    }
+    return all.filter((r) => r.files.length > 0);
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -722,32 +762,17 @@ export default function CleanupPanel({
     setError(null);
     setAppliedCount(0);
     setExpanded(new Set());
-    setActions({});
     setIncluded({});
 
     (async () => {
       try {
-        const all: Result[] = [];
-        for (const cat of categories) {
-          const r = await scanOne(cat, vaultPath);
-          if (cancelled) return;
-          all.push(r);
-        }
+        const nonEmpty = await runScan();
         if (cancelled) return;
-
-        const nonEmpty = all.filter((r) => r.files.length > 0);
-
-        const a: Record<string, ActionType> = {};
         const inc: Record<string, boolean> = {};
         for (const r of nonEmpty) {
-          for (const f of r.files) {
-            a[f.path] = "skip";
-            inc[f.path] = false;
-          }
+          for (const f of r.files) inc[f.path] = false;
         }
-
         setResults(nonEmpty);
-        setActions(a);
         setIncluded(inc);
         setExpanded(new Set(nonEmpty.map((r) => r.categoryId)));
         setPhase("results");
@@ -767,59 +792,30 @@ export default function CleanupPanel({
   const allFiles = useMemo(() => results.flatMap((r) => r.files), [results]);
 
   const counts = useMemo(() => {
-    let toFix = 0, toDelete = 0, skipped = 0;
+    let fixable = 0;
+    let checked = 0;
     for (const f of allFiles) {
-      if (!included[f.path]) { skipped++; continue; }
-      const a = actions[f.path] ?? "skip";
-      if (a === "organize") toFix++;
-      else if (a === "delete") toDelete++;
-      else skipped++;
+      if (!included[f.path]) continue;
+      checked++;
+      if (f.suggested === "organize" && f.target) fixable++;
     }
-    return { toFix, toDelete, skipped, total: allFiles.length };
-  }, [allFiles, actions, included]);
-
-  const setAction = (f: FileEntry, action: ActionType) => {
-    setActions((p) => ({ ...p, [f.path]: action }));
-    setIncluded((p) => ({ ...p, [f.path]: action !== "skip" }));
-  };
+    return { fixable, checked, total: allFiles.length };
+  }, [allFiles, included]);
 
   const toggleIncluded = (f: FileEntry) => {
-    setIncluded((p) => {
-      const next = { ...p, [f.path]: !p[f.path] };
-      if (next[f.path]) {
-        setActions((a) => ({ ...a, [f.path]: f.suggested }));
-      } else {
-        setActions((a) => ({ ...a, [f.path]: "skip" }));
-      }
-      return next;
-    });
+    setIncluded((p) => ({ ...p, [f.path]: !p[f.path] }));
   };
 
   const selectAllSafe = () => {
     const inc: Record<string, boolean> = {};
-    const act: Record<string, ActionType> = {};
-    for (const f of allFiles) {
-      if (f.safe) {
-        inc[f.path] = true;
-        act[f.path] = f.suggested;
-      } else {
-        inc[f.path] = false;
-        act[f.path] = "skip";
-      }
-    }
+    for (const f of allFiles) inc[f.path] = f.safe;
     setIncluded(inc);
-    setActions(act);
   };
 
   const deselectAll = () => {
     const inc: Record<string, boolean> = {};
-    const act: Record<string, ActionType> = {};
-    for (const f of allFiles) {
-      inc[f.path] = false;
-      act[f.path] = "skip";
-    }
+    for (const f of allFiles) inc[f.path] = false;
     setIncluded(inc);
-    setActions(act);
   };
 
   const toggleExpand = (id: string) => {
@@ -831,24 +827,32 @@ export default function CleanupPanel({
     });
   };
 
-  const applySelected = async () => {
+  const performApply = async (mode: "fix" | "delete") => {
     setPhase("applying");
     let count = 0;
     const touchedFolders = new Set<string>();
 
     for (const f of allFiles) {
       if (!included[f.path]) continue;
-      const a = actions[f.path] ?? "skip";
-      if (a === "skip") continue;
-      const ok = await applyAction(f, a);
+
+      let action: ActionType;
+      if (mode === "fix") {
+        if (f.suggested !== "organize" || !f.target) continue;
+        action = "organize";
+      } else {
+        action = "delete";
+      }
+
+      const ok = await applyAction(f, action);
       if (ok) {
         count++;
         touchedFolders.add(parentDirOf(f.path));
-        if (f.target) touchedFolders.add(parentDirOf(f.target));
+        if (f.target && action === "organize") touchedFolders.add(parentDirOf(f.target));
       }
     }
 
     setAppliedCount(count);
+    setAppliedLabel(mode === "fix" ? "fixed" : "deleted");
 
     for (const folder of touchedFolders) {
       window.dispatchEvent(
@@ -859,28 +863,16 @@ export default function CleanupPanel({
       );
     }
 
-    const all: Result[] = [];
-    for (const cat of categories) {
-      const r = await scanOne(cat, vaultPath);
-      all.push(r);
-    }
-    const nonEmpty = all.filter((r) => r.files.length > 0);
-
-    const a: Record<string, ActionType> = {};
+    const nonEmpty = await runScan();
     const inc: Record<string, boolean> = {};
     for (const r of nonEmpty) {
-      for (const f of r.files) {
-        a[f.path] = "skip";
-        inc[f.path] = false;
-      }
+      for (const f of r.files) inc[f.path] = false;
     }
-
     if (nonEmpty.length === 0) {
       setResults([]);
       setPhase("done");
     } else {
       setResults(nonEmpty);
-      setActions(a);
       setIncluded(inc);
       setExpanded(new Set(nonEmpty.map((r) => r.categoryId)));
       setPhase("results");
@@ -889,7 +881,8 @@ export default function CleanupPanel({
 
   if (!open) return null;
 
-  const anySelected = counts.toFix + counts.toDelete > 0;
+  const hasChecked = counts.checked > 0;
+  const canFix = counts.fixable > 0;
 
   return (
     <div
@@ -932,15 +925,10 @@ export default function CleanupPanel({
 
           {phase === "error" && (
             <div className="flex items-start gap-3">
-              <AlertTriangle
-                size={16}
-                className="text-red-400 flex-shrink-0 mt-0.5"
-              />
+              <AlertTriangle size={16} className="text-red-400 flex-shrink-0 mt-0.5" />
               <div className="flex-1 min-w-0">
                 <p className="text-sm text-red-300 font-medium">Scan failed.</p>
-                <p className="text-xs text-red-400/70 mt-1 break-words">
-                  {error}
-                </p>
+                <p className="text-xs text-red-400/70 mt-1 break-words">{error}</p>
               </div>
             </div>
           )}
@@ -963,24 +951,12 @@ export default function CleanupPanel({
                     <span className="font-semibold text-gray-100">
                       {counts.total}
                     </span>{" "}
-                    leftover {counts.total === 1 ? "file" : "files"} found —{" "}
-                    <span className="text-blue-300">{counts.toFix} to fix</span>
-                    {" · "}
-                    <span className="text-red-300">{counts.toDelete} to delete</span>
-                    {counts.skipped > 0 && (
-                      <>
-                        {" · "}
-                        <span className="text-gray-500">
-                          {counts.skipped} unchecked
-                        </span>
-                      </>
-                    )}
+                    leftover {counts.total === 1 ? "file" : "files"} found
                   </div>
                   <div className="text-[11px] text-gray-500 mt-1 flex items-center gap-1.5">
                     <Shield size={11} className="text-emerald-400" />
                     <span>
-                      Notes, JSON files, and referenced media are never flagged.
-                      Nothing happens until you click Apply.
+                      Check what you want to act on, then Fix or Delete.
                     </span>
                   </div>
                 </div>
@@ -1006,7 +982,7 @@ export default function CleanupPanel({
               <div className="space-y-2">
                 {results.map((r) => {
                   const isOpen = expanded.has(r.categoryId);
-                  const catIncluded = r.files.filter((f) => included[f.path]).length;
+                  const catChecked = r.files.filter((f) => included[f.path]).length;
                   return (
                     <div
                       key={r.categoryId}
@@ -1029,7 +1005,7 @@ export default function CleanupPanel({
                           </span>
                         </span>
                         <span className="text-[10px] text-gray-500 tabular-nums flex-shrink-0">
-                          {catIncluded}/{r.files.length} selected
+                          {catChecked}/{r.files.length} selected
                         </span>
                         <span className="text-[10px] text-amber-300/90 tabular-nums flex-shrink-0 ml-2">
                           {formatBytes(r.totalBytes)}
@@ -1040,54 +1016,51 @@ export default function CleanupPanel({
                           {r.files.map((f) => {
                             const rel = relPath(vaultPath, f.path);
                             const { dir } = splitPath(rel);
-                            const action = actions[f.path] ?? "skip";
-                            const isIncluded = included[f.path] ?? false;
-                            const hasTarget = !!f.target;
+                            const isChecked = included[f.path] ?? false;
+                            const isMove =
+                              f.suggested === "organize" && !!f.target;
                             return (
-                              <div
+                              <label
                                 key={f.path}
-                                className={`flex items-start gap-3 px-3 py-2 text-xs transition-colors ${
-                                  isIncluded ? "bg-[#141819]" : ""
+                                className={`flex items-start gap-3 px-3 py-2 text-xs transition-colors cursor-pointer ${
+                                  isChecked ? "bg-[#141819]" : "hover:bg-[#141819]"
                                 }`}
                                 title={f.path}
                               >
                                 <input
                                   type="checkbox"
-                                  checked={isIncluded}
+                                  checked={isChecked}
                                   onChange={() => toggleIncluded(f)}
                                   className="mt-1 accent-blue-500 flex-shrink-0 cursor-pointer"
                                 />
                                 <div className="flex-1 min-w-0">
-                                  <div
-                                    className={`truncate font-medium ${
-                                      isIncluded ? "text-gray-200" : "text-gray-400"
-                                    }`}
-                                  >
-                                    {f.displayName}
+                                  <div className="flex items-center gap-2 min-w-0">
+                                    <span
+                                      className={`truncate font-medium ${
+                                        isChecked ? "text-gray-200" : "text-gray-400"
+                                      }`}
+                                    >
+                                      {f.displayName}
+                                    </span>
+                                    {/* Explicit action badge */}
+                                    {isMove ? (
+                                      <span className="flex items-center gap-1 text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 flex-shrink-0 font-medium">
+                                        <Move size={9} /> Move
+                                      </span>
+                                    ) : (
+                                      <span className="flex items-center gap-1 text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-red-500/10 border border-red-500/30 text-red-300 flex-shrink-0 font-medium">
+                                        <Trash2 size={9} /> Delete
+                                      </span>
+                                    )}
                                   </div>
                                   <div className="text-[10px] text-gray-500 truncate font-mono mt-0.5">
                                     {dir || "."}
                                   </div>
-                                  <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-                                    <select
-                                      value={action}
-                                      onChange={(e) =>
-                                        setAction(f, e.target.value as ActionType)
-                                      }
-                                      className="text-[10px] bg-[#0f1315] border border-[#30363d] rounded px-1.5 py-0.5 text-gray-200 outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
-                                    >
-                                      <option value="skip">Skip</option>
-                                      {hasTarget && (
-                                        <option value="organize">Fix location</option>
-                                      )}
-                                      <option value="delete">Move to trash</option>
-                                    </select>
-                                    <span className="text-[10px] text-gray-500 truncate">
-                                      {f.reason}
-                                    </span>
+                                  <div className="text-[10px] text-gray-500 mt-1 truncate">
+                                    {f.reason}
                                   </div>
-                                  {action === "organize" && hasTarget && (
-                                    <div className="text-[10px] text-blue-300/80 truncate font-mono mt-1">
+                                  {isMove && (
+                                    <div className="text-[10px] text-blue-300/80 truncate font-mono mt-0.5">
                                       → {relPath(vaultPath, f.target!)}
                                     </div>
                                   )}
@@ -1095,7 +1068,7 @@ export default function CleanupPanel({
                                 <span className="text-gray-500 tabular-nums flex-shrink-0 mt-0.5">
                                   {formatBytes(f.size)}
                                 </span>
-                              </div>
+                              </label>
                             );
                           })}
                         </div>
@@ -1118,14 +1091,15 @@ export default function CleanupPanel({
             <div className="text-center py-12">
               <Check size={28} className="text-emerald-400 mx-auto mb-3" />
               <p className="text-sm text-gray-200">
-                Applied{" "}
+                {appliedLabel === "fixed" ? "Fixed" : "Deleted"}{" "}
                 <span className="font-semibold text-gray-100">
                   {appliedCount}
                 </span>{" "}
-                {appliedCount === 1 ? "change" : "changes"}.
+                {appliedCount === 1 ? "file" : "files"}.
               </p>
               <p className="text-xs text-gray-500 mt-1">
-                Deleted files went to your system trash and can be restored from there.
+                Deleted files went to your system trash and can be restored
+                from there.
               </p>
             </div>
           )}
@@ -1134,16 +1108,11 @@ export default function CleanupPanel({
         {phase === "results" && results.length > 0 && (
           <div className="flex items-center justify-between gap-2 px-4 py-3 border-t border-[#2a3136] bg-[#1a1e21] flex-shrink-0">
             <div className="text-[11px] text-gray-500">
-              {counts.toFix > 0 && (
-                <span className="text-blue-300">{counts.toFix} fix</span>
-              )}
-              {counts.toFix > 0 && counts.toDelete > 0 && (
-                <span className="text-gray-600"> · </span>
-              )}
-              {counts.toDelete > 0 && (
-                <span className="text-red-300">{counts.toDelete} delete</span>
-              )}
-              {!anySelected && <span>nothing selected</span>}
+              {hasChecked
+                ? `${counts.checked} selected${
+                    canFix ? ` · ${counts.fixable} fixable` : ""
+                  }`
+                : "nothing selected"}
             </div>
             <div className="flex items-center gap-2">
               <button
@@ -1155,12 +1124,23 @@ export default function CleanupPanel({
               </button>
               <button
                 type="button"
-                onClick={applySelected}
-                disabled={!anySelected}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded transition-colors font-medium"
+                onClick={() => performApply("fix")}
+                disabled={!canFix}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded transition-colors font-medium"
+                title="Move selected fixable files to their correct folder"
               >
-                <Wand2 size={12} />
-                <span>Apply {counts.toFix + counts.toDelete} changes</span>
+                <Move size={12} />
+                <span>Fix {counts.fixable || ""}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => performApply("delete")}
+                disabled={!hasChecked}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-red-600 hover:bg-red-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded transition-colors font-medium"
+                title="Move selected files to the trash"
+              >
+                <Trash2 size={12} />
+                <span>Delete {counts.checked || ""}</span>
               </button>
             </div>
           </div>

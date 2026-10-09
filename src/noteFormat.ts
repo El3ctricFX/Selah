@@ -136,7 +136,7 @@ interface ColumnSpec {
 }
 
 interface Segment {
-  kind: "md" | "columns" | "callout" | "bookmark";
+  kind: "md" | "columns" | "callout" | "bookmark" | "video";
   text?: string;
   columns?: ColumnSpec[];
   callout?: { icon: string; color: string; inner: string };
@@ -147,6 +147,11 @@ interface Segment {
     icon: string;
     image: string;
     mode: "bookmark" | "embed";
+  };
+  video?: {
+    src: string;
+    caption: string;
+    fileName: string;
   };
 }
 
@@ -163,6 +168,79 @@ function unescapeAttr(s: string): string {
     .replace(/&quot;/g, '"')
     .replace(/&amp;/g, "&")
     .replace(/&#10;/g, "\n");
+}
+
+function escAttr(s: unknown): string {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/\n/g, " ");
+}
+
+/**
+ * `::: <keyword>` lines that open a *nested* block whose body is terminated
+ * by a matching bare `:::`. These must increment nesting depth so the parser
+ * doesn't mistake a nested closer for the enclosing block's closer.
+ */
+const NESTED_BLOCK_RE = /^:::\s+(columns|column|callout)\b/;
+
+/**
+ * `::: <keyword>` lines for blocks that carry all their data on the opening
+ * line and have no body / closer. They never affect nesting depth.
+ */
+const SELF_CONTAINED_BLOCK_RE = /^:::\s+(bookmark|video)\b/;
+
+/**
+ * Scan forward from `start` looking for the bare `:::` that closes the block
+ * we're already inside. Tracks nesting depth: nested `:::` openers increment
+ * it, bare `:::` lines decrement it, and we return when depth would go below
+ * zero (i.e. we found the closer for our block).
+ *
+ * Self-contained blocks (`::: bookmark`, `::: video`) don't affect depth —
+ * they have no body and no closer.
+ *
+ * Returns the lines strictly between the fences (excluding the opening line
+ * and the closing `:::`) plus the index just past the closer.
+ */
+function readUntilCloser(
+  lines: string[],
+  start: number
+): { content: string[]; end: number } {
+  const content: string[] = [];
+  let depth = 0;
+  let i = start;
+  while (i < lines.length) {
+    const t = lines[i].trim();
+
+    if (SELF_CONTAINED_BLOCK_RE.test(t)) {
+      content.push(lines[i]);
+      i++;
+      continue;
+    }
+
+    if (NESTED_BLOCK_RE.test(t)) {
+      depth++;
+      content.push(lines[i]);
+      i++;
+      continue;
+    }
+
+    if (t === ":::") {
+      if (depth === 0) {
+        return { content, end: i + 1 };
+      }
+      depth--;
+      content.push(lines[i]);
+      i++;
+      continue;
+    }
+
+    content.push(lines[i]);
+    i++;
+  }
+
+  // Malformed input — no closer found. Treat EOF as the close.
+  return { content, end: i };
 }
 
 function splitNoteBody(body: string): Segment[] {
@@ -184,28 +262,30 @@ function splitNoteBody(body: string): Segment[] {
     if (trimmed === "::: columns") {
       flush();
       i++;
+      const { content, end } = readUntilCloser(lines, i);
+      i = end;
+
+      // The columns body is a sequence of `::: column width="..."` blocks.
+      // Each column's own content may itself contain nested `:::` blocks;
+      // readUntilCloser handles that when we recurse per column.
       const cols: ColumnSpec[] = [];
-      while (i < lines.length && lines[i].trim() !== ":::") {
-        const line = lines[i].trim();
+      let j = 0;
+      while (j < content.length) {
+        const line = content[j].trim();
         if (line === "::: column" || line.startsWith("::: column ")) {
           const attrs = parseAttrs(line);
           const width = attrs.width || "1fr";
-          i++;
-          const colLines: string[] = [];
-          while (i < lines.length && lines[i].trim() !== ":::") {
-            colLines.push(lines[i]);
-            i++;
-          }
+          j++;
+          const { content: colContent, end: colEnd } = readUntilCloser(content, j);
+          j = colEnd;
           cols.push({
             width,
-            content: colLines.join("\n").trimEnd(),
+            content: colContent.join("\n").trimEnd(),
           });
-          i++;
         } else {
-          i++;
+          j++;
         }
       }
-      i++;
       out.push({ kind: "columns", columns: cols });
       continue;
     }
@@ -214,12 +294,8 @@ function splitNoteBody(body: string): Segment[] {
       flush();
       const attrs = parseAttrs(trimmed);
       i++;
-      const inner: string[] = [];
-      while (i < lines.length && lines[i].trim() !== ":::") {
-        inner.push(lines[i]);
-        i++;
-      }
-      i++;
+      const { content: inner, end } = readUntilCloser(lines, i);
+      i = end;
       out.push({
         kind: "callout",
         callout: {
@@ -235,6 +311,8 @@ function splitNoteBody(body: string): Segment[] {
       flush();
       const attrs = parseAttrs(trimmed);
       i++;
+      // Bookmarks have no body. Older files have no closer; new ones don't
+      // either — but be lenient and skip a bare `:::` if present.
       if (i < lines.length && lines[i].trim() === ":::") i++;
       const mode = attrs.mode === "embed" ? "embed" : "bookmark";
       out.push({
@@ -251,6 +329,22 @@ function splitNoteBody(body: string): Segment[] {
       continue;
     }
 
+    if (trimmed.startsWith("::: video")) {
+      flush();
+      const attrs = parseAttrs(trimmed);
+      i++;
+      if (i < lines.length && lines[i].trim() === ":::") i++;
+      out.push({
+        kind: "video",
+        video: {
+          src: unescapeAttr(attrs.src || ""),
+          caption: unescapeAttr(attrs.caption || ""),
+          fileName: unescapeAttr(attrs.fileName || ""),
+        },
+      });
+      continue;
+    }
+
     buf.push(lines[i]);
     i++;
   }
@@ -259,7 +353,71 @@ function splitNoteBody(body: string): Segment[] {
   return out;
 }
 
-export async function noteBodyToBlocks(
+/**
+ * Canonicalize a column width to a value `@blocknote/xl-multi-column` can
+ * actually use.
+ *
+ * The library stores width in one of two shapes:
+ *   - the literal string "1fr" for flexible sizing
+ *   - a NUMBER in pixels after the user drags the resize handle
+ *
+ * Its drag handler has a bug: if it's given a string it can't numerically
+ * coerce (like "1fr"), it falls into a `currentWidth + delta` path where
+ * `delta` is NaN, and produces values like "1frNaNNaNNaN". That garbage
+ * round-trips through the serializer verbatim, and on the next load the
+ * library can't parse it — so it silently refuses to attach a resize handle
+ * and the column stays frozen.
+ *
+ * We collapse every known-bad shape back to a value the library understands.
+ * Corrupted files self-heal on open, and the library's output can never be
+ * persisted in a broken state either.
+ *
+ * Returns: a positive number (pixels), an fr string like "2fr", or "1fr".
+ */
+function sanitizeColumnWidth(raw: unknown): string | number {
+  if (raw === undefined || raw === null) return "1fr";
+
+  if (typeof raw === "number") {
+    return Number.isFinite(raw) && raw > 0 ? raw : "1fr";
+  }
+
+  const trimmed = String(raw).trim();
+  if (!trimmed) return "1fr";
+
+  // Exact "Nfr" — the only fr form the library emits. Preserve it as a string.
+  const frMatch = trimmed.match(/^(\d+(?:\.\d+)?)fr$/);
+  if (frMatch) {
+    const n = Number(frMatch[1]);
+    return Number.isFinite(n) && n > 0 ? `${frMatch[1]}fr` : "1fr";
+  }
+
+  // Bare number: "312", "0.5"
+  if (/^\d+(\.\d+)?$/.test(trimmed)) {
+    const n = Number(trimmed);
+    return Number.isFinite(n) && n > 0 ? n : "1fr";
+  }
+
+  // "300px"
+  const pxMatch = trimmed.match(/^(\d+(?:\.\d+)?)px$/);
+  if (pxMatch) {
+    const n = Number(pxMatch[1]);
+    return Number.isFinite(n) && n > 0 ? n : "1fr";
+  }
+
+  // Anything else is corruption ("1frNaNNaN…", "NaN", "undefined", …) that
+  // would break `grid-template-columns` and kill the resize handle. Reset.
+  return "1fr";
+}
+
+function decodeColumnWidth(raw: unknown): string | number {
+  return sanitizeColumnWidth(raw);
+}
+
+function encodeColumnWidth(raw: unknown): string {
+  return String(sanitizeColumnWidth(raw));
+}
+
+async function parseBodyToBlocks(
   editor: BlockNoteEditor<any, any, any>,
   body: string
 ): Promise<any[]> {
@@ -274,10 +432,13 @@ export async function noteBodyToBlocks(
     } else if (seg.kind === "columns") {
       const columnChildren = await Promise.all(
         (seg.columns || []).map(async (col) => {
-          const inner = await editor.tryParseMarkdownToBlocks(col.content);
+          // Recurse so callouts / bookmarks / videos nested inside a column
+          // survive the round-trip. The previous implementation called
+          // tryParseMarkdownToBlocks directly, which silently dropped them.
+          const inner = await parseBodyToBlocks(editor, col.content || "");
           return {
             type: "column",
-            props: { width: col.width || "1fr" },
+            props: { width: decodeColumnWidth(col.width) },
             children: inner.length ? inner : [{ type: "paragraph" }],
           };
         })
@@ -314,13 +475,30 @@ export async function noteBodyToBlocks(
           mode: b.mode,
         },
       });
+    } else if (seg.kind === "video") {
+      const v = seg.video!;
+      blocks.push({
+        type: "video",
+        props: {
+          src: v.src,
+          caption: v.caption,
+          fileName: v.fileName,
+        },
+      });
     }
   }
 
   return blocks.length ? blocks : [{ type: "paragraph" }];
 }
 
-export async function blocksToNoteBody(
+export async function noteBodyToBlocks(
+  editor: BlockNoteEditor<any, any, any>,
+  body: string
+): Promise<any[]> {
+  return parseBodyToBlocks(editor, body);
+}
+
+async function serializeBlockList(
   editor: BlockNoteEditor<any, any, any>,
   blocks: any[]
 ): Promise<string> {
@@ -339,9 +517,12 @@ export async function blocksToNoteBody(
       await flush();
       const colTexts: string[] = [];
       for (const col of block.children || []) {
-        const inner = await editor.blocksToMarkdownLossy(col.children || []);
-        const width = (col.props?.width as string) || "1fr";
-        colTexts.push(`::: column width="${width}"\n${inner.trim()}\n:::`);
+        // Recurse so custom blocks inside columns serialize with their
+        // correct `:::` fences instead of being dropped by the built-in
+        // markdown serializer.
+        const inner = await serializeBlockList(editor, col.children || []);
+        const width = encodeColumnWidth(col.props?.width);
+        colTexts.push(`::: column width="${width}"\n${inner.trimEnd()}\n:::`);
       }
       chunks.push(`::: columns\n${colTexts.join("\n")}\n:::`);
     } else if (block.type === "callout") {
@@ -351,25 +532,27 @@ export async function blocksToNoteBody(
       ]);
       const icon = (block.props?.icon as string) || "💡";
       const color = (block.props?.color as string) || "gray";
-      const safeIcon = String(icon).replace(/"/g, "&quot;");
       chunks.push(
-        `::: callout icon="${safeIcon}" color="${color}"\n${inner.trim()}\n:::`
+        `::: callout icon="${escAttr(icon)}" color="${escAttr(color)}"\n${inner.trim()}\n:::`
       );
     } else if (block.type === "bookmark") {
       await flush();
       const p = block.props || {};
-      const esc = (s: unknown) =>
-        String(s ?? "")
-          .replace(/&/g, "&amp;")
-          .replace(/"/g, "&quot;")
-          .replace(/\n/g, " ");
       const mode = p.mode === "embed" ? "embed" : "bookmark";
       chunks.push(
-        `::: bookmark mode="${mode}" url="${esc(p.url)}" title="${esc(
+        `::: bookmark mode="${mode}" url="${escAttr(p.url)}" title="${escAttr(
           p.title
-        )}" description="${esc(p.description)}" icon="${esc(
+        )}" description="${escAttr(p.description)}" icon="${escAttr(
           p.icon
-        )}" image="${esc(p.image)}"`
+        )}" image="${escAttr(p.image)}"`
+      );
+    } else if (block.type === "video") {
+      await flush();
+      const p = block.props || {};
+      chunks.push(
+        `::: video src="${escAttr(p.src)}" caption="${escAttr(
+          p.caption
+        )}" fileName="${escAttr(p.fileName)}"`
       );
     } else {
       pending.push(block);
@@ -377,7 +560,15 @@ export async function blocksToNoteBody(
   }
   await flush();
 
-  return chunks.join("\n\n") + "\n";
+  return chunks.join("\n\n");
+}
+
+export async function blocksToNoteBody(
+  editor: BlockNoteEditor<any, any, any>,
+  blocks: any[]
+): Promise<string> {
+  const body = await serializeBlockList(editor, blocks);
+  return body + "\n";
 }
 
 export function flattenToObsidianMarkdown(raw: string): string {
@@ -397,6 +588,9 @@ export function flattenToObsidianMarkdown(raw: string): string {
     } else if (seg.kind === "bookmark") {
       const b = seg.bookmark!;
       out.push(`[${b.title || b.url}](${b.url})`);
+    } else if (seg.kind === "video") {
+      const v = seg.video!;
+      out.push(`[${v.caption || "Video"}](${v.src})`);
     }
   }
 

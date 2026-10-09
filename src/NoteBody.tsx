@@ -40,8 +40,10 @@ import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { createCallout } from "./Callout";
 import { createBookmark } from "./Bookmark";
+import { createVideo } from "./VideoBlock";
 import { isReliablyEmbeddable } from "./embeds";
 import { useNoteMode } from "./useNoteMode";
+import { NoteContext } from "./NoteContext";
 import {
   noteBodyToBlocks,
   blocksToNoteBody,
@@ -51,9 +53,12 @@ import {
 import type { Frontmatter } from "./noteFormat";
 import {
   saveImageToNoteAssets,
+  saveFileToNoteAssets,
   writeImageBytesToNoteAssets,
   markdownImagesToAssetUrls,
   markdownImagesToRelativePaths,
+  videoSrcsToAssetUrls,
+  videoSrcsToRelativePaths,
   assetUrlToAbsolutePath,
   isInsideNoteAssets,
   deleteImageFromNoteAssets,
@@ -128,7 +133,7 @@ async function collectNoteFiles(
       const full = await join(dir, e.name);
       if (e.isDirectory) {
         await collectNoteFiles(full, out, depth + 1);
-      } else if (e.name.endsWith(".note")) {
+      } else if (e.name.endsWith(".selah")) {
         let icon = "";
         try {
           const raw = await readTextFile(full);
@@ -137,7 +142,7 @@ async function collectNoteFiles(
         } catch {}
         out.push({
           path: full,
-          name: e.name.replace(/\.note$/, ""),
+          name: e.name.replace(/\.selah$/, ""),
           icon,
         });
       }
@@ -273,6 +278,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
           blockSpecs: {
             callout: createCallout(),
             bookmark: createBookmark(),
+            video: createVideo(),
           },
         })
       ),
@@ -324,7 +330,8 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       if (!editor) return;
       try {
         const rawBody = await blocksToNoteBody(editor, editor.document);
-        const body = markdownImagesToRelativePaths(rawBody, noteDirOf(path));
+        const withImgs = markdownImagesToRelativePaths(rawBody, noteDirOf(path));
+        const body = videoSrcsToRelativePaths(withImgs, noteDirOf(path));
         const wordCount = countWords(body);
         onWordCountChange?.(wordCount);
 
@@ -425,6 +432,44 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       [path, insertImageBlocks]
     );
 
+    const saveAndInsertVideoFiles = useCallback(
+      async (files: File[]) => {
+        const videoFiles = files.filter((f) => f.type.startsWith("video/"));
+        if (videoFiles.length === 0) return;
+
+        for (const file of videoFiles) {
+          try {
+            const ext = (file.name.split(".").pop() || "mp4").toLowerCase();
+            const name =
+              file.name && file.name !== "blob" && !file.name.startsWith("image")
+                ? file.name
+                : `video-${Date.now()}.${ext}`;
+            const bytes = new Uint8Array(await file.arrayBuffer());
+            const dest = await writeImageBytesToNoteAssets(path, bytes, name);
+            const url = convertFileSrc(dest);
+
+            const cursor = editor.getTextCursorPosition?.();
+            const refBlock =
+              cursor?.block || editor.document[editor.document.length - 1];
+            if (!refBlock) return;
+            editor.insertBlocks(
+              [
+                {
+                  type: "video",
+                  props: { src: url, caption: "", fileName: name },
+                },
+              ],
+              refBlock,
+              "after"
+            );
+          } catch (e) {
+            console.error("[video] save pasted video failed:", e);
+          }
+        }
+      },
+      [path, editor]
+    );
+
     const wrapperRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
@@ -434,26 +479,45 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       const handler = (e: ClipboardEvent) => {
         if (isLoading) return;
 
-        const items = e.clipboardData?.items;
+        const cd = e.clipboardData;
+        if (!cd) return;
 
-        if (items) {
-          const files: File[] = [];
-          for (let i = 0; i < items.length; i++) {
-            const item = items[i];
-            if (item.kind === "file" && item.type.startsWith("image/")) {
-              const f = item.getAsFile();
-              if (f) files.push(f);
-            }
+        // Collect any image/video Files from both `items` and `files` —
+        // some webviews only populate one of the two.
+        const collected: File[] = [];
+
+        if (cd.items) {
+          for (let i = 0; i < cd.items.length; i++) {
+            const item = cd.items[i];
+            if (item.kind !== "file") continue;
+            if (!/^image\/|^video\//i.test(item.type)) continue;
+            const f = item.getAsFile();
+            if (f) collected.push(f);
           }
-          if (files.length > 0) {
-            e.preventDefault();
-            e.stopPropagation();
-            saveAndInsertImageFiles(files);
-            return;
+        }
+        if (collected.length === 0 && cd.files) {
+          for (let i = 0; i < cd.files.length; i++) {
+            const f = cd.files[i];
+            if (/^image\/|^video\//i.test(f.type)) collected.push(f);
           }
         }
 
-        const text = e.clipboardData?.getData("text/plain")?.trim() || "";
+        if (collected.length > 0) {
+          const imgs = collected.filter((f) => f.type.startsWith("image/"));
+          const vids = collected.filter((f) => f.type.startsWith("video/"));
+          console.log(
+            "[paste] files:", collected.length,
+            "images:", imgs.length,
+            "videos:", vids.length
+          );
+          e.preventDefault();
+          e.stopPropagation();
+          if (imgs.length > 0) saveAndInsertImageFiles(imgs);
+          if (vids.length > 0) saveAndInsertVideoFiles(vids);
+          return;
+        }
+
+        const text = cd.getData("text/plain")?.trim() || "";
         if (!URL_RE.test(text)) return;
 
         const tiptap: any = (editor as any)._tiptapEditor;
@@ -480,7 +544,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
 
       el.addEventListener("paste", handler, true);
       return () => el.removeEventListener("paste", handler, true);
-    }, [isLoading, saveAndInsertImageFiles, editor]);
+    }, [isLoading, saveAndInsertImageFiles, saveAndInsertVideoFiles, editor]);
 
     useEffect(() => {
       if (!pasteMenu) return;
@@ -583,8 +647,9 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
           onFrontmatterLoaded?.(frontmatter);
           onWordCountChange?.(countWords(body));
 
-          const transformedBody = markdownImagesToAssetUrls(body, noteDirOf(path));
-          const blocks = await noteBodyToBlocks(editor, transformedBody);
+          const withImgs = markdownImagesToAssetUrls(body, noteDirOf(path));
+          const withVideos = videoSrcsToAssetUrls(withImgs, noteDirOf(path));
+          const blocks = await noteBodyToBlocks(editor, withVideos);
           if (isMounted && editor) {
             editor.replaceBlocks(
               editor.document,
@@ -864,6 +929,50 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       [path, insertImageBlocks]
     );
 
+    const insertVideoMenuItem = useCallback(
+      () => ({
+        title: "Upload video",
+        subtext: "Insert a video from your computer",
+        onItemClick: async () => {
+          try {
+            const picked = await open({
+              multiple: false,
+              filters: [
+                {
+                  name: "Video",
+                  extensions: ["mp4", "webm", "mov", "mkv", "m4v", "avi", "ogv"],
+                },
+              ],
+            });
+            if (!picked || typeof picked !== "string") return;
+            const dest = await saveFileToNoteAssets(path, picked);
+            const url = convertFileSrc(dest);
+            const fileName = dest.split(/[/\\]/).pop() || "video";
+            const cursor = editor.getTextCursorPosition?.();
+            const refBlock =
+              cursor?.block || editor.document[editor.document.length - 1];
+            if (!refBlock) return;
+            editor.insertBlocks(
+              [
+                {
+                  type: "video",
+                  props: { src: url, caption: "", fileName },
+                },
+              ],
+              refBlock,
+              "after"
+            );
+          } catch (e) {
+            console.error("[video] picker failed:", e);
+          }
+        },
+        aliases: ["video", "movie", "film", "clip", "upload"],
+        group: "Basic blocks",
+        icon: <span className="text-base">🎬</span>,
+      }),
+      [path, editor]
+    );
+
     const getSlashMenuItems = useMemo(() => {
       return async (query: string) => {
         const defaultItems = getDefaultReactSlashMenuItems(editor);
@@ -874,6 +983,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
           insertCallout(editor),
           insertNoteLinkMenuItem(),
           insertImageMenuItem(),
+          insertVideoMenuItem(),
         ];
         if (lastBasicBlockIndex !== -1) {
           defaultItems.splice(lastBasicBlockIndex + 1, 0, ...extra);
@@ -886,7 +996,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         );
       };
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [editor, openLinkPicker, insertImageMenuItem]);
+    }, [editor, openLinkPicker, insertImageMenuItem, insertVideoMenuItem]);
 
     useEffect(() => {
       if (!editor) return;
@@ -1019,185 +1129,195 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       ? isReliablyEmbeddable(pasteMenu.url)
       : false;
 
-    return (
-      <div
-        ref={wrapperRef}
-        className={mode === "read" ? "note-read-mode" : ""}
-      >
-        <BlockNoteView
-          editor={editor}
-          theme="dark"
-          slashMenu={false}
-          onChange={handleContentChange}
-        >
-          <SuggestionMenuController
-            triggerCharacter="/"
-            getItems={getSlashMenuItems}
-          />
-        </BlockNoteView>
+    // Provide the note's directory to descendant blocks (e.g. VideoBlock)
+    // so they can resolve relative asset paths without relying on the
+    // fragile markdown ↔ asset:// round-trip.
+    const noteContextValue = useMemo(
+      () => ({ notePath: path, noteDir: noteDirOf(path) }),
+      [path]
+    );
 
-        {pasteMenu && (
-          <div
-            ref={pasteMenuRef}
-            className="fixed z-[500] bg-[#1e2327] border border-[#2a3136] rounded-md shadow-2xl py-1 w-60"
-            style={{ top: pasteMenu.y, left: pasteMenu.x }}
-            onMouseDown={(e) => e.preventDefault()}
+    return (
+      <NoteContext.Provider value={noteContextValue}>
+        <div
+          ref={wrapperRef}
+          className={mode === "read" ? "note-read-mode" : ""}
+        >
+          <BlockNoteView
+            editor={editor}
+            theme="dark"
+            slashMenu={false}
+            onChange={handleContentChange}
           >
-            <button
-              onClick={() => pasteAsText(pasteMenu.url)}
-              className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
+            <SuggestionMenuController
+              triggerCharacter="/"
+              getItems={getSlashMenuItems}
+            />
+          </BlockNoteView>
+
+          {pasteMenu && (
+            <div
+              ref={pasteMenuRef}
+              className="fixed z-[500] bg-[#1e2327] border border-[#2a3136] rounded-md shadow-2xl py-1 w-60"
+              style={{ top: pasteMenu.y, left: pasteMenu.x }}
+              onMouseDown={(e) => e.preventDefault()}
             >
-              <TypeIcon size={13} /> <span>Paste as text</span>
-            </button>
-            <button
-              onClick={() => pasteAsLink(pasteMenu.url, "bookmark")}
-              className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2 border-t border-[#2a3136]"
-            >
-              <LinkIcon size={13} /> <span>Paste as bookmark</span>
-            </button>
-            {pasteMenuCanEmbed && (
               <button
-                onClick={() => pasteAsLink(pasteMenu.url, "embed")}
+                onClick={() => pasteAsText(pasteMenu.url)}
+                className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
+              >
+                <TypeIcon size={13} /> <span>Paste as text</span>
+              </button>
+              <button
+                onClick={() => pasteAsLink(pasteMenu.url, "bookmark")}
                 className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2 border-t border-[#2a3136]"
               >
-                <PlayIcon size={13} /> <span>Embed</span>
+                <LinkIcon size={13} /> <span>Paste as bookmark</span>
               </button>
-            )}
-          </div>
-        )}
-
-        {linkPickerOpen && (
-          <div
-            className="fixed inset-0 z-[300] bg-black/60 flex items-start justify-center pt-24"
-            onClick={closeLinkPicker}
-          >
-            <div
-              className="bg-[#1e2327] border border-[#2a3136] rounded-lg shadow-2xl w-[480px] max-w-[92vw] flex flex-col overflow-hidden"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="px-3 py-2 border-b border-[#2a3136] bg-[#1a1e21]">
-                <input
-                  autoFocus
-                  type="text"
-                  value={linkQuery}
-                  onChange={(e) => setLinkQuery(e.target.value)}
-                  placeholder="Search notes…"
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && filteredNotes[0]) {
-                      insertNoteLink(filteredNotes[0]);
-                    } else if (e.key === "Escape") {
-                      closeLinkPicker();
-                    }
-                  }}
-                  className="w-full bg-transparent border-none outline-none text-sm text-gray-100 placeholder-gray-500"
-                />
-              </div>
-              <div className="max-h-[50vh] overflow-y-auto">
-                {loadingNotes && (
-                  <div className="px-3 py-2 text-xs text-gray-500">
-                    Loading notes…
-                  </div>
-                )}
-                {!loadingNotes && filteredNotes.length === 0 && (
-                  <div className="px-3 py-2 text-xs text-gray-500 italic">
-                    No matches.
-                  </div>
-                )}
-                {filteredNotes.map((n) => (
-                  <button
-                    key={n.path}
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      insertNoteLink(n);
-                    }}
-                    className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
-                  >
-                    <span className="flex-shrink-0 w-5 text-center">
-                      {n.icon || "📄"}
-                    </span>
-                    <span className="truncate">{n.name}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {pendingImageUrl && (
-          <div
-            className="fixed inset-0 z-[400] bg-black/70 flex items-center justify-center p-6"
-            onKeyDown={(e) => {
-              if (e.key === "Escape") resolveImageDelete("cancel");
-            }}
-          >
-            <div className="bg-[#1e2327] border border-[#2a3136] rounded-lg shadow-2xl w-[440px] max-w-[92vw] overflow-hidden">
-              <div className="px-4 py-3 border-b border-[#2a3136] flex items-center gap-2">
-                <AlertTriangle size={14} className="text-amber-400" />
-                <span className="text-sm font-medium text-gray-100">
-                  Delete this photo?
-                </span>
+              {pasteMenuCanEmbed && (
                 <button
-                  onClick={() => resolveImageDelete("cancel")}
-                  className="ml-auto text-gray-500 hover:text-gray-300 cursor-pointer p-0.5"
-                  title="Cancel"
+                  onClick={() => pasteAsLink(pasteMenu.url, "embed")}
+                  className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2 border-t border-[#2a3136]"
                 >
-                  <X size={14} />
+                  <PlayIcon size={13} /> <span>Embed</span>
                 </button>
-              </div>
+              )}
+            </div>
+          )}
 
-              <div className="p-4">
-                <div className="w-full h-44 bg-[#0f1315] rounded-md overflow-hidden flex items-center justify-center mb-4">
-                  <img
-                    src={pendingImageUrl}
-                    alt=""
-                    className="max-w-full max-h-full object-contain"
-                    onError={(e) => {
-                      (e.currentTarget as HTMLImageElement).style.display = "none";
+          {linkPickerOpen && (
+            <div
+              className="fixed inset-0 z-[300] bg-black/60 flex items-start justify-center pt-24"
+              onClick={closeLinkPicker}
+            >
+              <div
+                className="bg-[#1e2327] border border-[#2a3136] rounded-lg shadow-2xl w-[480px] max-w-[92vw] flex flex-col overflow-hidden"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="px-3 py-2 border-b border-[#2a3136] bg-[#1a1e21]">
+                  <input
+                    autoFocus
+                    type="text"
+                    value={linkQuery}
+                    onChange={(e) => setLinkQuery(e.target.value)}
+                    placeholder="Search notes…"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && filteredNotes[0]) {
+                        insertNoteLink(filteredNotes[0]);
+                      } else if (e.key === "Escape") {
+                        closeLinkPicker();
+                      }
                     }}
+                    className="w-full bg-transparent border-none outline-none text-sm text-gray-100 placeholder-gray-500"
                   />
                 </div>
-
-                {pendingImageDelete.length > 1 && (
-                  <p className="text-[11px] text-gray-500 mb-2">
-                    1 of {pendingImageDelete.length} pending
-                  </p>
-                )}
-
-                <p className="text-xs text-gray-400 leading-relaxed">
-                  The image was removed from this note.
-                  {canDeleteFromDisk
-                    ? " Do you also want to delete the file from disk?"
-                    : " This image isn't stored in this note's folder, so it can only be removed from the note."}
-                </p>
-
-                <div className="flex flex-col gap-2 mt-4">
-                  <button
-                    onClick={() => resolveImageDelete("cancel")}
-                    className="w-full text-xs px-3 py-2 rounded text-gray-300 hover:text-gray-100 hover:bg-[#2a3136] border border-[#2a3136] transition-colors cursor-pointer"
-                  >
-                    Cancel — keep image in note
-                  </button>
-                  <button
-                    onClick={() => resolveImageDelete("note-only")}
-                    className="w-full text-xs px-3 py-2 rounded bg-[#2a3136] hover:bg-[#30363d] text-gray-100 transition-colors cursor-pointer"
-                  >
-                    Remove from note, keep file
-                  </button>
-                  {canDeleteFromDisk && (
-                    <button
-                      onClick={() => resolveImageDelete("note-and-disk")}
-                      className="w-full flex items-center justify-center gap-1.5 text-xs px-3 py-2 rounded bg-red-600/90 hover:bg-red-500 text-white transition-colors cursor-pointer"
-                    >
-                      <Trash2 size={12} />
-                      Remove from note &amp; move file to trash
-                    </button>
+                <div className="max-h-[50vh] overflow-y-auto">
+                  {loadingNotes && (
+                    <div className="px-3 py-2 text-xs text-gray-500">
+                      Loading notes…
+                    </div>
                   )}
+                  {!loadingNotes && filteredNotes.length === 0 && (
+                    <div className="px-3 py-2 text-xs text-gray-500 italic">
+                      No matches.
+                    </div>
+                  )}
+                  {filteredNotes.map((n) => (
+                    <button
+                      key={n.path}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        insertNoteLink(n);
+                      }}
+                      className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
+                    >
+                      <span className="flex-shrink-0 w-5 text-center">
+                        {n.icon || "📄"}
+                      </span>
+                      <span className="truncate">{n.name}</span>
+                    </button>
+                  ))}
                 </div>
               </div>
             </div>
-          </div>
-        )}
-      </div>
+          )}
+
+          {pendingImageUrl && (
+            <div
+              className="fixed inset-0 z-[400] bg-black/70 flex items-center justify-center p-6"
+              onKeyDown={(e) => {
+                if (e.key === "Escape") resolveImageDelete("cancel");
+              }}
+            >
+              <div className="bg-[#1e2327] border border-[#2a3136] rounded-lg shadow-2xl w-[440px] max-w-[92vw] overflow-hidden">
+                <div className="px-4 py-3 border-b border-[#2a3136] flex items-center gap-2">
+                  <AlertTriangle size={14} className="text-amber-400" />
+                  <span className="text-sm font-medium text-gray-100">
+                    Delete this photo?
+                  </span>
+                  <button
+                    onClick={() => resolveImageDelete("cancel")}
+                    className="ml-auto text-gray-500 hover:text-gray-300 cursor-pointer p-0.5"
+                    title="Cancel"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+
+                <div className="p-4">
+                  <div className="w-full h-44 bg-[#0f1315] rounded-md overflow-hidden flex items-center justify-center mb-4">
+                    <img
+                      src={pendingImageUrl}
+                      alt=""
+                      className="max-w-full max-h-full object-contain"
+                      onError={(e) => {
+                        (e.currentTarget as HTMLImageElement).style.display = "none";
+                      }}
+                    />
+                  </div>
+
+                  {pendingImageDelete.length > 1 && (
+                    <p className="text-[11px] text-gray-500 mb-2">
+                      1 of {pendingImageDelete.length} pending
+                    </p>
+                  )}
+
+                  <p className="text-xs text-gray-400 leading-relaxed">
+                    The image was removed from this note.
+                    {canDeleteFromDisk
+                      ? " Do you also want to delete the file from disk?"
+                      : " This image isn't stored in this note's folder, so it can only be removed from the note."}
+                  </p>
+
+                  <div className="flex flex-col gap-2 mt-4">
+                    <button
+                      onClick={() => resolveImageDelete("cancel")}
+                      className="w-full text-xs px-3 py-2 rounded text-gray-300 hover:text-gray-100 hover:bg-[#2a3136] border border-[#2a3136] transition-colors cursor-pointer"
+                    >
+                      Cancel — keep image in note
+                    </button>
+                    <button
+                      onClick={() => resolveImageDelete("note-only")}
+                      className="w-full text-xs px-3 py-2 rounded bg-[#2a3136] hover:bg-[#30363d] text-gray-100 transition-colors cursor-pointer"
+                    >
+                      Remove from note, keep file
+                    </button>
+                    {canDeleteFromDisk && (
+                      <button
+                        onClick={() => resolveImageDelete("note-and-disk")}
+                        className="w-full flex items-center justify-center gap-1.5 text-xs px-3 py-2 rounded bg-red-600/90 hover:bg-red-500 text-white transition-colors cursor-pointer"
+                      >
+                        <Trash2 size={12} />
+                        Remove from note &amp; move file to trash
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </NoteContext.Provider>
     );
   }
 );

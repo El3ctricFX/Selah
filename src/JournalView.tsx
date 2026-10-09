@@ -5,18 +5,14 @@ import {
   Image as ImageIcon, Smile, X, Palette, Trash2, Type as TypeIcon,
   Sparkles, Sliders, Move, Columns2, Columns3, Columns4, Square,
   GripHorizontal, ArrowUp, ArrowDown, Minus, Upload, Link as LinkIcon,
-  List, Code2, Copy, Plus, Check, Download, FileImage, FileText as FileTextIcon,
-  Maximize2, Minimize2, LayoutGrid, Loader2, AlertTriangle,
-  ZoomIn, ZoomOut,
+  List, Code2, Copy, Plus, Check, Maximize2, Minimize2, LayoutGrid,
 } from "lucide-react";
 import {
-  mkdir, exists, rename as renameFs, readDir, readTextFile, writeFile, readFile,
+  mkdir, exists, rename as renameFs, readDir, readTextFile, writeFile,
 } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import { open, save } from "@tauri-apps/plugin-dialog";
-import { toCanvas } from "html-to-image";
-import jsPDF from "jspdf";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import EmojiPicker, { Theme, EmojiStyle } from "emoji-picker-react";
 import NoteBody, { type NoteBodyHandle } from "./NoteBody";
 import JournalTimeline from "./JournalTimeline";
@@ -24,7 +20,7 @@ import PhotoLightbox from "./PhotoLightbox";
 import { useNoteMode } from "./useNoteMode";
 import { useModal } from "./Modal";
 import { parseNoteFile, type Frontmatter } from "./noteFormat";
-import { saveImageToNoteAssets, assetUrlToAbsolutePath } from "./imageAssets";
+import { saveImageToNoteAssets } from "./imageAssets";
 
 interface JournalViewProps {
   vaultPath: string;
@@ -34,28 +30,6 @@ interface JournalViewProps {
   focusMode?: boolean;
   onToggleFocus?: () => void;
   onOpenNoteByPath?: (path: string) => void;
-}
-
-const TRANSPARENT_PX =
-  "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
-
-const EXPORT_WIDTH_PRESETS = [900, 1200, 1600, 2200, 3000];
-
-const CANVAS_MAX_DIM = 16000;
-const CANVAS_MAX_AREA = 16_000_000;
-
-function computeEffectiveRatio(
-  cssWidth: number,
-  cssHeight: number,
-  requestedRatio: number
-): number {
-  let r = requestedRatio;
-  if (r <= 0 || cssWidth <= 0 || cssHeight <= 0) return r;
-  const maxDim = Math.max(cssWidth * r, cssHeight * r);
-  if (maxDim > CANVAS_MAX_DIM) r *= CANVAS_MAX_DIM / maxDim;
-  const area = cssWidth * r * cssHeight * r;
-  if (area > CANVAS_MAX_AREA) r *= Math.sqrt(CANVAS_MAX_AREA / area);
-  return Math.max(0.05, r);
 }
 
 function pad(n: number) { return n.toString().padStart(2, "0"); }
@@ -83,19 +57,6 @@ function resolveCoverUrl(value: string): string {
   if (!value) return "";
   if (/^(https?:|data:|blob:)/i.test(value)) return value;
   try { return convertFileSrc(value); } catch { return value; }
-}
-
-function mimeForExt(ext: string): string {
-  switch (ext.toLowerCase()) {
-    case "jpg":
-    case "jpeg": return "image/jpeg";
-    case "webp": return "image/webp";
-    case "gif":  return "image/gif";
-    case "svg":  return "image/svg+xml";
-    case "avif": return "image/avif";
-    case "bmp":  return "image/bmp";
-    default:     return "image/png";
-  }
 }
 
 const COVER_GRADIENTS: { id: string; label: string; value: string }[] = [
@@ -149,160 +110,6 @@ function stringToFmValue(s: string): unknown {
   return s;
 }
 
-function bytesToDataUrl(bytes: Uint8Array, mime: string): string {
-  let binary = "";
-  const CHUNK = 0x8000;
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    binary += String.fromCharCode.apply(
-      null,
-      Array.from(bytes.subarray(i, i + CHUNK))
-    );
-  }
-  return `data:${mime};base64,${btoa(binary)}`;
-}
-
-function waitForImageReady(img: HTMLImageElement): Promise<void> {
-  return new Promise((resolve) => {
-    if (img.complete && img.naturalWidth > 0) return resolve();
-    let done = false;
-    const finish = () => {
-      if (done) return;
-      done = true;
-      img.removeEventListener("load", finish);
-      img.removeEventListener("error", finish);
-      resolve();
-    };
-    img.addEventListener("load", finish);
-    img.addEventListener("error", finish);
-    setTimeout(finish, 6000);
-  });
-}
-
-// ─── Data-URL cache + inliners ──────────────────────────────────────────────
-// Cache keyed by the *original* src so a preview pass and the real export
-// pass don't re-read the same files off disk.
-const dataUrlCache = new Map<string, string>();
-
-/**
- * Turn any image src (asset://, blob:, file path, http(s), data:) into a
- * data: URL that html-to-image can embed without re-fetching. Returns null
- * if the source could not be resolved.
- */
-async function toDataUrl(src: string): Promise<string | null> {
-  if (!src) return null;
-  if (src.startsWith("data:")) return src;
-
-  const cached = dataUrlCache.get(src);
-  if (cached) return cached;
-
-  // blob:
-  if (src.startsWith("blob:")) {
-    try {
-      const res = await fetch(src);
-      const blob = await res.blob();
-      const d = await new Promise<string>((resolve, reject) => {
-        const r = new FileReader();
-        r.onload = () => resolve(r.result as string);
-        r.onerror = reject;
-        r.readAsDataURL(blob);
-      });
-      dataUrlCache.set(src, d);
-      return d;
-    } catch (e) {
-      console.warn("[export] blob fetch failed:", src, e);
-      return null;
-    }
-  }
-
-  // asset:// / http://asset.localhost/...
-  const assetAbs = assetUrlToAbsolutePath(src);
-  if (assetAbs) {
-    try {
-      const bytes = await readFile(assetAbs);
-      const ext = assetAbs.split(".").pop() || "png";
-      const d = bytesToDataUrl(bytes, mimeForExt(ext));
-      dataUrlCache.set(src, d);
-      return d;
-    } catch (e) {
-      console.warn("[export] readFile (asset) failed:", assetAbs, e);
-    }
-  }
-
-  // Absolute filesystem path
-  if (/^([a-zA-Z]:[\\/]|\/)/.test(src)) {
-    try {
-      const bytes = await readFile(src);
-      const ext = src.split(".").pop() || "png";
-      const d = bytesToDataUrl(bytes, mimeForExt(ext));
-      dataUrlCache.set(src, d);
-      return d;
-    } catch (e) {
-      console.warn("[export] readFile failed:", src, e);
-    }
-  }
-
-  // http(s) — route through the Rust command so CORS doesn't bite.
-  if (/^https?:\/\//i.test(src)) {
-    try {
-      const d = await invoke<string>("fetch_image_data_url", { url: src });
-      if (d && d.startsWith("data:")) {
-        dataUrlCache.set(src, d);
-        return d;
-      }
-    } catch (e) {
-      console.warn("[export] remote fetch failed:", src, e);
-    }
-  }
-
-  return null;
-}
-
-/**
- * Fallback for when the file-based inliner fails: draw the already-loaded
- * <img> to a canvas and export it as a PNG data URL. This works because
- * the browser has the decoded pixels in memory; we don't need to re-read
- * the file from disk.
- *
- * Fails (with a SecurityError) only if the image is cross-origin AND the
- * server doesn't send CORS headers.
- */
-async function imgToDataUrlViaCanvas(
-  img: HTMLImageElement
-): Promise<string | null> {
-  try {
-    if (!img.complete || img.naturalWidth === 0) {
-      await waitForImageReady(img);
-    }
-    if (img.naturalWidth === 0 || img.naturalHeight === 0) {
-      console.warn("[export] canvas fallback: zero natural dimensions", img.src);
-      return null;
-    }
-    const canvas = document.createElement("canvas");
-    canvas.width = img.naturalWidth;
-    canvas.height = img.naturalHeight;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return null;
-    ctx.drawImage(img, 0, 0);
-    const url = canvas.toDataURL("image/png");
-    dataUrlCache.set(img.src, url);
-    return url;
-  } catch (e) {
-    console.warn("[export] canvas fallback failed (likely CORS):", img.src, e);
-    return null;
-  }
-}
-
-interface RenderResult {
-  canvas: HTMLCanvasElement;
-  cssWidth: number;
-  cssHeight: number;
-  outputWidth: number;
-  outputHeight: number;
-  requestedRatio: number;
-  effectiveRatio: number;
-  capped: boolean;
-}
-
 export default function JournalView({
   vaultPath,
   journalDir,
@@ -325,7 +132,6 @@ export default function JournalView({
   const { mode: noteMode, toggle: toggleNoteMode } = useNoteMode();
   const { modal, confirmAsync } = useModal();
   const noteBodyRef = useRef<NoteBodyHandle>(null);
-  const contentRef = useRef<HTMLDivElement>(null);
 
   const [icon, setIcon] = useState("");
   const [showHeaderIcon, setShowHeaderIcon] = useState(true);
@@ -378,21 +184,9 @@ export default function JournalView({
     { mx: number; my: number; px: number; py: number } | null
   >(null);
 
-  const [exportDialogOpen, setExportDialogOpen] = useState(false);
-  const [exportTargetWidth, setExportTargetWidth] = useState(1200);
-  const [exportCustomWidth, setExportCustomWidth] = useState("");
-  const [exportFormat, setExportFormat] = useState<"png" | "pdf">("png");
-  const [exportFilename, setExportFilename] = useState("");
-  const [exportPreviewUrl, setExportPreviewUrl] = useState<string | null>(null);
-  const [exportResult, setExportResult] = useState<RenderResult | null>(null);
-  const [exportPhase, setExportPhase] = useState<"idle" | "preview" | "exporting">("idle");
-  const [exportError, setExportError] = useState<string | null>(null);
-  const [previewZoom, setPreviewZoom] = useState(0);
-
   const iconMenuRef = useRef<HTMLDivElement>(null);
   const titleMenuRef = useRef<HTMLDivElement>(null);
   const widthMenuRef = useRef<HTMLButtonElement>(null);
-  const previewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const year = date.getFullYear();
   const month = date.getMonth();
@@ -417,10 +211,8 @@ export default function JournalView({
     (iconAnchor === "in" && showHeaderIcon && (icon || noteMode === "edit")) ||
     (titleAnchor === "in" && (title || noteMode === "edit"));
 
-  const exporting = exportPhase !== "idle";
-
   const showCoverStrip =
-    hasCover || hasInZoneContent || (noteMode === "edit" && !exporting);
+    hasCover || hasInZoneContent || noteMode === "edit";
 
   const coverStripHeight = hasCover ? "h-56" : hasInZoneContent ? "h-32" : "h-10";
 
@@ -439,8 +231,6 @@ export default function JournalView({
     setWidthMenuOpen(false); setCoverUrlDraft("");
     setIconMenu(null); setTitleMenu(null); setDragStart(null);
     setPropertiesOpen(false); setSourceOpen(false); setSourceDraft("");
-    setExportDialogOpen(false); setExportPreviewUrl(null);
-    setExportResult(null); setExportError(null); setExportPhase("idle");
   }, [currentPath]);
 
   useEffect(() => {
@@ -504,17 +294,15 @@ export default function JournalView({
   }, [coverPickerOpen]);
 
   useEffect(() => {
-    if (!propertiesOpen && !sourceOpen && !exportDialogOpen) return;
+    if (!propertiesOpen && !sourceOpen) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      if (exportPhase === "exporting") return;
       if (propertiesOpen) setPropertiesOpen(false);
       if (sourceOpen) setSourceOpen(false);
-      if (exportDialogOpen) setExportDialogOpen(false);
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [propertiesOpen, sourceOpen, exportDialogOpen, exportPhase]);
+  }, [propertiesOpen, sourceOpen]);
 
   useEffect(() => {
     if (!iconMenu) return;
@@ -563,8 +351,9 @@ export default function JournalView({
     let mounted = true;
     (async () => {
       const monthDir = await join(journalDir, String(year), pad(month + 1));
-      const dPath = await join(monthDir, `${dayName}.note`);
-      const mPath = await join(monthDir, `_${year}-${pad(month + 1)}-Month.note`);
+      const dPath = await join(monthDir, `${dayName}.selah`);
+      const mPath = await join(monthDir, `_${year}-${pad(month + 1)}-Month.selah`);
+
       try { await mkdir(monthDir, { recursive: true }); } catch (e) {
         console.error("[journal] could not create month dir:", monthDir, e);
       }
@@ -574,7 +363,7 @@ export default function JournalView({
           for (const entry of entries) {
             const n = entry.name;
             if (!n || !/\.md$/.test(n) || !/^_.+-Month\.md$/.test(n)) continue;
-            const np = await join(monthDir, n.replace(/\.md$/, ".note"));
+            const np = await join(monthDir, n.replace(/\.md$/, ".selah"));
             try {
               if (!(await exists(np))) await renameFs(await join(monthDir, n), np);
             } catch {}
@@ -615,7 +404,7 @@ export default function JournalView({
         active?.closest(".ProseMirror") ||
         active?.tagName === "INPUT" || active?.tagName === "TEXTAREA"
       ) return;
-      if (propertiesOpen || sourceOpen || coverPickerOpen || exportDialogOpen || exporting) return;
+      if (propertiesOpen || sourceOpen || coverPickerOpen) return;
       if (e.key === "ArrowLeft") { e.preventDefault(); shiftDay(-1); }
       else if (e.key === "ArrowRight") { e.preventDefault(); shiftDay(1); }
       else if (e.key === "ArrowUp") { e.preventDefault(); shiftMonth(-1); }
@@ -624,7 +413,7 @@ export default function JournalView({
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [date, viewMode, propertiesOpen, sourceOpen, coverPickerOpen, exportDialogOpen, exporting, lightbox]);
+  }, [date, viewMode, propertiesOpen, sourceOpen, coverPickerOpen, lightbox]);
 
   const openProperties = async () => {
     if (!currentPath) return;
@@ -710,353 +499,6 @@ export default function JournalView({
   };
 
   const revertSource = () => setSourceDraft(rawSource);
-
-  // ======================================================================
-  //  EXPORT
-  //
-  //  Strategy:
-  //   1. Clone the content into an off-screen wrapper FIRST. Never mutate
-  //      the live DOM — otherwise a failed inline leaves the on-screen
-  //      note with a transparent pixel and the user has to refresh.
-  //   2. Inline every <img> src *inside the clone* as data URLs. Try the
-  //      file-based inliner first; if it fails, fall back to grabbing the
-  //      pixels from the already-loaded live <img> via a <canvas>. This
-  //      covers asset:// paths, restricted readFile permissions, and any
-  //      other case where reading the source is impossible but the browser
-  //      has the image in memory.
-  //   3. Inline the cover background the same way.
-  //   4. Do NOT pass imagePlaceholder — it silently swaps any image
-  //      html-to-image can't re-fetch for a transparent 1×1 GIF.
-  //   5. Do NOT pass width/height + pixelRatio together — html-to-image
-  //      multiplies them, producing a bitmap scaled twice.
-  // ======================================================================
-
-  const relaxWidthConstraints = (root: HTMLElement, targetWidth: number) => {
-    const all = Array.from(root.querySelectorAll<HTMLElement>("*"));
-    all.push(root);
-    let cleared = 0;
-    for (const el of all) {
-      const cs = getComputedStyle(el);
-      const mw = cs.maxWidth;
-      if (!mw || mw === "none" || !mw.endsWith("px")) continue;
-      const px = parseFloat(mw);
-      if (!Number.isFinite(px) || px <= 0) continue;
-      if (px < targetWidth * 0.92) {
-        el.style.maxWidth = "none";
-        cleared++;
-      }
-    }
-    console.log("[export] cleared", cleared, "max-width constraint(s)");
-  };
-
-  const renderNoteToCanvas = async (
-    cssWidth: number,
-    requestedPixelRatio: number
-  ): Promise<RenderResult | null> => {
-    const el = contentRef.current;
-    if (!el) {
-      console.warn("[export] contentRef is null");
-      return null;
-    }
-
-    // ---- 1. Clone into an off-screen wrapper. Live DOM is untouched. ----
-    const wrapper = document.createElement("div");
-    wrapper.style.cssText = `
-      position: fixed; top: 0; left: 0;
-      z-index: -2147483648;
-      width: ${cssWidth}px;
-      background: #0f1315;
-      pointer-events: none;
-      overflow: hidden;
-    `;
-
-    const clone = el.cloneNode(true) as HTMLElement;
-    clone.style.cssText = `
-      position: relative !important;
-      top: 0 !important; left: 0 !important;
-      right: auto !important; bottom: auto !important;
-      width: ${cssWidth}px !important;
-      min-width: ${cssWidth}px !important;
-      max-width: ${cssWidth}px !important;
-      height: auto !important;
-      min-height: 0 !important;
-      max-height: none !important;
-      overflow: visible !important;
-      flex: none !important;
-      align-self: auto !important;
-      margin: 0 !important;
-      padding: 0 !important;
-      background: #0f1315 !important;
-      transform: none !important;
-    `;
-
-    wrapper.appendChild(clone);
-    document.body.appendChild(wrapper);
-
-    try {
-      // Two frames so the clone's initial layout settles.
-      await new Promise<void>((r) =>
-        requestAnimationFrame(() => requestAnimationFrame(() => r()))
-      );
-
-      // ---- 2. Relax inner width constraints so content actually reflows. ----
-      relaxWidthConstraints(clone, cssWidth);
-
-      await new Promise<void>((r) =>
-        requestAnimationFrame(() => requestAnimationFrame(() => r()))
-      );
-
-      // ---- 3. Inline <img> srcs INSIDE THE CLONE. ----
-      //
-      // We have two ways to get a data URL for each image:
-      //   a. toDataUrl(src) — reads the file from disk. Fast, but requires
-      //      the path to resolve and readFile to be permitted.
-      //   b. imgToDataUrlViaCanvas(origImg) — grabs pixels from the img
-      //      that is already rendered in the live DOM. Slower, but immune
-      //      to path/permission issues.
-      //
-      // Try (a) first, fall back to (b), then finally TRANSPARENT_PX so the
-      // layout is preserved even if both fail.
-      const originalImgs = Array.from(
-        el.querySelectorAll("img")
-      ) as HTMLImageElement[];
-      const cloneImgs = Array.from(
-        clone.querySelectorAll("img")
-      ) as HTMLImageElement[];
-
-      const inlineResults = await Promise.all(
-        cloneImgs.map(async (cloneImg, i) => {
-          const src = cloneImg.getAttribute("src") || "";
-
-          let dataUrl = await toDataUrl(src);
-          let via: "read" | "canvas" | "none" = dataUrl ? "read" : "none";
-
-          if (!dataUrl) {
-            const origImg = originalImgs[i];
-            if (origImg && (origImg.getAttribute("src") || "") === src) {
-              dataUrl = await imgToDataUrlViaCanvas(origImg);
-              if (dataUrl) via = "canvas";
-            } else {
-              console.warn(
-                "[export] no matching original <img> for clone index", i, src
-              );
-            }
-          }
-
-          // Strip attributes that stop html-to-image from waiting on
-          // decode (lazy) or that point at stale srcset entries.
-          cloneImg.removeAttribute("srcset");
-          cloneImg.removeAttribute("sizes");
-          cloneImg.removeAttribute("loading");
-          cloneImg.setAttribute("src", dataUrl || TRANSPARENT_PX);
-          return { src, ok: !!dataUrl, via };
-        })
-      );
-
-      const inlined = inlineResults.filter((r) => r.ok).length;
-      console.log(
-        "[export] inlined", inlined, "/", cloneImgs.length, "image(s)"
-      );
-      for (const r of inlineResults) {
-        if (r.ok) {
-          console.log("[export]   ok  [", r.via, "]", r.src);
-        } else {
-          console.warn("[export]   FAIL", r.src);
-        }
-      }
-
-      await Promise.all(cloneImgs.map(waitForImageReady));
-
-      // ---- 4. Inline the cover background INSIDE THE CLONE. ----
-      if (coverType === "image" && coverValue) {
-        const coverEl = clone.querySelector(
-          "[data-cover-layer]"
-        ) as HTMLElement | null;
-        if (!coverEl) {
-          console.warn("[export] [data-cover-layer] not found in clone");
-        } else {
-          let dataUrl = await toDataUrl(coverValue);
-
-          // Fallback: let the browser fetch it (works for http(s) even
-          // without the Rust command, and for asset:// in some configs).
-          if (!dataUrl) {
-            try {
-              console.log("[export] cover: trying browser fetch fallback");
-              const res = await fetch(resolveCoverUrl(coverValue));
-              const blob = await res.blob();
-              dataUrl = await new Promise<string>((resolve, reject) => {
-                const r = new FileReader();
-                r.onload = () => resolve(r.result as string);
-                r.onerror = reject;
-                r.readAsDataURL(blob);
-              });
-            } catch (e) {
-              console.warn("[export] cover browser fetch also failed:", e);
-            }
-          }
-
-          if (dataUrl) {
-            await new Promise<void>((resolve) => {
-              const probe = new Image();
-              probe.onload = () => resolve();
-              probe.onerror = () => resolve();
-              probe.src = dataUrl!;
-            });
-            coverEl.style.backgroundImage = `url("${dataUrl}")`;
-            console.log("[export] cover inlined ok");
-          } else {
-            console.warn("[export] cover could not be inlined:", coverValue);
-          }
-        }
-      }
-
-      // One more frame for the reflow/inline to settle.
-      await new Promise<void>((r) =>
-        requestAnimationFrame(() => requestAnimationFrame(() => r()))
-      );
-
-      const cssHeight = clone.scrollHeight;
-      const effectiveRatio = computeEffectiveRatio(
-        cssWidth, cssHeight, requestedPixelRatio
-      );
-      const outputWidth = Math.round(cssWidth * effectiveRatio);
-      const outputHeight = Math.round(cssHeight * effectiveRatio);
-      const capped = effectiveRatio < requestedPixelRatio * 0.995;
-
-      console.log(
-        "[export] css", cssWidth, "×", cssHeight,
-        "· ratio", requestedPixelRatio, "→", effectiveRatio.toFixed(3),
-        "· output", outputWidth, "×", outputHeight,
-        capped ? "(capped)" : ""
-      );
-
-      // ---- 5. Render. Only pixelRatio scales. No width/height, no
-      //         imagePlaceholder — we want failures to be loud, not
-      //         silently transparent. ----
-      const canvas = await toCanvas(clone, {
-        backgroundColor: "#0f1315",
-        pixelRatio: effectiveRatio,
-        cacheBust: false,
-      });
-
-      return {
-        canvas,
-        cssWidth,
-        cssHeight,
-        outputWidth,
-        outputHeight,
-        requestedRatio: requestedPixelRatio,
-        effectiveRatio,
-        capped,
-      };
-    } finally {
-      try { document.body.removeChild(wrapper); } catch {}
-    }
-  };
-
-  const openExportDialog = () => {
-    setExportFormat("png");
-    setExportFilename(dayName);
-    setExportTargetWidth(1200);
-    setExportCustomWidth("");
-    setExportPreviewUrl(null);
-    setExportResult(null);
-    setExportError(null);
-    setPreviewZoom(0);
-    setExportDialogOpen(true);
-  };
-
-  // ---------- Live preview ----------
-  useEffect(() => {
-    if (!exportDialogOpen) return;
-    let cancelled = false;
-
-    if (previewTimerRef.current) clearTimeout(previewTimerRef.current);
-    previewTimerRef.current = setTimeout(async () => {
-      if (cancelled) return;
-      setExportPhase("preview");
-      setExportError(null);
-
-      try {
-        const result = await renderNoteToCanvas(exportTargetWidth, 1);
-        if (cancelled) return;
-        if (!result) { setExportError("Could not render the preview."); return; }
-        const url = result.canvas.toDataURL("image/png");
-        if (cancelled) return;
-        setExportPreviewUrl(url);
-        setExportResult(result);
-        setPreviewZoom(0);
-      } catch (e: any) {
-        if (cancelled) return;
-        console.error("[export] preview failed:", e);
-        setExportError(e?.message ?? String(e));
-      } finally {
-        if (!cancelled) setExportPhase("idle");
-      }
-    }, 220);
-
-    return () => {
-      cancelled = true;
-      if (previewTimerRef.current) {
-        clearTimeout(previewTimerRef.current);
-        previewTimerRef.current = null;
-      }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [exportDialogOpen, exportTargetWidth, currentPath, coverType, coverValue]);
-
-  const runExport = async () => {
-    if (!exportFilename.trim() || !currentPath) return;
-    setExportError(null);
-    setExportPhase("exporting");
-
-    try {
-      const result = await renderNoteToCanvas(exportTargetWidth, 1);
-      if (!result) { setExportError("Render failed."); return; }
-
-      const { canvas } = result;
-      const safeName =
-        exportFilename.trim().replace(/[\\/:*?"<>|]/g, "-") || dayName;
-
-      if (exportFormat === "png") {
-        const dataUrl = canvas.toDataURL("image/png");
-        const base64 = dataUrl.split(",")[1];
-        const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
-        const target = await save({
-          defaultPath: `${safeName}.png`,
-          filters: [{ name: "PNG Image", extensions: ["png"] }],
-        });
-        if (!target) return;
-        await writeFile(target, bytes);
-      } else {
-        const imgData = canvas.toDataURL("image/png");
-        const A4_W = 595.28;
-        const imgW = A4_W;
-        const imgH = (canvas.height * imgW) / canvas.width;
-        const pdf = new jsPDF({
-          unit: "pt",
-          format: [imgW, imgH],
-          orientation: imgH > imgW ? "portrait" : "landscape",
-          compress: true,
-        });
-        pdf.addImage(imgData, "PNG", 0, 0, imgW, imgH, undefined, "FAST");
-        const pdfBytes = pdf.output("arraybuffer");
-        const target = await save({
-          defaultPath: `${safeName}.pdf`,
-          filters: [{ name: "PDF Document", extensions: ["pdf"] }],
-        });
-        if (!target) return;
-        await writeFile(target, new Uint8Array(pdfBytes));
-      }
-
-      setExportDialogOpen(false);
-    } catch (e: any) {
-      console.error("[export] failed:", e);
-      setExportError(e?.message ?? String(e));
-    } finally {
-      setExportPhase("idle");
-    }
-  };
 
   // ------------------------------------------------------------------
   // CRUD
@@ -1342,23 +784,6 @@ export default function JournalView({
 
   const sourceDirty = sourceDraft !== rawSource;
 
-  const estimate = exportResult
-    ? {
-        w: exportResult.outputWidth,
-        h: exportResult.outputHeight,
-        capped: exportResult.capped,
-        cssW: exportResult.cssWidth,
-        cssH: exportResult.cssHeight,
-      }
-    : null;
-
-  const zoomIn = () => setPreviewZoom((z) => Math.min(4, (z === 0 ? 1 : z) * 1.25));
-  const zoomOut = () => setPreviewZoom((z) => {
-    const next = (z === 0 ? 1 : z) / 1.25;
-    return next <= 0.1 ? 0 : next;
-  });
-  const resetZoom = () => setPreviewZoom(0);
-
   return (
     <div className="w-full h-full flex flex-col overflow-hidden bg-[#0f1315]">
       {modal}
@@ -1469,12 +894,6 @@ export default function JournalView({
                   <Code2 size={15} />
                 </button>
 
-                <button onClick={openExportDialog}
-                  className="flex items-center justify-center w-7 h-7 rounded text-gray-400 hover:text-gray-100 hover:bg-[#1e2327] transition-colors cursor-pointer flex-shrink-0"
-                  title="Export">
-                  <Download size={15} />
-                </button>
-
                 <button onClick={() => openCoverPanel()}
                   className="flex items-center justify-center w-7 h-7 rounded text-gray-400 hover:text-gray-100 hover:bg-[#1e2327] transition-colors cursor-pointer flex-shrink-0"
                   title="Header settings">
@@ -1539,7 +958,7 @@ export default function JournalView({
           <JournalTimeline journalDir={journalDir} onOpenDay={openFromTimeline} />
         </div>
       ) : (
-        <div ref={contentRef} className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto">
           {currentPath && (
             <>
               {hasAboveContent && (
@@ -1577,7 +996,7 @@ export default function JournalView({
                   {renderIconInZone("in")}
                   {renderTitleInZone("in")}
 
-                  {hasCover && noteMode === "edit" && !exporting && (
+                  {hasCover && noteMode === "edit" && (
                     <div className="absolute top-3 right-3 flex items-center gap-1">
                       <button onClick={toggleTextShadow}
                         className={`p-1.5 rounded text-white transition-colors ${
@@ -1599,7 +1018,7 @@ export default function JournalView({
                     </div>
                   )}
 
-                  {!hasCover && noteMode === "edit" && !exporting && (
+                  {!hasCover && noteMode === "edit" && (
                     <div className="absolute bottom-2 left-1/2 -translate-x-1/2">
                       <button onClick={openCoverPanel}
                         className="text-xs text-gray-500 hover:text-gray-300 flex items-center gap-1.5 px-2 py-1 rounded hover:bg-[#1e2327] transition-colors whitespace-nowrap">
@@ -1895,224 +1314,6 @@ export default function JournalView({
                   <SliderRow label="Edge feather" value={coverFeather} min={0} max={40} unit="%" onChange={(v) => updateCoverStyle({ feather: v })} />
                 </div>
               )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ---------- EXPORT DIALOG ---------- */}
-      {exportDialogOpen && (
-        <div className="fixed inset-0 z-[250] bg-black/70 flex items-center justify-center p-6"
-          onClick={() => {
-            if (exportPhase === "exporting") return;
-            setExportDialogOpen(false);
-          }}>
-          <div className="bg-[#1e2327] border border-[#2a3136] rounded-lg shadow-2xl w-[860px] max-w-[96vw] max-h-[92vh] overflow-hidden flex flex-col"
-            onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center gap-2 px-4 py-3 border-b border-[#2a3136] bg-[#1a1e21] flex-shrink-0">
-              <Download size={14} className="text-blue-400" />
-              <span className="text-sm font-medium text-gray-100">Export</span>
-              <button type="button"
-                onClick={() => {
-                  if (exportPhase === "exporting") return;
-                  setExportDialogOpen(false);
-                }}
-                disabled={exportPhase === "exporting"}
-                className="ml-auto text-gray-500 hover:text-gray-300 p-0.5 disabled:opacity-40"
-                title="Close">
-                <X size={14} />
-              </button>
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-5 space-y-5">
-              {/* Preview */}
-              <div>
-                <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-2 flex items-center gap-2">
-                  <span>Preview</span>
-                  {exportPhase === "preview" && (
-                    <span className="text-[10px] text-blue-400 normal-case tracking-normal flex items-center gap-1">
-                      <Loader2 size={10} className="animate-spin" />
-                      updating…
-                    </span>
-                  )}
-                  <span className="ml-auto flex items-center gap-1">
-                    <button type="button" onClick={zoomOut}
-                      className="p-1 rounded text-gray-400 hover:text-gray-100 hover:bg-[#2a3136] transition-colors"
-                      title="Zoom out">
-                      <ZoomOut size={13} />
-                    </button>
-                    <button type="button" onClick={resetZoom}
-                      className="text-[11px] tabular-nums text-gray-400 hover:text-gray-100 px-1.5 py-0.5 rounded hover:bg-[#2a3136] transition-colors normal-case tracking-normal"
-                      title="Fit to pane">
-                      {previewZoom === 0 ? "Fit" : `${Math.round(previewZoom * 100)}%`}
-                    </button>
-                    <button type="button" onClick={zoomIn}
-                      className="p-1 rounded text-gray-400 hover:text-gray-100 hover:bg-[#2a3136] transition-colors"
-                      title="Zoom in">
-                      <ZoomIn size={13} />
-                    </button>
-                  </span>
-                </div>
-                <div className="rounded-md border border-[#2a3136] bg-[#0f1315] overflow-hidden">
-                  <div className="max-h-[460px] overflow-auto p-3 flex justify-center items-start">
-                    {exportPreviewUrl ? (
-                      <img
-                        src={exportPreviewUrl}
-                        alt=""
-                        style={{
-                          width: previewZoom === 0 ? "100%" : `${previewZoom * 100}%`,
-                          maxWidth: previewZoom === 0 ? "100%" : "none",
-                          height: "auto",
-                          maxHeight: "none",
-                          display: "block",
-                          boxShadow: "0 0 0 1px #2a3136",
-                          opacity: exportPhase === "preview" ? 0.6 : 1,
-                          transition: "opacity 150ms",
-                        }}
-                      />
-                    ) : exportPhase === "preview" ? (
-                      <div className="flex items-center gap-3 py-16 text-sm text-gray-400">
-                        <Loader2 size={16} className="animate-spin" />
-                        <span>Rendering preview…</span>
-                      </div>
-                    ) : (
-                      <div className="py-16 text-xs text-gray-500 italic">Preview unavailable</div>
-                    )}
-                  </div>
-                </div>
-                {estimate && (
-                  <div className="text-[10px] text-gray-600 mt-1.5 tabular-nums">
-                    Layout: {estimate.cssW} × {Math.round(estimate.cssH)} px CSS
-                  </div>
-                )}
-              </div>
-
-              {/* Width presets */}
-              <div>
-                <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-2">
-                  Note width — the actual layout width of the exported image
-                </div>
-                <div className="flex flex-wrap gap-1.5 mb-2">
-                  {EXPORT_WIDTH_PRESETS.map((w) => (
-                    <button key={w} type="button"
-                      onClick={() => { setExportTargetWidth(w); setExportCustomWidth(""); }}
-                      className={`px-3 py-1.5 text-xs rounded border transition-colors cursor-pointer tabular-nums ${
-                        exportTargetWidth === w && !exportCustomWidth
-                          ? "bg-blue-600 text-white border-blue-500"
-                          : "bg-[#0f1315] text-gray-300 border-[#2a3136] hover:border-[#3a4147]"
-                      }`}>
-                      {w}px
-                    </button>
-                  ))}
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-[11px] text-gray-500">Custom:</span>
-                  <input type="text" inputMode="numeric" value={exportCustomWidth}
-                    onChange={(e) => {
-                      const raw = e.target.value.replace(/\D/g, "");
-                      setExportCustomWidth(raw);
-                      const n = Number(raw);
-                      if (Number.isFinite(n) && n >= 300 && n <= 6000) {
-                        setExportTargetWidth(n);
-                      }
-                    }}
-                    placeholder="e.g. 1400"
-                    className="w-28 bg-[#0f1315] border border-[#30363d] rounded px-2 py-1 text-xs text-gray-100 outline-none focus:ring-1 focus:ring-blue-500 tabular-nums" />
-                  <span className="text-[11px] text-gray-500">px</span>
-                </div>
-              </div>
-
-              {/* Format */}
-              <div>
-                <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-2">Format</div>
-                <div className="flex gap-1.5">
-                  <button type="button" onClick={() => setExportFormat("png")}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded border transition-colors cursor-pointer ${
-                      exportFormat === "png"
-                        ? "bg-blue-600 text-white border-blue-500"
-                        : "bg-[#0f1315] text-gray-300 border-[#2a3136] hover:border-[#3a4147]"
-                    }`}>
-                    <FileImage size={12} /> PNG
-                  </button>
-                  <button type="button" onClick={() => setExportFormat("pdf")}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded border transition-colors cursor-pointer ${
-                      exportFormat === "pdf"
-                        ? "bg-blue-600 text-white border-blue-500"
-                        : "bg-[#0f1315] text-gray-300 border-[#2a3136] hover:border-[#3a4147]"
-                    }`}>
-                    <FileTextIcon size={12} /> PDF
-                  </button>
-                </div>
-              </div>
-
-              {/* Filename */}
-              <div>
-                <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-2">Filename</div>
-                <div className="flex items-center gap-1.5">
-                  <input type="text" value={exportFilename}
-                    onChange={(e) => setExportFilename(e.target.value)}
-                    className="flex-1 bg-[#0f1315] border border-[#30363d] rounded px-3 py-1.5 text-xs text-gray-100 outline-none focus:ring-1 focus:ring-blue-500" />
-                  <span className="text-[11px] text-gray-500 font-mono">.{exportFormat}</span>
-                </div>
-              </div>
-
-              {estimate && (
-                <div className="text-[11px] text-gray-500">
-                  Output image:{" "}
-                  <span className="text-gray-300 tabular-nums">
-                    {estimate.w} × {estimate.h} px
-                  </span>
-                  {estimate.capped && (
-                    <span className="text-amber-400 ml-2">(clamped by canvas limits)</span>
-                  )}
-                </div>
-              )}
-
-              {estimate && estimate.capped && (
-                <div className="text-[11px] text-amber-400 bg-amber-500/10 border border-amber-500/30 rounded px-3 py-2 leading-relaxed flex items-start gap-2">
-                  <AlertTriangle size={12} className="flex-shrink-0 mt-0.5" />
-                  <div>
-                    <div className="font-medium">Output clamped by canvas size limits.</div>
-                    <div className="text-amber-400/70 mt-0.5">
-                      The browser can't produce a bitmap larger than ~16M pixels
-                      ({CANVAS_MAX_DIM.toLocaleString()}px per side). Try a narrower preset.
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {exportError && (
-                <div className="text-[11px] text-red-300 bg-red-500/10 border border-red-500/30 rounded px-3 py-2 leading-relaxed">
-                  {exportError}
-                </div>
-              )}
-            </div>
-
-            <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-[#2a3136] bg-[#1a1e21] flex-shrink-0">
-              <button type="button" onClick={() => setExportDialogOpen(false)}
-                disabled={exportPhase === "exporting"}
-                className="px-3 py-1.5 text-xs text-gray-400 hover:text-gray-200 hover:bg-[#2a3136] rounded transition-colors disabled:opacity-40">
-                Cancel
-              </button>
-              <button type="button" onClick={runExport}
-                disabled={
-                  exportPhase === "exporting" ||
-                  exportPhase === "preview" ||
-                  !exportFilename.trim()
-                }
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded transition-colors font-medium">
-                {exportPhase === "exporting" ? (
-                  <>
-                    <Loader2 size={12} className="animate-spin" />
-                    <span>Exporting…</span>
-                  </>
-                ) : (
-                  <>
-                    <Download size={12} />
-                    <span>Export {exportFormat.toUpperCase()}</span>
-                  </>
-                )}
-              </button>
             </div>
           </div>
         </div>

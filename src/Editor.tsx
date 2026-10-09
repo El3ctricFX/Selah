@@ -1,19 +1,16 @@
 // src/Editor.tsx
 import { useEffect, useRef, useState } from "react";
-import { rename, readTextFile, readFile, writeFile } from "@tauri-apps/plugin-fs";
+import { rename, readTextFile, writeFile } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { open, save } from "@tauri-apps/plugin-dialog";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   Pencil, BookOpen, Image as ImageIcon, Smile, X, Palette,
   Type as TypeIcon, Sparkles, Sliders, Move, Trash2,
   Columns2, Columns3, Columns4, Square, GripHorizontal,
   ArrowUp, ArrowDown, Minus, Upload, Link as LinkIcon,
   Maximize2, Minimize2, List, Code2, Copy, Check, Plus,
-  Download, FileImage, FileText as FileTextIcon,
 } from "lucide-react";
-import { toCanvas } from "html-to-image";
-import jsPDF from "jspdf";
 import EmojiPicker, { Theme, EmojiStyle } from "emoji-picker-react";
 import NoteBody, { type NoteBodyHandle } from "./NoteBody";
 import PhotoLightbox from "./PhotoLightbox";
@@ -32,13 +29,13 @@ interface EditorProps {
 }
 
 function displayTitle(name: string): string {
-  const ym = name.match(/^_(\d{4})-Year\.(note|md)$/);
+  const ym = name.match(/^_(\d{4})-Year\.(selah|md)$/);
   if (ym) return ym[1];
-  return name.replace(/\.(md|note)$/, "");
+  return name.replace(/\.(selah|md)$/, "");
 }
 
 function isYearNote(name: string): boolean {
-  return /^_\d{4}-Year\.(md|note)$/.test(name);
+  return /^_\d{4}-Year\.(selah|md)$/.test(name);
 }
 
 type Anchor = "above" | "in" | "below";
@@ -47,18 +44,6 @@ function resolveCoverUrl(value: string): string {
   if (!value) return "";
   if (/^(https?:|data:|blob:)/i.test(value)) return value;
   try { return convertFileSrc(value); } catch { return value; }
-}
-
-function mimeForExt(ext: string): string {
-  switch (ext.toLowerCase()) {
-    case "jpg": case "jpeg": return "image/jpeg";
-    case "webp": return "image/webp";
-    case "gif": return "image/gif";
-    case "svg": return "image/svg+xml";
-    case "avif": return "image/avif";
-    case "bmp": return "image/bmp";
-    default: return "image/png";
-  }
 }
 
 const COVER_GRADIENTS = [
@@ -127,7 +112,6 @@ export default function Editor({
   const { mode, toggle } = useNoteMode();
   const { modal, confirmAsync } = useModal();
   const noteBodyRef = useRef<NoteBodyHandle>(null);
-  const contentRef = useRef<HTMLDivElement>(null);
 
   const [icon, setIcon] = useState("");
   const [showHeaderIcon, setShowHeaderIcon] = useState(true);
@@ -171,13 +155,10 @@ export default function Editor({
   const [newPropKey, setNewPropKey] = useState("");
   const [newPropValue, setNewPropValue] = useState("");
   const [copied, setCopied] = useState(false);
-  const [exportMenuOpen, setExportMenuOpen] = useState(false);
-  const [exporting, setExporting] = useState(false);
 
   const iconMenuRef = useRef<HTMLDivElement>(null);
   const titleMenuRef = useRef<HTMLDivElement>(null);
   const widthMenuRef = useRef<HTMLDivElement>(null);
-  const exportMenuRef = useRef<HTMLDivElement>(null);
 
   const isYear = isYearNote(activeNote.name);
   const hasCover = coverType === "color" || coverType === "image";
@@ -213,7 +194,6 @@ export default function Editor({
     setIconPickerOpen(false); setCoverPickerOpen(false); setWidthMenuOpen(false);
     setCoverUrlDraft(""); setIconMenu(null); setTitleMenu(null); setDragStart(null);
     setPropertiesOpen(false); setSourceOpen(false); setSourceDraft("");
-    setExportMenuOpen(false); setExporting(false);
 
     (async () => {
       try {
@@ -327,20 +307,9 @@ export default function Editor({
       if (widthMenuRef.current?.contains(e.target as Node)) return;
       setWidthMenuOpen(false);
     };
-    // Use capture so we see it before any other handler can stop propagation.
     document.addEventListener("mousedown", onDown, true);
     return () => document.removeEventListener("mousedown", onDown, true);
   }, [widthMenuOpen]);
-
-  useEffect(() => {
-    if (!exportMenuOpen) return;
-    const onDown = (e: MouseEvent) => {
-      if (exportMenuRef.current?.contains(e.target as Node)) return;
-      setExportMenuOpen(false);
-    };
-    document.addEventListener("mousedown", onDown, true);
-    return () => document.removeEventListener("mousedown", onDown, true);
-  }, [exportMenuOpen]);
 
   const handleTitleSubmit = async () => {
     if (isYear) { setTitle(displayTitle(activeNote.name)); return; }
@@ -356,8 +325,8 @@ export default function Editor({
       const dirPath = activeNote.path.substring(0, lastSlash + 1);
       const parentFolderName = getParentDir(dirPath).split(/[/\\]/).filter(Boolean).pop();
       const isFolderNote = oldName === parentFolderName;
-      const extMatch = activeNote.name.match(/\.(md|note)$/);
-      const ext = extMatch ? extMatch[0] : ".note";
+      const extMatch = activeNote.name.match(/\.(selah|md)$/);
+      const ext = extMatch ? extMatch[0] : ".selah";
       const oldParentDir = getParentDir(activeNote.path);
 
       if (isFolderNote) {
@@ -479,7 +448,6 @@ export default function Editor({
   };
 
   const applyDocWidth = async (w: DocWidthId) => {
-    console.log("[editor] applyDocWidth", w);
     setDocWidth(w);
     setWidthMenuOpen(false);
     try {
@@ -590,117 +558,6 @@ export default function Editor({
   };
 
   const sourceDirty = sourceDraft !== rawSource;
-
-  const getCoverDataUrl = async (): Promise<string> => {
-    if (coverType !== "image" || !coverValue) return "";
-    if (coverValue.startsWith("data:")) return coverValue;
-    if (/^https?:\/\//i.test(coverValue)) {
-      try {
-        const res = await fetch(coverValue, { mode: "cors" });
-        const blob = await res.blob();
-        return await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result as string);
-          reader.onerror = reject;
-          reader.readAsDataURL(blob);
-        });
-      } catch { return ""; }
-    }
-    try {
-      const bytes = await readFile(coverValue);
-      const ext = coverValue.split(".").pop() || "png";
-      const mime = mimeForExt(ext);
-      let binary = "";
-      const CHUNK = 0x8000;
-      for (let i = 0; i < bytes.length; i += CHUNK) {
-        binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + CHUNK)));
-      }
-      return `data:${mime};base64,${btoa(binary)}`;
-    } catch { return ""; }
-  };
-
-  const captureContent = async (): Promise<HTMLCanvasElement | null> => {
-    if (!contentRef.current) {
-      console.warn("[editor] capture: contentRef is null");
-      return null;
-    }
-    console.log("[editor] capture: start");
-    setExporting(true);
-    await new Promise((r) => setTimeout(r, 80));
-
-    let coverEl: HTMLElement | null = null;
-    let savedBgImage = "";
-
-    if (coverType === "image" && coverValue) {
-      coverEl = contentRef.current.querySelector("[data-cover-layer]") as HTMLElement | null;
-      const dataUrl = await getCoverDataUrl();
-      if (dataUrl && coverEl) {
-        await new Promise<void>((resolve) => {
-          const img = new Image();
-          img.onload = () => resolve();
-          img.onerror = () => resolve();
-          img.src = dataUrl;
-        });
-        savedBgImage = coverEl.style.backgroundImage;
-        coverEl.style.backgroundImage = `url("${dataUrl}")`;
-        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(null))));
-      }
-    }
-
-    try {
-      const canvas = await toCanvas(contentRef.current, { backgroundColor: "#0f1315", pixelRatio: 2, cacheBust: true });
-      console.log("[editor] capture: done", canvas.width, "x", canvas.height);
-      return canvas;
-    } catch (e) {
-      console.error("[editor] capture failed:", e);
-      return null;
-    } finally {
-      if (coverEl) coverEl.style.backgroundImage = savedBgImage;
-      setExporting(false);
-    }
-  };
-
-  const exportPNG = async () => {
-    console.log("[editor] exportPNG clicked");
-    setExportMenuOpen(false);
-    const canvas = await captureContent();
-    if (!canvas) { console.warn("[editor] exportPNG: no canvas"); return; }
-    try {
-      const base64 = canvas.toDataURL("image/png").split(",")[1];
-      const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
-      const base = displayTitle(activeNote.name);
-      const target = await save({ defaultPath: `${base}.png`, filters: [{ name: "PNG Image", extensions: ["png"] }] });
-      if (!target) { console.log("[editor] exportPNG: user cancelled"); return; }
-      await writeFile(target, bytes);
-      console.log("[editor] exportPNG: wrote", target);
-    } catch (e) { console.error("[editor] PNG export failed:", e); }
-  };
-
-  const exportPDF = async () => {
-    console.log("[editor] exportPDF clicked");
-    setExportMenuOpen(false);
-    const canvas = await captureContent();
-    if (!canvas) { console.warn("[editor] exportPDF: no canvas"); return; }
-    try {
-      const imgData = canvas.toDataURL("image/png");
-      const A4_W = 595.28;
-      const imgW = A4_W;
-      const imgH = (canvas.height * imgW) / canvas.width;
-      const pdf = new jsPDF({
-        unit: "pt",
-        format: [imgW, imgH],
-        orientation: imgH > imgW ? "portrait" : "landscape",
-        compress: true,
-      });
-      pdf.addImage(imgData, "PNG", 0, 0, imgW, imgH, undefined, "FAST");
-      const pdfBytes = pdf.output("arraybuffer");
-      const base = displayTitle(activeNote.name);
-      const target = await save({ defaultPath: `${base}.pdf`, filters: [{ name: "PDF Document", extensions: ["pdf"] }] });
-      if (!target) { console.log("[editor] exportPDF: user cancelled"); return; }
-      await writeFile(target, new Uint8Array(pdfBytes));
-      console.log("[editor] exportPDF: wrote", target);
-    } catch (e) { console.error("[editor] PDF export failed:", e); }
-  };
 
   const coverBackground: React.CSSProperties = (() => {
     if (coverType === "color") {
@@ -864,10 +721,7 @@ export default function Editor({
             <button
               type="button"
               onMouseDown={(e) => e.stopPropagation()}
-              onClick={() => {
-                console.log("[editor] width button clicked, menu was", widthMenuOpen);
-                setWidthMenuOpen((o) => !o);
-              }}
+              onClick={() => setWidthMenuOpen((o) => !o)}
               className="flex items-center gap-1.5 px-2 h-8 rounded text-xs text-gray-400 hover:text-gray-100 hover:bg-[#1e2327] transition-colors cursor-pointer"
               title="Document width"
             >
@@ -897,33 +751,6 @@ export default function Editor({
           <button onClick={openSource} className="flex items-center justify-center w-8 h-8 rounded text-gray-400 hover:text-gray-100 hover:bg-[#1e2327] transition-colors cursor-pointer" title="Source">
             <Code2 size={16} />
           </button>
-          <div className="relative" ref={exportMenuRef}>
-            <button
-              type="button"
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={() => {
-                console.log("[editor] export button clicked, menu was", exportMenuOpen, "exporting:", exporting);
-                setExportMenuOpen((o) => !o);
-              }}
-              disabled={exporting}
-              className="flex items-center justify-center w-8 h-8 rounded text-gray-400 hover:text-gray-100 hover:bg-[#1e2327] transition-colors cursor-pointer disabled:opacity-50"
-              title="Export"
-            >
-              <Download size={16} className={exporting ? "animate-pulse" : ""} />
-            </button>
-            {exportMenuOpen && !exporting && (
-              <div className="absolute right-0 top-full mt-1 z-[300] bg-[#1e2327] border border-[#2a3136] rounded-md shadow-xl py-1 w-44">
-                <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-gray-500">Export</div>
-                <button onClick={exportPNG} className="w-full text-left px-3 py-1.5 text-sm text-gray-300 hover:bg-[#2a3136] flex items-center gap-2">
-                  <FileImage size={13} /> <span>Export as PNG</span>
-                </button>
-                <button onClick={exportPDF} className="w-full text-left px-3 py-1.5 text-sm text-gray-300 hover:bg-[#2a3136] flex items-center gap-2">
-                  <FileTextIcon size={13} /> <span>Export as PDF</span>
-                </button>
-              </div>
-            )}
-          </div>
-
           <button onClick={openCoverPanel} className="flex items-center justify-center w-8 h-8 rounded text-gray-400 hover:text-gray-100 hover:bg-[#1e2327] transition-colors cursor-pointer" title="Header settings">
             <Sliders size={16} />
           </button>
@@ -945,7 +772,7 @@ export default function Editor({
         </div>
       )}
 
-      <div ref={contentRef} className="flex-1">
+      <div className="flex-1">
         <div className={`relative w-full ${hasCover ? "h-56" : "h-44"} mb-2`}>
           {hasCover && (
             <>

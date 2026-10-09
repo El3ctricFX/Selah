@@ -41,7 +41,7 @@ modules:
     buildsystem: simple
     build-commands:
       - mkdir -p /app/lib/ffmpeg
-      - ar x selah_0.1.0_amd64.deb
+      - ar x selah_0.1.1_amd64.deb
       - tar -xf data.tar.* -C /app
       - patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2 /app/usr/bin/selah
       - patchelf --remove-rpath /app/usr/bin/selah
@@ -49,4 +49,4 @@ modules:
       - install -Dm644 /app/usr/share/applications/selah.desktop /app/share/applications/io.github.el3ctricfx.selah.desktop
     sources:
       - type: file
-        path: ../src-tauri/target/release/bundle/deb/selah_0.1.0_amd64.deb
+        path: ../src-tauri/target/release/bundle/deb/selah_0.1.1_amd64.deb

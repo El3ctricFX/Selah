@@ -28,7 +28,7 @@ const MONTH_NAMES = [
   "July", "August", "September", "October", "November", "December",
 ];
 
-const DAY_RE = /^([A-Za-z]+)\s+(\d{1,2}),\s*(\d{4})\.(note|md)$/;
+const DAY_RE = /^([A-Za-z]+)\s+(\d{1,2}),\s*(\d{4})\.(selah|md)$/;
 
 const timelineCache = new Map<string, TimelineEntry[]>();
 
@@ -75,8 +75,57 @@ function extractFirstImage(body: string, noteDir: string): string | null {
   return resolveImage(m[1], noteDir);
 }
 
+/**
+ * Reduce a note body to plain prose for the timeline snippet.
+ *
+ * The `:::` block syntax is a multi-line container format. Its opening lines
+ * carry attributes and its bodies contain the real content. Instead of
+ * enumerating every block type, we:
+ *
+ *   1. Extract the human-readable bit from the two self-contained blocks
+ *      that carry one (video caption, bookmark title).
+ *   2. Nuke every remaining `:::` line and its attributes in a single pass,
+ *      regardless of what keyword follows.
+ *   3. Strip standard markdown.
+ *   4. Collapse whitespace.
+ *
+ * The net effect: a note made of two image columns reads as the surrounding
+ * text, not as `::: columns ::: column width="1.34…" :::`.
+ */
 function stripMarkdown(md: string): string {
-  return md
+  let s = md;
+
+  // ── 1. Keep useful text from self-contained blocks ──────────────────────
+  // Video: keep the caption if the attribute exists on the same line.
+  s = s.replace(
+    /:::\s*video\b[^\n]*?\bcaption="([^"]*)"[^\n]*/g,
+    (_m, cap: string) => (cap ? ` ${cap} ` : " ")
+  );
+  // Bookmark: keep the title if the attribute exists on the same line.
+  s = s.replace(
+    /:::\s*bookmark\b[^\n]*?\btitle="([^"]*)"[^\n]*/g,
+    (_m, title: string) => (title ? ` ${title} ` : " ")
+  );
+
+  // ── 2. Remove every remaining `:::` fence line ──────────────────────────
+  // This handles all of:
+  //   ::: columns
+  //   ::: column width="1.34…"
+  //   ::: callout icon="💡" color="gray"
+  //   ::: bookmark mode="bookmark" url="…"
+  //   ::: video src="…" caption="" fileName="…"
+  //   :::                       (bare closer)
+  // The `\w+` matches the keyword, then `(?:="[^"]*")?` matches an optional
+  // unkeyed attribute, then `(?:\s+\w+(?:="[^"]*")?)*` matches any run of
+  // key="value" pairs. Only the fence and its attributes get removed; the
+  // content on subsequent lines is left untouched.
+  s = s.replace(/:::\s*\w+(?:="[^"]*")?(?:\s+\w+(?:="[^"]*")?)*/g, "");
+
+  // ── 3. Anything still matching bare `:::` (weird edge cases) ────────────
+  s = s.replace(/:::/g, "");
+
+  // ── 4. Standard markdown ────────────────────────────────────────────────
+  return s
     .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
     .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
     .replace(/```[\s\S]*?```/g, " ")
@@ -120,7 +169,7 @@ async function parseEntry(
     }
 
     const plain = stripMarkdown(body);
-    const snippet = plain.slice(0, 240);
+    const snippet = plain.slice(0, 420);
     const wordCount = countWords(plain);
 
     return {
@@ -172,7 +221,7 @@ async function loadAllEntries(journalDir: string): Promise<TimelineEntry[]> {
       try {
         const entries = await readDir(monthDirPath);
         files = entries
-          .filter((e) => !e.isDirectory && e.name && /\.(note|md)$/i.test(e.name))
+          .filter((e) => !e.isDirectory && e.name && /\.(selah|md)$/i.test(e.name))
           .map((e) => e.name);
       } catch {
         continue;
@@ -215,6 +264,11 @@ export default function JournalTimeline({ journalDir, onOpenDay }: Props) {
 
   useEffect(() => {
     let mounted = true;
+    // Always re-parse on mount. The parser is pure and files are on disk;
+    // the cost is a handful of small reads. The payoff is that a stale
+    // cache (from an HMR reload during development, or a note edited while
+    // this view was unmounted) can never leave us showing old snippets.
+    invalidateTimelineCache(journalDir);
     (async () => {
       const result = await loadAllEntries(journalDir);
       if (mounted) setEntries(result);
@@ -422,7 +476,7 @@ function JournalCard({
           </div>
         )}
         {entry.snippet ? (
-          <div className="text-xs text-gray-400 leading-relaxed line-clamp-4 flex-1">
+          <div className="text-xs text-gray-400 leading-relaxed line-clamp-5 flex-1">
             {entry.snippet}
           </div>
         ) : (

@@ -173,12 +173,12 @@ async function readSection<T extends { id: string }>(
   const out: WithFile<T>[] = [];
   let failures = 0;
   for (const e of entries) {
-    if (!e.name || !e.name.endsWith(".note")) continue;
+    if (!e.name || !e.name.endsWith(".selah")) continue;
     try {
       const raw = await readTextFile(await join(dir, e.name));
       const parsed = parseAbbaNote(section, raw);
-      if (!parsed.id) parsed.id = e.name.replace(/\.note$/, "");
-      parsed._fileName = e.name.replace(/\.note$/, "");
+      if (!parsed.id) parsed.id = e.name.replace(/\.selah$/, "");
+      parsed._fileName = e.name.replace(/\.selah$/, "");
       out.push(parsed as WithFile<T>);
     } catch (err) {
       failures++;
@@ -186,7 +186,6 @@ async function readSection<T extends { id: string }>(
     }
   }
   if (failures > 0) {
-    // Surface a one-shot banner so the user knows entries are missing.
     try {
       window.dispatchEvent(
         new CustomEvent("abba-read-error", {
@@ -212,7 +211,7 @@ async function writeSectionNote(
   let final = desired;
   if (current !== final) {
     let n = 1;
-    while (await fsExists(subPath(dir, `${final}.note`))) {
+    while (await fsExists(subPath(dir, `${final}.selah`))) {
       final = `${desired}-${n++}`;
       if (n > 500) {
         final = `${desired}-${Date.now()}`;
@@ -222,7 +221,7 @@ async function writeSectionNote(
   }
 
   if (current && current !== final) {
-    const oldPath = subPath(dir, `${current}.note`);
+    const oldPath = subPath(dir, `${current}.selah`);
     try {
       if (await fsExists(oldPath)) await moveToTrash(oldPath);
     } catch (e) {
@@ -230,7 +229,7 @@ async function writeSectionNote(
     }
   }
 
-  const finalPath = subPath(dir, `${final}.note`);
+  const finalPath = subPath(dir, `${final}.selah`);
   await writeTextFile(finalPath, serializeAbbaNote(section, entry));
   entry._fileName = final;
 }
@@ -242,7 +241,7 @@ async function deleteSectionNote(
 ): Promise<void> {
   const dir = sectionDir(abbaDir, section);
   const name = entry._fileName || entry.id;
-  const file = subPath(dir, `${name}.note`);
+  const file = subPath(dir, `${name}.selah`);
   try {
     if (await fsExists(file)) await moveToTrash(file);
   } catch {}
@@ -258,7 +257,7 @@ async function migrateEntryFileName(
   if (!current || current === desired) return;
 
   const dir = sectionDir(abbaDir, section);
-  const currentPath = subPath(dir, `${current}.note`);
+  const currentPath = subPath(dir, `${current}.selah`);
   if (!(await fsExists(currentPath))) {
     entry._fileName = desired;
     return;
@@ -266,7 +265,7 @@ async function migrateEntryFileName(
 
   let final = desired;
   let n = 1;
-  while (await fsExists(subPath(dir, `${final}.note`))) {
+  while (await fsExists(subPath(dir, `${final}.selah`))) {
     final = `${desired}-${n++}`;
     if (n > 500) {
       final = `${desired}-${Date.now()}`;
@@ -275,7 +274,7 @@ async function migrateEntryFileName(
   }
 
   try {
-    await fsRename(currentPath, subPath(dir, `${final}.note`));
+    await fsRename(currentPath, subPath(dir, `${final}.selah`));
     entry._fileName = final;
   } catch (e) {
     console.warn("[abba] migration rename failed:", current, "→", final, e);
@@ -283,13 +282,7 @@ async function migrateEntryFileName(
 }
 
 /**
- * Migrate old `<section>.json` arrays into `<section>/<id>.note` files.
- *
- * Safe against partial migrations: if some entries already exist as `.note`
- * files, we merge the JSON entries with what's on disk (matched by `id`) and
- * only retire the JSON after every entry has been written. Previously the
- * presence of a single stray `.note` was enough to skip the whole migration
- * and trash the JSON, silently losing any entries that hadn't been migrated.
+ * Migrate old `<section>.json` arrays into `<section>/<id>.selah` files.
  */
 async function migrateJsonIfNeeded(abbaDir: string): Promise<void> {
   const specs: [string, AbbaSection][] = [
@@ -325,13 +318,11 @@ async function migrateJsonIfNeeded(abbaDir: string): Promise<void> {
     const dir = sectionDir(abbaDir, section);
     await mkdir(dir, { recursive: true });
 
-    // Collect the ids of any entries already on disk so we only write the
-    // ones that are actually missing. The disk version wins on conflict.
     const existingIds = new Set<string>();
     try {
       const existing = await readDir(dir);
       for (const e of existing) {
-        if (!e.name || !e.name.endsWith(".note")) continue;
+        if (!e.name || !e.name.endsWith(".selah")) continue;
         try {
           const parsed = parseAbbaNote(
             section,
@@ -342,7 +333,7 @@ async function migrateJsonIfNeeded(abbaDir: string): Promise<void> {
       }
     } catch {}
 
-    console.log(`[abba] migrating ${entries.length} ${section} from JSON → .note`);
+    console.log(`[abba] migrating ${entries.length} ${section} from JSON → .selah`);
     let allMigrated = true;
 
     for (const entry of entries) {
@@ -371,7 +362,6 @@ async function migrateJsonIfNeeded(abbaDir: string): Promise<void> {
       }
     }
 
-    // Only retire the JSON once every entry has a corresponding .note.
     if (allMigrated) {
       try {
         await moveToTrash(jsonPath);
@@ -984,12 +974,10 @@ export default function AbbaView({ abbaDir, name, icon }: AbbaViewProps) {
     { scope: AbbaScope; images: string[]; index: number } | null
   >(null);
 
-  // Read-error banner state. Populated when a `.note` file fails to parse.
   const [readErrors, setReadErrors] = useState<
     { section: string; count: number; total: number }[]
   >([]);
 
-  // Optimizer state
   const [optimizeOpen, setOptimizeOpen] = useState(false);
   const [optimizePhase, setOptimizePhase] = useState<
     "scanning" | "results" | "deleting" | "done" | "error"
@@ -1000,10 +988,8 @@ export default function AbbaView({ abbaDir, name, icon }: AbbaViewProps) {
   const [optimizeError, setOptimizeError] = useState<string | null>(null);
   const [optimizeDeletedCount, setOptimizeDeletedCount] = useState(0);
 
-  // Debounced per-note writes
   const writeTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
-  // Refs so the unmount flush can find the current entry for a pending key.
   const sermonsRef = useRef<Sermon[]>([]);
   const prayersRef = useRef<Prayer[]>([]);
   const testimoniesRef = useRef<Testimony[]>([]);
@@ -1052,8 +1038,6 @@ export default function AbbaView({ abbaDir, name, icon }: AbbaViewProps) {
     }
   };
 
-  // Flush any pending debounced writes on unmount so the user's last edit
-  // isn't silently dropped if they switch tabs immediately after typing.
   useEffect(() => {
     return () => {
       for (const [key, t] of Array.from(writeTimers.current.entries())) {
@@ -1072,7 +1056,6 @@ export default function AbbaView({ abbaDir, name, icon }: AbbaViewProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [abbaDir]);
 
-  // Listen for read-error events from readSection.
   useEffect(() => {
     const onErr = (e: Event) => {
       const d = (e as CustomEvent).detail;
@@ -1087,7 +1070,6 @@ export default function AbbaView({ abbaDir, name, icon }: AbbaViewProps) {
     return () => window.removeEventListener("abba-read-error", onErr);
   }, []);
 
-  // ── Load (with JSON migration and filename migration) ──────────────────
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -1181,7 +1163,6 @@ export default function AbbaView({ abbaDir, name, icon }: AbbaViewProps) {
     try { localStorage.setItem(VIEW_MODE_KEY, next); } catch {}
   };
 
-  // ── Commit helpers (diff + per-note write) ──────────────────────────────
   function diffAndWrite<T extends { id: string }>(
     section: AbbaSection,
     prev: T[],
@@ -1219,7 +1200,6 @@ export default function AbbaView({ abbaDir, name, icon }: AbbaViewProps) {
   const commitLinks = (next: AbbaLink[]) =>
     diffAndWrite<AbbaLink>("links", links, next, setLinks);
 
-  // ── File pickers ────────────────────────────────────────────────────────
   const pickAudio = async (): Promise<{ sourcePath: string; name: string } | null> => {
     const picked = await open({
       multiple: false,
@@ -1254,7 +1234,6 @@ export default function AbbaView({ abbaDir, name, icon }: AbbaViewProps) {
     }
   };
 
-  // ── CRUD ────────────────────────────────────────────────────────────────
   const promptNewSermon = () => setNewSermonDate(todayLocalInput());
 
   const confirmNewSermon = () => {
@@ -1398,7 +1377,6 @@ export default function AbbaView({ abbaDir, name, icon }: AbbaViewProps) {
     setTab(next);
   };
 
-  // ── Optimizer ───────────────────────────────────────────────────────────
   const openOptimizer = async () => {
     setOptimizeOpen(true);
     setOptimizePhase("scanning");
@@ -1494,7 +1472,6 @@ export default function AbbaView({ abbaDir, name, icon }: AbbaViewProps) {
           />
         )}
 
-        {/* Read-error banner */}
         {readErrors.length > 0 && (
           <div className="flex-shrink-0 mx-4 mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-300 flex items-start gap-2">
             <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
@@ -1718,7 +1695,6 @@ export default function AbbaView({ abbaDir, name, icon }: AbbaViewProps) {
           )}
         </div>
 
-        {/* Clean up modal */}
         {optimizeOpen && (
           <div
             className="fixed inset-0 z-[220] bg-black/70 flex items-center justify-center p-6"
