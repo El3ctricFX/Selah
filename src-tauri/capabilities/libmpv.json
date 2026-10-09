@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "libmpv",
+  "description": "libmpv permissions — Linux and Windows only, since the plugin is not compiled on macOS",
+  "windows": ["main"],
+  "platforms": ["linux", "windows"],
+  "permissions": [
+    "libmpv:default",
+    "libmpv:allow-command",
+    "libmpv:allow-init",
+    "libmpv:allow-set-property",
+    "libmpv:allow-get-property"
+  ]
+}
