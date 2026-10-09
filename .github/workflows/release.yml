@@ -80,3 +80,70 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+  build-flatpak:
+    name: Build Flatpak
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libmpv-dev \
+            libasound2-dev \
+            libpulse-dev \
+            flatpak \
+            flatpak-builder \
+            appstream \
+            desktop-file-utils \
+            ostree
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build .deb
+        run: npm run tauri build -- --bundles deb
+
+      - name: Build Flatpak bundle
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: selah.flatpak
+          manifest-path: flatpak/io.github.el3ctricfx.selah.yml
+          cache-key: flatpak-builder-${{ github.sha }}
+          runtime-repo: https://dl.flathub.org/repo/flathub.flatpakrepo
+
+      - name: Upload Flatpak to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: selah.flatpak
+          tag_name: ${{ github.ref_name }}
