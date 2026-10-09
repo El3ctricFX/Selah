@@ -364,11 +364,20 @@ pub fn run() {
     #[cfg(target_os = "linux")]
     setup_linux_webkit_env();
 
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
-        .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_libmpv::init())
+        .plugin(tauri_plugin_opener::init());
+
+    // libmpv is only linked in on Linux and Windows. On macOS the crate
+    // isn't compiled at all (see Cargo.toml's target-specific dep), so the
+    // plugin registration has to be gated the same way.
+    #[cfg(not(target_os = "macos"))]
+    {
+        builder = builder.plugin(tauri_plugin_libmpv::init());
+    }
+
+    builder
         .invoke_handler(tauri::generate_handler![
             move_to_trash,
             fetch_link_metadata,

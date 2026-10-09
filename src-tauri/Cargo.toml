@@ -17,7 +17,6 @@ tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-opener = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
-tauri-plugin-libmpv = "0.3.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 trash = "5"
@@ -26,6 +25,13 @@ scraper = "0.20"
 url = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util"] }
 base64 = "0.22"
+
+# libmpv ships a prebuilt binary that doesn't have a macOS build. Gate it
+# behind a target so the macOS job can compile the rest of the app without
+# linking against it. The JS-side MpvPlayer component isn't used on macOS,
+# so nothing in the UI depends on this plugin being present there.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+tauri-plugin-libmpv = "0.3.2"
 
 [profile.release]
 codegen-units = 1
