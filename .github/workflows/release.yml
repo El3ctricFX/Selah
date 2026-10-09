@@ -151,8 +151,10 @@ jobs:
           manifest-path: flatpak/io.github.el3ctricfx.selah.yml
           cache-key: flatpak-builder-${{ github.sha }}
 
-      - name: Upload Flatpak to release
+      - name: Upload Flatpak and setup.sh to release
         uses: softprops/action-gh-release@v2
         with:
-          files: selah.flatpak
+          files: |
+            selah.flatpak
+            setup.sh
           tag_name: ${{ github.ref_name }}
