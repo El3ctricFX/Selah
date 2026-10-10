@@ -136,7 +136,7 @@ interface ColumnSpec {
 }
 
 interface Segment {
-  kind: "md" | "columns" | "callout" | "bookmark" | "video";
+  kind: "md" | "columns" | "callout" | "bookmark" | "video" | "scripture";
   text?: string;
   columns?: ColumnSpec[];
   callout?: { icon: string; color: string; inner: string };
@@ -153,6 +153,10 @@ interface Segment {
     caption: string;
     fileName: string;
   };
+  scripture?: {
+    reference: string;
+    text: string;
+  };
 }
 
 function parseAttrs(line: string): Record<string, string> {
@@ -163,18 +167,37 @@ function parseAttrs(line: string): Record<string, string> {
   return out;
 }
 
+// Attribute escaping for the `:::` block fences.
+//
+// The whole block lives on a single physical line in the .selah file, so any
+// newline inside an attribute value (scripture verse text, video captions,
+// bookmark descriptions…) has to be encoded rather than emitted raw —
+// otherwise it would terminate the line and shred the fence. Historically
+// this replaced `\n` with a literal space, which was lossy: the verse
+// formatting was destroyed the moment the note was saved, and reloading
+// showed flat prose.
+//
+// We now encode newlines as `&#10;` (the HTML numeric reference for LF),
+// which is only five ASCII characters, keeps the whole block on one line,
+// and — because it contains no `"` and no `&` at the point it's written —
+// composes cleanly with the `&` and `"` escaping that runs before it.
+//
+// Decoding order matters. `escAttr` runs `&` → `&amp;` first, so a
+// user-typed literal `&#10;` becomes `&amp;#10;` on disk. The unescape
+// therefore has to run `&#10;` → `\n` BEFORE `&amp;` → `&`, otherwise that
+// escaped literal would be wrongly decoded back into a real newline.
 function unescapeAttr(s: string): string {
   return s
     .replace(/&quot;/g, '"')
-    .replace(/&amp;/g, "&")
-    .replace(/&#10;/g, "\n");
+    .replace(/&#10;/g, "\n")
+    .replace(/&amp;/g, "&");
 }
 
 function escAttr(s: unknown): string {
   return String(s ?? "")
     .replace(/&/g, "&amp;")
     .replace(/"/g, "&quot;")
-    .replace(/\n/g, " ");
+    .replace(/\n/g, "&#10;");
 }
 
 /**
@@ -188,7 +211,7 @@ const NESTED_BLOCK_RE = /^:::\s+(columns|column|callout)\b/;
  * `::: <keyword>` lines for blocks that carry all their data on the opening
  * line and have no body / closer. They never affect nesting depth.
  */
-const SELF_CONTAINED_BLOCK_RE = /^:::\s+(bookmark|video)\b/;
+const SELF_CONTAINED_BLOCK_RE = /^:::\s+(bookmark|video|scripture)\b/;
 
 /**
  * Scan forward from `start` looking for the bare `:::` that closes the block
@@ -196,8 +219,8 @@ const SELF_CONTAINED_BLOCK_RE = /^:::\s+(bookmark|video)\b/;
  * it, bare `:::` lines decrement it, and we return when depth would go below
  * zero (i.e. we found the closer for our block).
  *
- * Self-contained blocks (`::: bookmark`, `::: video`) don't affect depth —
- * they have no body and no closer.
+ * Self-contained blocks (`::: bookmark`, `::: video`, `::: scripture`) don't
+ * affect depth — they have no body and no closer.
  *
  * Returns the lines strictly between the fences (excluding the opening line
  * and the closing `:::`) plus the index just past the closer.
@@ -345,6 +368,23 @@ function splitNoteBody(body: string): Segment[] {
       continue;
     }
 
+    if (trimmed.startsWith("::: scripture")) {
+      flush();
+      const attrs = parseAttrs(trimmed);
+      i++;
+      // Scripture blocks are self-contained — no body, no closer. But be
+      // lenient and skip a bare `:::` if a hand-edited file has one.
+      if (i < lines.length && lines[i].trim() === ":::") i++;
+      out.push({
+        kind: "scripture",
+        scripture: {
+          reference: unescapeAttr(attrs.reference || ""),
+          text: unescapeAttr(attrs.text || ""),
+        },
+      });
+      continue;
+    }
+
     buf.push(lines[i]);
     i++;
   }
@@ -417,6 +457,147 @@ function encodeColumnWidth(raw: unknown): string {
   return String(sanitizeColumnWidth(raw));
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+//  TEXT COLOR PERSISTENCE
+//
+//  Markdown has no syntax for text color, so BlockNote's markdown serializer
+//  silently drops `textColor` styles when saving a note. We work around this
+//  by wrapping colored runs with invisible marker characters before
+//  serialization and expanding them back into styled text nodes after
+//  parsing.
+//
+//  Format: <START><colorName><SEP><text><END>
+//    START = U+E000
+//    SEP   = U+E002
+//    END   = U+E001
+//
+//  These code points live in the Unicode Private Use Area, so markdown
+//  tooling won't escape or trim them, and they're extremely unlikely to
+//  appear in user-authored text.
+//
+//  Colors survive because we encode before handing blocks to
+//  `blocksToMarkdownLossy` and decode right after `tryParseMarkdownToBlocks`.
+//  All other styles (bold, italic, etc.) ride along on the same text node.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const TC_START = "\uE000";
+const TC_SEP = "\uE002";
+const TC_END = "\uE001";
+
+/**
+ * Walk a block's inline content and wrap every text node that carries a
+ * `textColor` style with the marker trio. Non-color styles stay on the node
+ * so the markdown serializer can still see them.
+ */
+function encodeColorsInContent(content: any[]): any[] {
+  const out: any[] = [];
+  for (const node of content) {
+    if (node?.type === "text" && node.styles?.textColor) {
+      const restStyles = { ...node.styles };
+      delete restStyles.textColor;
+      out.push({
+        type: "text",
+        text: `${TC_START}${node.styles.textColor}${TC_SEP}${node.text}${TC_END}`,
+        styles: restStyles,
+      });
+    } else if (node?.type === "link" && Array.isArray(node.content)) {
+      out.push({ ...node, content: encodeColorsInContent(node.content) });
+    } else {
+      out.push(node);
+    }
+  }
+  return out;
+}
+
+function encodeColorsInBlock(block: any): any {
+  const next = { ...block };
+  if (Array.isArray(block.content)) {
+    next.content = encodeColorsInContent(block.content);
+  }
+  if (Array.isArray(block.children)) {
+    next.children = block.children.map(encodeColorsInBlock);
+  }
+  return next;
+}
+
+function encodeColorsInBlocks(blocks: any[]): any[] {
+  return blocks.map(encodeColorsInBlock);
+}
+
+/**
+ * Take a plain string that may contain one or more <START>color<SEP>text<END>
+ * runs and split it into properly styled text nodes. Text outside markers
+ * keeps the base styles.
+ */
+function expandColorMarkers(text: string, baseStyles: any): any[] {
+  const runs: any[] = [];
+  let i = 0;
+  while (i < text.length) {
+    const start = text.indexOf(TC_START, i);
+    if (start === -1) {
+      if (i < text.length) {
+        runs.push({ type: "text", text: text.slice(i), styles: baseStyles });
+      }
+      break;
+    }
+    if (start > i) {
+      runs.push({ type: "text", text: text.slice(i, start), styles: baseStyles });
+    }
+    const sep = text.indexOf(TC_SEP, start);
+    if (sep === -1) {
+      runs.push({ type: "text", text: text.slice(start), styles: baseStyles });
+      break;
+    }
+    const end = text.indexOf(TC_END, sep);
+    if (end === -1) {
+      runs.push({ type: "text", text: text.slice(start), styles: baseStyles });
+      break;
+    }
+    const colorName = text.slice(start + 1, sep);
+    const inner = text.slice(sep + 1, end);
+    runs.push({
+      type: "text",
+      text: inner,
+      styles: { ...baseStyles, textColor: colorName },
+    });
+    i = end + 1;
+  }
+  return runs;
+}
+
+function decodeColorsInContent(content: any[]): any[] {
+  const out: any[] = [];
+  for (const node of content) {
+    if (
+      node?.type === "text" &&
+      typeof node.text === "string" &&
+      node.text.includes(TC_START)
+    ) {
+      out.push(...expandColorMarkers(node.text, node.styles || {}));
+    } else if (node?.type === "link" && Array.isArray(node.content)) {
+      out.push({ ...node, content: decodeColorsInContent(node.content) });
+    } else {
+      out.push(node);
+    }
+  }
+  return out;
+}
+
+function decodeColorsInBlock(block: any): any {
+  const next = { ...block };
+  if (Array.isArray(block.content)) {
+    next.content = decodeColorsInContent(block.content);
+  }
+  if (Array.isArray(block.children)) {
+    next.children = block.children.map(decodeColorsInBlock);
+  }
+  return next;
+}
+
+function decodeColorsInBlocks(blocks: any[]): any[] {
+  return blocks.map(decodeColorsInBlock);
+}
+
 async function parseBodyToBlocks(
   editor: BlockNoteEditor<any, any, any>,
   body: string
@@ -428,7 +609,7 @@ async function parseBodyToBlocks(
     if (seg.kind === "md") {
       if (!seg.text?.trim()) continue;
       const parsed = await editor.tryParseMarkdownToBlocks(seg.text);
-      blocks.push(...parsed);
+      blocks.push(...decodeColorsInBlocks(parsed));
     } else if (seg.kind === "columns") {
       const columnChildren = await Promise.all(
         (seg.columns || []).map(async (col) => {
@@ -451,7 +632,8 @@ async function parseBodyToBlocks(
       let content: any[] = [];
       if (innerText.trim()) {
         const parsed = await editor.tryParseMarkdownToBlocks(innerText);
-        const first = parsed[0]?.content;
+        const decoded = decodeColorsInBlocks(parsed);
+        const first = decoded[0]?.content;
         content = Array.isArray(first) ? first : [];
       }
       blocks.push({
@@ -485,6 +667,15 @@ async function parseBodyToBlocks(
           fileName: v.fileName,
         },
       });
+    } else if (seg.kind === "scripture") {
+      const s = seg.scripture!;
+      blocks.push({
+        type: "scripture",
+        props: {
+          reference: s.reference,
+          text: s.text,
+        },
+      });
     }
   }
 
@@ -507,7 +698,10 @@ async function serializeBlockList(
 
   const flush = async () => {
     if (!pending.length) return;
-    const md = await editor.blocksToMarkdownLossy(pending);
+    // Encode text colors into invisible markers before the markdown
+    // serializer runs — otherwise BlockNote drops them, since markdown has
+    // no way to represent inline color.
+    const md = await editor.blocksToMarkdownLossy(encodeColorsInBlocks(pending));
     if (md.trim()) chunks.push(md.trim());
     pending = [];
   };
@@ -527,9 +721,9 @@ async function serializeBlockList(
       chunks.push(`::: columns\n${colTexts.join("\n")}\n:::`);
     } else if (block.type === "callout") {
       await flush();
-      const inner = await editor.blocksToMarkdownLossy([
-        { type: "paragraph", content: block.content },
-      ]);
+      const inner = await editor.blocksToMarkdownLossy(
+        encodeColorsInBlocks([{ type: "paragraph", content: block.content }])
+      );
       const icon = (block.props?.icon as string) || "💡";
       const color = (block.props?.color as string) || "gray";
       chunks.push(
@@ -553,6 +747,14 @@ async function serializeBlockList(
         `::: video src="${escAttr(p.src)}" caption="${escAttr(
           p.caption
         )}" fileName="${escAttr(p.fileName)}"`
+      );
+    } else if (block.type === "scripture") {
+      await flush();
+      const p = block.props || {};
+      chunks.push(
+        `::: scripture reference="${escAttr(p.reference)}" text="${escAttr(
+          p.text
+        )}"`
       );
     } else {
       pending.push(block);
@@ -591,6 +793,9 @@ export function flattenToObsidianMarkdown(raw: string): string {
     } else if (seg.kind === "video") {
       const v = seg.video!;
       out.push(`[${v.caption || "Video"}](${v.src})`);
+    } else if (seg.kind === "scripture") {
+      const s = seg.scripture!;
+      out.push(`> **${s.reference}** (KJV)\n>\n> ${s.text}`);
     }
   }
 

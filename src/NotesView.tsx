@@ -36,6 +36,14 @@ interface FolderEntry {
 type ViewMode = "grid" | "list";
 const VIEW_MODE_KEY = "notes-view-mode";
 
+/** See Sidebar.tsx for the rationale — this stops a still-open editor
+ *  from writing the deleted note back to disk. */
+function notifyNoteDeleted(targetPath: string) {
+  window.dispatchEvent(
+    new CustomEvent("note-deleted", { detail: { path: targetPath } })
+  );
+}
+
 function fmtDate(ms: number): string {
   if (!ms) return "";
   try {
@@ -114,12 +122,9 @@ export default function NotesView({
         }
         if (!e.name.endsWith(".selah")) continue;
 
-
-
         const full = await join(dir, e.name);
         let icon = "";
         let title = e.name.replace(/\.selah$/i, "");
-
 
         let wordCount = 0;
         try {
@@ -208,7 +213,6 @@ export default function NotesView({
     while (true) {
       const candidate = `Untitled-${i}.selah`;
 
-
       if (!existing.has(candidate)) return candidate;
       i++;
     }
@@ -241,15 +245,21 @@ export default function NotesView({
   const deleteNote = async (note: NoteEntry) => {
     const ok = await confirmAsync(`Move "${note.title}" to the trash?`);
     if (!ok) return;
-    try { await moveToTrash(note.path); await load(); }
-    catch (e) { console.error("[notes] delete failed:", e); }
+    try {
+      notifyNoteDeleted(note.path);
+      await moveToTrash(note.path);
+      await load();
+    } catch (e) { console.error("[notes] delete failed:", e); }
   };
 
   const deleteFolder = async (folder: FolderEntry) => {
     const ok = await confirmAsync(`Move the folder "${folder.name}" and everything inside to the trash?`);
     if (!ok) return;
-    try { await moveToTrash(folder.path); await load(); }
-    catch (e) { console.error("[notes] delete folder failed:", e); }
+    try {
+      notifyNoteDeleted(folder.path);
+      await moveToTrash(folder.path);
+      await load();
+    } catch (e) { console.error("[notes] delete folder failed:", e); }
   };
 
   const renameNote = async (note: NoteEntry) => {

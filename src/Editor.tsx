@@ -1,6 +1,7 @@
 // src/Editor.tsx
 import { useEffect, useRef, useState } from "react";
-import { rename, readTextFile, writeFile } from "@tauri-apps/plugin-fs";
+import { createPortal } from "react-dom";
+import { rename, readTextFile, writeFile, readDir } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -17,7 +18,7 @@ import PhotoLightbox from "./PhotoLightbox";
 import { useNoteMode } from "./useNoteMode";
 import { useModal } from "./Modal";
 import { parseNoteFile, type Frontmatter } from "./noteFormat";
-import { saveImageToNoteAssets } from "./imageAssets";
+import { saveImageToNoteAssets, assetsDirForNote } from "./imageAssets";
 
 interface EditorProps {
   activeNote: { path: string; name: string };
@@ -39,6 +40,29 @@ function isYearNote(name: string): boolean {
 }
 
 type Anchor = "above" | "in" | "below";
+
+const IMAGE_FILE_RE = /\.(png|jpe?g|webp|gif|avif|bmp|svg)$/i;
+
+/** List images sitting in <noteDir>/assets/<noteBase>/ — i.e. files that
+ *  were uploaded or pasted into this note. Used by the "In this note"
+ *  picker in the header settings panel. */
+async function listNoteImages(notePath: string): Promise<{ name: string; abs: string }[]> {
+  try {
+    const dir = await assetsDirForNote(notePath);
+    const entries = await readDir(dir);
+    const names = entries
+      .filter((e) => !e.isDirectory && !!e.name && IMAGE_FILE_RE.test(e.name))
+      .map((e) => e.name!)
+      .sort((a, b) => a.localeCompare(b));
+    const out: { name: string; abs: string }[] = [];
+    for (const name of names) {
+      out.push({ name, abs: await join(dir, name) });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
 
 function resolveCoverUrl(value: string): string {
   if (!value) return "";
@@ -156,9 +180,19 @@ export default function Editor({
   const [newPropValue, setNewPropValue] = useState("");
   const [copied, setCopied] = useState(false);
 
+  // ── "In this note" image picker state ─────────────────────────────────
+  const [noteImages, setNoteImages] = useState<{ name: string; abs: string }[]>([]);
+  const [noteImagesLoading, setNoteImagesLoading] = useState(false);
+
   const iconMenuRef = useRef<HTMLDivElement>(null);
   const titleMenuRef = useRef<HTMLDivElement>(null);
   const widthMenuRef = useRef<HTMLDivElement>(null);
+  // Anchor for the emoji picker popup — see JournalView for the rationale.
+  const iconAnchorRef = useRef<HTMLButtonElement | null>(null);
+  // Ref on the picker's wrapper so an outside-click handler can tell
+  // whether a mousedown landed inside the picker (do nothing) or outside
+  // it (close it).
+  const iconPickerRef = useRef<HTMLDivElement | null>(null);
 
   const isYear = isYearNote(activeNote.name);
   const hasCover = coverType === "color" || coverType === "image";
@@ -194,6 +228,7 @@ export default function Editor({
     setIconPickerOpen(false); setCoverPickerOpen(false); setWidthMenuOpen(false);
     setCoverUrlDraft(""); setIconMenu(null); setTitleMenu(null); setDragStart(null);
     setPropertiesOpen(false); setSourceOpen(false); setSourceDraft("");
+    setNoteImages([]); setNoteImagesLoading(false);
 
     (async () => {
       try {
@@ -221,6 +256,21 @@ export default function Editor({
       } catch {}
     })();
   }, [activeNote.path]);
+
+  // When the header panel opens, scan the note's own assets folder for
+  // images so the "In this note" picker can show them as thumbnails.
+  useEffect(() => {
+    if (!coverPickerOpen || !activeNote.path) return;
+    let cancelled = false;
+    setNoteImagesLoading(true);
+    (async () => {
+      const imgs = await listNoteImages(activeNote.path);
+      if (cancelled) return;
+      setNoteImages(imgs);
+      setNoteImagesLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, [coverPickerOpen, activeNote.path]);
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -273,6 +323,36 @@ export default function Editor({
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [coverPickerOpen]);
+
+  // Close the emoji picker on Escape. Capture phase + stopPropagation so
+  // the picker's autofocused search input and any app-level global keydown
+  // handlers can't swallow or pre-empt the event.
+  useEffect(() => {
+    if (!iconPickerOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      setIconPickerOpen(false);
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [iconPickerOpen]);
+
+  // Close the emoji picker when the user clicks anywhere outside it.
+  // We skip clicks inside the picker itself (so picking an emoji works) and
+  // clicks on the anchor button (so the button's own onClick toggle handles
+  // open/close without fighting this handler).
+  useEffect(() => {
+    if (!iconPickerOpen) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (iconPickerRef.current?.contains(t)) return;
+      if (iconAnchorRef.current?.contains(t)) return;
+      setIconPickerOpen(false);
+    };
+    document.addEventListener("mousedown", onDown, true);
+    return () => document.removeEventListener("mousedown", onDown, true);
+  }, [iconPickerOpen]);
 
   useEffect(() => {
     if (!propertiesOpen && !sourceOpen) return;
@@ -405,6 +485,9 @@ export default function Editor({
       const ext = (picked.split(".").pop() || "png").toLowerCase();
       const destPath = await saveImageToNoteAssets(activeNote.path, picked, `cover-${Date.now()}.${ext}`);
       await applyCover("image", destPath);
+      // Refresh the "In this note" grid so the newly-added file shows up.
+      const imgs = await listNoteImages(activeNote.path);
+      setNoteImages(imgs);
     } catch (e) { console.error("[editor] upload cover failed:", e); }
   };
 
@@ -582,15 +665,56 @@ export default function Editor({
     maskComposite: "intersect",
   } : {};
 
-  const iconPickerPopup = iconPickerOpen ? (
-    <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 z-[150]">
-      <EmojiPicker theme={Theme.DARK} emojiStyle={EmojiStyle.NATIVE} onEmojiClick={(d) => applyIcon(d.emoji)} width={320} height={400} previewConfig={{ showPreview: false }} />
-    </div>
-  ) : null;
+  // Portal the emoji picker to <body> and position it with `fixed` coords
+  // derived from the icon button. Rendering it inline would clip against
+  // the note editor's `overflow-y-auto` container (which also clips
+  // horizontally), and clamping keeps it on-screen when the button is near
+  // the right or bottom edge of the viewport.
+  const iconPickerPopup = iconPickerOpen ? (() => {
+    const W = 320;
+    const H = 420;
+    let top = 100;
+    let left = 100;
+    const btn = iconAnchorRef.current;
+    if (btn) {
+      const rect = btn.getBoundingClientRect();
+      top = rect.bottom + 8;
+      left = rect.left + rect.width / 2 - W / 2;
+      if (top + H > window.innerHeight - 12) {
+        top = Math.max(12, window.innerHeight - H - 12);
+      }
+      if (left + W > window.innerWidth - 12) {
+        left = window.innerWidth - W - 12;
+      }
+      if (left < 12) left = 12;
+    }
+    return createPortal(
+      <div
+        ref={iconPickerRef}
+        className="fixed z-[500] bg-[#1e2327] border border-[#2a3136] rounded-md shadow-2xl overflow-hidden"
+        style={{ top, left, width: W }}
+        onKeyDownCapture={(e) => {
+          if (e.key === "Escape") {
+            e.stopPropagation();
+            setIconPickerOpen(false);
+          }
+        }}
+      >
+        <EmojiPicker
+          theme={Theme.DARK} emojiStyle={EmojiStyle.NATIVE}
+          onEmojiClick={(d) => applyIcon(d.emoji)}
+          width={W} height={400}
+          previewConfig={{ showPreview: false }}
+        />
+      </div>,
+      document.body
+    );
+  })() : null;
 
   const iconEl = icon ? (
     <div className="relative">
       <button
+        ref={iconAnchorRef}
         onContextMenu={handleIconContextMenu}
         className={`text-5xl leading-none p-1 rounded transition-colors flex-shrink-0 ${
           mode === "edit" ? (hasCover ? "hover:bg-white/10 cursor-pointer" : "hover:bg-[#1e2327] cursor-pointer") : "cursor-default"
@@ -607,6 +731,7 @@ export default function Editor({
   const addIconEl = mode === "edit" && !icon ? (
     <div className="relative flex-shrink-0">
       <button
+        ref={iconAnchorRef}
         onClick={() => setIconPickerOpen((o) => !o)}
         className={`text-xs flex items-center gap-1.5 px-2 py-1 rounded transition-colors whitespace-nowrap ${
           hasCover ? "text-white/90 hover:text-white hover:bg-white/10 bg-black/30 backdrop-blur-sm" : "text-gray-500 hover:text-gray-300 hover:bg-[#1e2327]"
@@ -930,6 +1055,47 @@ export default function Editor({
                   <SliderRow label="Blur" value={coverBlur} min={0} max={20} unit="px" onChange={(v) => updateCoverStyle({ blur: v })} />
                   <SliderRow label="Corner radius" value={coverRadius} min={0} max={60} unit="px" onChange={(v) => updateCoverStyle({ radius: v })} />
                   <SliderRow label="Edge feather" value={coverFeather} min={0} max={40} unit="%" onChange={(v) => updateCoverStyle({ feather: v })} />
+                </div>
+              )}
+            </div>
+
+            {/* ── In this note ─────────────────────────────────────────── */}
+            <div className="border-t border-[#2a3136] pt-3">
+              <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-2 flex items-center gap-1.5">
+                <ImageIcon size={10} /> In this note
+              </div>
+              {noteImagesLoading ? (
+                <div className="text-[11px] text-gray-600 italic py-2">Loading…</div>
+              ) : noteImages.length === 0 ? (
+                <p className="text-[11px] text-gray-600 italic leading-snug">
+                  No images in this note yet. Upload or paste an image into the note body and it will show up here.
+                </p>
+              ) : (
+                <div className="grid grid-cols-4 gap-x-2 gap-y-0.5 max-h-56 overflow-y-auto pr-1">
+                  {noteImages.map((img) => {
+                    const isActive = coverType === "image" && coverValue === img.abs;
+                    return (
+                      <button
+                        key={img.abs}
+                        type="button"
+                        onClick={() => applyCover("image", img.abs)}
+                        title={img.name}
+                        className={`aspect-square rounded overflow-hidden border bg-[#0f1315] cursor-pointer transition-all hover:ring-2 hover:ring-blue-500 ${
+                          isActive ? "ring-2 ring-blue-400 border-blue-400" : "border-[#30363d]"
+                        }`}
+                      >
+                        <img
+                          src={convertFileSrc(img.abs)}
+                          alt={img.name}
+                          loading="lazy"
+                          className="w-full h-full object-cover"
+                          onError={(e) => {
+                            (e.currentTarget as HTMLImageElement).style.opacity = "0.3";
+                          }}
+                        />
+                      </button>
+                    );
+                  })}
                 </div>
               )}
             </div>

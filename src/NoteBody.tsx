@@ -41,6 +41,7 @@ import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { createCallout } from "./Callout";
 import { createBookmark } from "./Bookmark";
 import { createVideo } from "./VideoBlock";
+import { createScripture } from "./ScriptureBlock";
 import { isReliablyEmbeddable } from "./embeds";
 import { useNoteMode } from "./useNoteMode";
 import { NoteContext } from "./NoteContext";
@@ -279,6 +280,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
             callout: createCallout(),
             bookmark: createBookmark(),
             video: createVideo(),
+            scripture: createScripture(),
           },
         })
       ),
@@ -328,6 +330,10 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
 
     const saveBody = async () => {
       if (!editor) return;
+      // If the note was deleted while we still had it open, do not write
+      // the stale buffer back to disk — that would recreate the file at
+      // its old path and make the deleted note "reappear".
+      if (disposedRef.current) return;
       try {
         const rawBody = await blocksToNoteBody(editor, editor.document);
         const withImgs = markdownImagesToRelativePaths(rawBody, noteDirOf(path));
@@ -377,6 +383,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         clearTimeout(saveTimerRef.current);
         saveTimerRef.current = null;
       }
+      if (disposedRef.current) return;
       if (!dirtyRef.current) {
         await writeQueueRef.current;
         return;
@@ -472,51 +479,111 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
 
     const wrapperRef = useRef<HTMLDivElement>(null);
 
+    // Paste handler.
+    //
+    // Attached to `document` in the capture phase rather than to the wrapper
+    // element directly, for two reasons:
+    //
+    //   1. The wrapper ref is null on the first render. If we attached to
+    //      `wrapperRef.current` inside an effect that only depends on
+    //      `[isLoading, …]`, the listener could be permanently skipped if the
+    //      ref wasn't populated by the time the effect ran.
+    //   2. In a Tauri webview the paste event may be dispatched on a
+    //      descendant (or even on `body`) depending on focus, and capture
+    //      guarantees we see it before BlockNote's own handlers.
+    //
+    // The handler then gates on `wrapper.contains(target)` so we only react
+    // to pastes that are actually inside the note editor.
     useEffect(() => {
-      const el = wrapperRef.current;
-      if (!el) return;
+      if (isLoading) return;
 
       const handler = (e: ClipboardEvent) => {
-        if (isLoading) return;
+        const target = e.target as Node | null;
+        const wrapper = wrapperRef.current;
+        if (!target || !wrapper || !wrapper.contains(target)) return;
+
+        // Let plain inputs / textareas (link picker search, caption fields)
+        // handle their own pastes without interference.
+        const el = target as HTMLElement;
+        if (el.closest?.("input, textarea")) return;
 
         const cd = e.clipboardData;
-        if (!cd) return;
+        if (!cd) {
+          console.log("[paste] no clipboardData on event");
+          return;
+        }
 
-        // Collect any image/video Files from both `items` and `files` —
-        // some webviews only populate one of the two.
+        // Collect image/video Files from both `items` and `files` — some
+        // webviews populate only one of the two, and on some platforms the
+        // file only shows up via `items[i].getAsFile()`.
         const collected: File[] = [];
 
-        if (cd.items) {
+        if (cd.items && cd.items.length > 0) {
           for (let i = 0; i < cd.items.length; i++) {
             const item = cd.items[i];
+            console.log(`[paste] item[${i}] kind=${item.kind} type=${item.type}`);
             if (item.kind !== "file") continue;
             if (!/^image\/|^video\//i.test(item.type)) continue;
             const f = item.getAsFile();
             if (f) collected.push(f);
           }
         }
-        if (collected.length === 0 && cd.files) {
+        if (collected.length === 0 && cd.files && cd.files.length > 0) {
           for (let i = 0; i < cd.files.length; i++) {
             const f = cd.files[i];
+            console.log(
+              `[paste] file[${i}] name=${f.name} type=${f.type} size=${f.size}`
+            );
             if (/^image\/|^video\//i.test(f.type)) collected.push(f);
           }
         }
 
+        console.log(
+          "[paste] collected:",
+          collected.length,
+          collected.map((f) => `${f.name || "<clipboard>"} (${f.type}, ${f.size}b)`)
+        );
+
         if (collected.length > 0) {
-          const imgs = collected.filter((f) => f.type.startsWith("image/"));
-          const vids = collected.filter((f) => f.type.startsWith("video/"));
-          console.log(
-            "[paste] files:", collected.length,
-            "images:", imgs.length,
-            "videos:", vids.length
-          );
           e.preventDefault();
           e.stopPropagation();
+          const imgs = collected.filter((f) => f.type.startsWith("image/"));
+          const vids = collected.filter((f) => f.type.startsWith("video/"));
           if (imgs.length > 0) saveAndInsertImageFiles(imgs);
           if (vids.length > 0) saveAndInsertVideoFiles(vids);
           return;
         }
 
+        // ── Fallback: ask Rust for the clipboard image ──────────────────
+        //
+        // Some webviews (notably WebKitGTK on Linux, occasionally WebView2)
+        // deliver a `paste` event with no `File` payload at all, even though
+        // the clipboard clearly contains an image — they expose it as a
+        // `text/html` string instead, or as nothing. Read the bitmap
+        // directly from the OS clipboard via `arboard` on the Rust side.
+        //
+        // This runs async, so we can't call `preventDefault()` until after
+        // we know the clipboard actually had an image. Otherwise a normal
+        // text paste would be silently swallowed.
+        void (async () => {
+          try {
+            const pngBytes = await invoke<number[] | null>(
+              "read_clipboard_image_png"
+            );
+            if (!pngBytes || pngBytes.length === 0) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const uint8 = new Uint8Array(pngBytes);
+            const name = `pasted-${Date.now()}.png`;
+            const dest = await writeImageBytesToNoteAssets(path, uint8, name);
+            const url = convertFileSrc(dest);
+            insertImageBlocks([url]);
+          } catch (err) {
+            console.error("[paste] Rust clipboard fallback failed:", err);
+          }
+        })();
+
+        // ── Fallback: URL paste → paste menu ────────────────────────────
         const text = cd.getData("text/plain")?.trim() || "";
         if (!URL_RE.test(text)) return;
 
@@ -542,8 +609,8 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         });
       };
 
-      el.addEventListener("paste", handler, true);
-      return () => el.removeEventListener("paste", handler, true);
+      document.addEventListener("paste", handler, true);
+      return () => document.removeEventListener("paste", handler, true);
     }, [isLoading, saveAndInsertImageFiles, saveAndInsertVideoFiles, editor]);
 
     useEffect(() => {
@@ -682,6 +749,36 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         flush();
       };
       // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [path]);
+
+    // If the note we're editing is deleted elsewhere (sidebar right-click →
+    // Move to trash, or a file/folder delete from a Notes view), stop
+    // writing to disk. Without this, either the pending debounced save or
+    // the unmount flush when the user navigates away would recreate the
+    // file at its old path, making the deleted note "reappear".
+    //
+    // The event carries the deleted path; we accept it if it matches our
+    // own path exactly OR if our path lives inside it (so folder deletes
+    // also match).
+    useEffect(() => {
+      const handler = (e: Event) => {
+        const detail = (e as CustomEvent).detail as { path?: string } | undefined;
+        if (!detail?.path) return;
+        const child = path.replace(/\\/g, "/");
+        const parent = detail.path.replace(/\\/g, "/").replace(/\/+$/, "");
+        if (child !== parent && !child.startsWith(parent + "/")) return;
+
+        disposedRef.current = true;
+        dirtyRef.current = false;
+        isNewFileRef.current = false;
+
+        if (saveTimerRef.current !== null) {
+          clearTimeout(saveTimerRef.current);
+          saveTimerRef.current = null;
+        }
+      };
+      window.addEventListener("note-deleted", handler);
+      return () => window.removeEventListener("note-deleted", handler);
     }, [path]);
 
     // Persist any pending image-delete prompt across remounts. Without this,
@@ -973,6 +1070,28 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       [path, editor]
     );
 
+    const insertScriptureMenuItem = useCallback(
+      () => ({
+        title: "Bible verse",
+        subtext: "Look up a KJV verse",
+        onItemClick: () => {
+          const cursor = editor.getTextCursorPosition?.();
+          const refBlock =
+            cursor?.block || editor.document[editor.document.length - 1];
+          if (!refBlock) return;
+          editor.insertBlocks(
+            [{ type: "scripture", props: { reference: "", text: "" } }],
+            refBlock,
+            "after"
+          );
+        },
+        aliases: ["scripture", "bible", "verse", "kjv"],
+        group: "Basic blocks",
+        icon: <span className="text-base">📖</span>,
+      }),
+      [editor]
+    );
+
     const getSlashMenuItems = useMemo(() => {
       return async (query: string) => {
         const defaultItems = getDefaultReactSlashMenuItems(editor);
@@ -984,6 +1103,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
           insertNoteLinkMenuItem(),
           insertImageMenuItem(),
           insertVideoMenuItem(),
+          insertScriptureMenuItem(),
         ];
         if (lastBasicBlockIndex !== -1) {
           defaultItems.splice(lastBasicBlockIndex + 1, 0, ...extra);
@@ -996,7 +1116,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         );
       };
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [editor, openLinkPicker, insertImageMenuItem, insertVideoMenuItem]);
+    }, [editor, openLinkPicker, insertImageMenuItem, insertVideoMenuItem, insertScriptureMenuItem]);
 
     useEffect(() => {
       if (!editor) return;

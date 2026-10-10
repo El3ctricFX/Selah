@@ -26,6 +26,18 @@ url = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util"] }
 base64 = "0.22"
 
+# Clipboard image reading. The webview's ClipboardEvent only delivers a
+# `File` on some platforms — WebKitGTK (Linux) in particular often gives us
+# `text/html` for a copied image and no bytes at all. `arboard` talks to the
+# OS clipboard directly so we can always retrieve the pixels regardless of
+# what the webview exposes.
+arboard = { version = "3", features = ["wayland-data-control"] }
+
+# Used to re-encode the raw RGBA buffer arboard hands us into a PNG so we can
+# drop it straight into the note's assets folder. We only pull in the PNG
+# encoder — everything else is off to keep the binary small.
+image = { version = "0.25", default-features = false, features = ["png"] }
+
 # libmpv ships a prebuilt binary that doesn't have a macOS build. Gate it
 # behind a target so the macOS job can compile the rest of the app without
 # linking against it. The JS-side MpvPlayer component isn't used on macOS,

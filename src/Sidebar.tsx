@@ -57,10 +57,7 @@ function formatDayName(year: number, month: number, day: number): string {
 
 const NEW_DAY_RE = /^([A-Za-z]+)\s+(\d{1,2}),\s*(\d{4})\.(selah|md)$/;
 
-
 const OLD_DAY_RE = /^(\d{4})-(\d{2})-(\d{2})\.(selah|md)$/;
-
-
 
 function parseDayFile(name: string): { day: number } | null {
   const nm = name.match(NEW_DAY_RE);
@@ -79,6 +76,19 @@ function splitFilename(name: string): { base: string; ext: string } {
 function parentDirOf(p: string): string {
   const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
   return i === -1 ? p : p.substring(0, i);
+}
+
+/**
+ * Tell any open editor bound to (a file inside) this path to stop writing
+ * to disk before we move the target to the trash. Without this, the
+ * editor's pending debounced save — or its unmount flush when the user
+ * navigates to a different note — would recreate the file at its old
+ * path, making the deleted note "reappear".
+ */
+function notifyNoteDeleted(targetPath: string) {
+  window.dispatchEvent(
+    new CustomEvent('note-deleted', { detail: { path: targetPath } })
+  );
 }
 
 /**
@@ -391,7 +401,10 @@ export default function Sidebar(props: SidebarProps) {
       if (!ok) return;
       try {
         const dir = await join(vaultPath, cat.dirName);
-        if (await exists(dir)) await moveToTrash(dir);
+        if (await exists(dir)) {
+          notifyNoteDeleted(dir);
+          await moveToTrash(dir);
+        }
       } catch (e) { console.error('[vault] could not trash category:', e); }
     }
     const cleanedFolderMeta: FolderMetaMap = {};
@@ -680,11 +693,9 @@ function NotesTree({
       if (e.isDirectory) { folders.push(e.name); continue; }
       if (!e.name.endsWith('.selah')) continue;
 
-
       const full = await join(absPath, e.name);
       const meta = await readNoteMeta(full);
       const base = e.name.replace(/\.selah$/i, '');
-
 
       notes.push({
         fileName: e.name,
@@ -816,9 +827,7 @@ function NotesTree({
       let i = 1;
       let fileName = `Untitled-${i}.selah`;
 
-
       while (existing.has(fileName)) { i++; fileName = `Untitled-${i}.selah`; }
-
 
       const full = await join(folderPath, fileName);
       const now = new Date().toISOString();
@@ -867,6 +876,9 @@ function NotesTree({
     const ok = await confirmAsync(`Move the folder "${folderName}" and everything inside it to the trash?`);
     if (!ok) return;
     try {
+      // Tell any open editor for a note inside this folder to stop writing
+      // before we move the folder to the trash.
+      notifyNoteDeleted(folderPath);
       await moveToTrash(folderPath);
       const n = { ...expandedRef.current };
       delete n[folderPath];
@@ -890,6 +902,7 @@ function NotesTree({
     const ok = await confirmAsync(`Move "${note.title}" to the trash?`);
     if (!ok) return;
     try {
+      notifyNoteDeleted(note.path);
       await moveToTrash(note.path);
       await reload();
     } catch (e) { console.error('[notes-tree] delete failed:', e); }
@@ -1554,7 +1567,6 @@ function JournalTree({
       for (const y of ys) {
         const candidates = [await join(dir, y, `_${y}-Year.selah`), await join(dir, y, `_${y}-Year.md`)];
 
-
         let found: string | null = null;
         for (const p of candidates) {
           try { if (await exists(p)) { found = p; break; } } catch {}
@@ -1603,7 +1615,23 @@ function JournalTree({
         await ensureFolder(dir, `journal "${category.name}"`);
       } catch {}
       const ys = await readYears();
-      if (mounted) setYears(ys);
+      if (!mounted) return;
+      setYears(ys);
+
+      // Preload months for every year in the background. This means
+      // expanding a year later never has to hit disk cold, and — more
+      // importantly — a partial read at mount time can't leave us showing
+      // a half-empty year until the user remounts the tree.
+      const monthResults: Record<string, string[]> = {};
+      for (const y of ys) {
+        try {
+          monthResults[y] = await readMonths(y);
+        } catch {}
+      }
+      if (!mounted) return;
+      if (Object.keys(monthResults).length > 0) {
+        setMonths((prev) => ({ ...prev, ...monthResults }));
+      }
     })();
     return () => { mounted = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1616,43 +1644,87 @@ function JournalTree({
       if (!changed) return;
       const catDir = await categoryDir(category);
       const normalizedChanged = changed.replace(/\\/g, '/');
-      const normalizedCatDir = catDir.replace(/\\/g, '/');
-      if (!normalizedChanged.startsWith(normalizedCatDir)) return;
-      const rel = normalizedChanged.slice(normalizedCatDir.length).replace(/^\/+/, '');
-      const parts = rel.split('/').filter(Boolean);
-      if (parts.length === 0) { setYears(await readYears()); return; }
-      if (parts.length === 1 && expandedYearsRef.current[parts[0]]) {
-        const ms = await readMonths(parts[0]);
-        setMonths((p) => ({ ...p, [parts[0]]: ms }));
+      const normalizedCatDir = catDir.replace(/\\/g, '/').replace(/\/+$/, '');
+
+      // Must be inside this category's directory.
+      if (
+        normalizedChanged !== normalizedCatDir &&
+        !normalizedChanged.startsWith(normalizedCatDir + '/')
+      ) {
         return;
       }
-      if (parts.length === 2 && expandedMonthsRef.current[`${parts[0]}/${parts[1]}`]) {
-        const ds = await readDays(parts[0], parts[1]);
-        setDays((p) => ({ ...p, [`${parts[0]}/${parts[1]}`]: ds }));
+
+      const rel =
+        normalizedChanged === normalizedCatDir
+          ? ''
+          : normalizedChanged.slice(normalizedCatDir.length + 1);
+      const parts = rel.split('/').filter(Boolean);
+
+      // Root of the journal — refresh the year list.
+      if (parts.length === 0) {
+        setYears(await readYears());
+        return;
+      }
+
+      const year = parts[0];
+
+      // Refresh the year's months and its year-note meta no matter whether
+      // the year is currently expanded. If the user expands it later, the
+      // data will already be correct.
+      const ms = await readMonths(year);
+      setMonths((p) => ({ ...p, [year]: ms }));
+
+      let yNote: { icon: string; color: string } | null = null;
+      for (const p of [
+        await join(catDir, year, `_${year}-Year.selah`),
+        await join(catDir, year, `_${year}-Year.md`),
+      ]) {
+        try {
+          if (await exists(p)) {
+            yNote = await readNoteMeta(p);
+            break;
+          }
+        } catch {}
+      }
+      setYearNotes((p) => ({ ...p, [year]: yNote }));
+
+      // If it was a month folder that changed, refresh that month's days.
+      if (parts.length >= 2) {
+        const month = parts[1];
+        const key = `${year}/${month}`;
+        const ds = await readDays(year, month);
+        setDays((p) => ({ ...p, [key]: ds }));
       }
     };
+
     const onFileChanged = async (e: Event) => {
       const p = (e as CustomEvent).detail?.path?.replace(/\\/g, '/');
       if (!p) return;
-      for (const key of Object.keys(expandedMonthsRef.current)) {
-        if (!expandedMonthsRef.current[key]) continue;
-        const [yearStr, monthStr] = key.split('/');
-        if (p.includes(`/${yearStr}/${monthStr}/`)) {
-          const ds = await readDays(yearStr, monthStr);
-          setDays((prev) => ({ ...prev, [key]: ds }));
-          break;
-        }
-      }
-      for (const year of Object.keys(yearNotes)) {
-        if (p.endsWith(`_${year}-Year.selah`)) {
+      const catDir = await categoryDir(category);
+      const normalizedCatDir = catDir.replace(/\\/g, '/').replace(/\/+$/, '');
+      if (!p.startsWith(normalizedCatDir + '/')) return;
 
+      const rel = p.slice(normalizedCatDir.length + 1);
+      const parts = rel.split('/').filter(Boolean);
+      if (parts.length < 2) return;
 
-          const found = await readNoteMeta(p);
-          setYearNotes((prev) => ({ ...prev, [year]: found }));
-          break;
-        }
+      const year = parts[0];
+      const month = parts[1];
+
+      // Year note (`2026/_2026-Year.selah`).
+      if (parts.length === 2 && /^_.+-Year\.(selah|md)$/.test(parts[1])) {
+        const meta = await readNoteMeta(p);
+        setYearNotes((prev) => ({ ...prev, [year]: meta }));
+        return;
       }
+
+      // Day file — refresh the whole month so sibling files that were just
+      // written around the same time are picked up too.
+      const key = `${year}/${month}`;
+      const ds = await readDays(year, month);
+      setDays((prev) => ({ ...prev, [key]: ds }));
     };
+
     window.addEventListener('folder-changed', onFolderChanged);
     window.addEventListener('file-changed', onFileChanged);
     return () => {
@@ -1693,22 +1765,26 @@ function JournalTree({
   }, [ctx]);
 
   const toggleYear = async (year: string) => {
-    if (expandedYears[year]) { setExpandedYears((p) => ({ ...p, [year]: false })); return; }
-    setExpandedYears((p) => ({ ...p, [year]: true }));
-    if (months[year] === undefined) {
-      const ms = await readMonths(year);
-      setMonths((p) => ({ ...p, [year]: ms }));
+    if (expandedYears[year]) {
+      setExpandedYears((p) => ({ ...p, [year]: false }));
+      return;
     }
+    setExpandedYears((p) => ({ ...p, [year]: true }));
+    // Always re-read on expand so we never show a stale cache, even if an
+    // earlier read happened before the folder was fully flushed to disk.
+    const ms = await readMonths(year);
+    setMonths((p) => ({ ...p, [year]: ms }));
   };
 
   const toggleMonth = async (year: string, month: string) => {
     const key = `${year}/${month}`;
-    if (expandedMonths[key]) { setExpandedMonths((p) => ({ ...p, [key]: false })); return; }
-    setExpandedMonths((p) => ({ ...p, [key]: true }));
-    if (days[key] === undefined) {
-      const ds = await readDays(year, month);
-      setDays((p) => ({ ...p, [key]: ds }));
+    if (expandedMonths[key]) {
+      setExpandedMonths((p) => ({ ...p, [key]: false }));
+      return;
     }
+    setExpandedMonths((p) => ({ ...p, [key]: true }));
+    const ds = await readDays(year, month);
+    setDays((p) => ({ ...p, [key]: ds }));
   };
 
   const openPicker = (kind: 'icon' | 'color', target: { folderKey?: string; notePath?: string; label: string }, x: number, y: number) => {
@@ -1734,8 +1810,6 @@ function JournalTree({
       for (const y of Object.keys(yearNotes)) {
         const yn = yearNotes[y];
         if (yn && picker.notePath.endsWith(`_${y}-Year.selah`)) {
-
-
           return picker.kind === 'icon' ? yn.icon : yn.color || 'default';
         }
       }
@@ -1852,9 +1926,12 @@ function JournalTree({
     if (!ok) return;
     const dir = await categoryDir(category);
     for (const p of [await join(dir, year, `_${year}-Year.selah`), await join(dir, year, `_${year}-Year.md`)]) {
-
-
-      try { if (await exists(p)) await moveToTrash(p); } catch {}
+      try {
+        if (await exists(p)) {
+          notifyNoteDeleted(p);
+          await moveToTrash(p);
+        }
+      } catch {}
     }
     setYearNotes((p) => ({ ...p, [year]: null }));
     window.dispatchEvent(new CustomEvent('folder-changed', { detail: { path: await join(dir, year) } }));
@@ -1867,7 +1944,9 @@ function JournalTree({
     const ok = await confirmAsync(`Move the entire ${year} folder to the trash?`);
     if (!ok) return;
     const dir = await categoryDir(category);
-    await moveToTrash(await join(dir, year));
+    const yearPath = await join(dir, year);
+    notifyNoteDeleted(yearPath);
+    await moveToTrash(yearPath);
     setYears((p) => (p || []).filter((y) => y !== year));
     setMonths((p) => { const n = { ...p }; delete n[year]; return n; });
     setYearNotes((p) => { const n = { ...p }; delete n[year]; return n; });
@@ -1885,7 +1964,13 @@ function JournalTree({
     if (!ok) return;
     const dir = await categoryDir(category);
     const monthPath = await join(dir, year, month);
-    await moveToTrash(await join(monthPath, file));
+    const fullPath = await join(monthPath, file);
+    // Tell any open editor bound to this file to stop writing to disk
+    // before we move it to the trash. Without this, its pending debounced
+    // save (or its unmount flush when the user navigates to a different
+    // day) would recreate the file at the old path.
+    notifyNoteDeleted(fullPath);
+    await moveToTrash(fullPath);
     setDays((p) => ({
       ...p,
       [`${year}/${month}`]: (p[`${year}/${month}`] || []).filter((d) => d.file !== file),
@@ -1900,9 +1985,12 @@ function JournalTree({
     const dir = await categoryDir(category);
     const monthPath = await join(dir, year, month);
     for (const p of [await join(monthPath, `_${year}-${month}-Month.selah`), await join(monthPath, `_${year}-${month}-Month.md`)]) {
-
-
-      try { if (await exists(p)) await moveToTrash(p); } catch {}
+      try {
+        if (await exists(p)) {
+          notifyNoteDeleted(p);
+          await moveToTrash(p);
+        }
+      } catch {}
     }
     window.dispatchEvent(new CustomEvent('folder-changed', { detail: { path: monthPath } }));
   };
@@ -1914,7 +2002,9 @@ function JournalTree({
     const ok = await confirmAsync(`Move the entire ${monthLabel(month)} ${year} folder to the trash?`);
     if (!ok) return;
     const dir = await categoryDir(category);
-    await moveToTrash(await join(dir, year, month));
+    const monthPath = await join(dir, year, month);
+    notifyNoteDeleted(monthPath);
+    await moveToTrash(monthPath);
     setMonths((p) => ({ ...p, [year]: (p[year] || []).filter((m) => m !== month) }));
     setDays((p) => { const n = { ...p }; delete n[`${year}/${month}`]; return n; });
     setExpandedMonths((p) => { const n = { ...p }; delete n[`${year}/${month}`]; return n; });

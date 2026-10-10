@@ -29,6 +29,64 @@ fn ensure_dir(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Read an image off the system clipboard and return it as PNG bytes.
+///
+/// Returns `Ok(None)` when the clipboard has no image (so the JS side can
+/// fall through to its normal text/URL handling without treating it as an
+/// error).
+///
+/// Why this exists: the WebView's `ClipboardEvent.clipboardData` only
+/// exposes a `File` for image pastes on some platforms. WebKitGTK on Linux,
+/// and occasionally WebView2 on Windows, hand us a `paste` event with a
+/// `text/html` payload and no file bytes at all. `arboard` talks to the OS
+/// clipboard directly, bypassing the webview entirely.
+#[tauri::command]
+async fn read_clipboard_image_png() -> Result<Option<Vec<u8>>, String> {
+    // arboard can block briefly on some platforms (X11 selection
+    // negotiation, Wayland protocol round-trips). Hop to a blocking thread
+    // so we don't stall the async runtime.
+    let result = tokio::task::spawn_blocking(|| -> Result<Option<Vec<u8>>, String> {
+        let mut cb = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+
+        let img = match cb.get_image() {
+            Ok(i) => i,
+            // No image on the clipboard — not an error, just "nothing to do".
+            Err(_) => return Ok(None),
+        };
+
+        let w = img.width as u32;
+        let h = img.height as u32;
+        let expected = (w as usize) * (h as usize) * 4;
+        let bytes = img.bytes.into_owned();
+
+        if bytes.len() != expected {
+            return Err(format!(
+                "clipboard image buffer size mismatch: got {}, expected {} for {}x{}",
+                bytes.len(),
+                expected,
+                w,
+                h
+            ));
+        }
+
+        let rgba = image::RgbaImage::from_raw(w, h, bytes)
+            .ok_or_else(|| "clipboard image has invalid dimensions".to_string())?;
+
+        let mut png: Vec<u8> = Vec::new();
+        rgba.write_to(
+            &mut std::io::Cursor::new(&mut png),
+            image::ImageFormat::Png,
+        )
+        .map_err(|e| format!("PNG encode failed: {}", e))?;
+
+        Ok(Some(png))
+    })
+    .await
+    .map_err(|e| format!("clipboard task panicked: {}", e))?;
+
+    result
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct LinkMetadata {
     pub title: Option<String>,
@@ -192,6 +250,117 @@ async fn fetch_image_data_url(url: String) -> Result<String, String> {
     let bytes = res.bytes().await.map_err(|e| e.to_string())?;
     let b64 = B64.encode(&bytes);
     Ok(format!("data:{};base64,{}", content_type, b64))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  BIBLE VERSE LOOKUP (KJV)
+//
+//  Uses bible-api.com — free, no API key, no auth, KJV is public domain.
+//  Accepts references like "John 3:16", "Psalm 23", "Rom 8:28-30".
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[derive(Serialize)]
+pub struct BibleVerse {
+    pub reference: String,
+    pub text: String,
+    pub translation_name: String,
+}
+
+#[tauri::command]
+async fn fetch_bible_verse(reference: String) -> Result<BibleVerse, String> {
+    let trimmed = reference.trim();
+    if trimmed.is_empty() {
+        return Err("Empty reference".to_string());
+    }
+
+    let client = reqwest::Client::builder()
+        .user_agent("Selah/1.0 (tauri)")
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    // bible-api.com wants spaces as '+'. It handles abbreviations
+    // ("Rom 8:28", "Jn 3:16") on its own.
+    let encoded = trimmed.replace(' ', "+");
+    let url = format!("https://bible-api.com/{}?translation=kjv", encoded);
+
+    let res = client.get(&url).send().await.map_err(|e| e.to_string())?;
+
+    let status = res.status();
+    let body = res.text().await.map_err(|e| e.to_string())?;
+
+    if !status.is_success() {
+        // The service returns a JSON `{ "error": "..." }` for bad refs.
+        // Surface that message rather than a bare HTTP code.
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+            if let Some(msg) = json.get("error").and_then(|v| v.as_str()) {
+                return Err(msg.to_string());
+            }
+        }
+        return Err(format!("Lookup failed (HTTP {})", status.as_u16()));
+    }
+
+    let json: serde_json::Value =
+        serde_json::from_str(&body).map_err(|e| format!("Bad response: {}", e))?;
+
+    if let Some(err) = json.get("error").and_then(|v| v.as_str()) {
+        return Err(err.to_string());
+    }
+
+    // Build a verse-numbered text block from the `verses` array.
+    //
+    // Why not just use the top-level `text` field? Because the upstream KJV
+    // source stores each verse with the *printed* line breaks baked in, so a
+    // single verse like Matthew 6:10 comes back as
+    //     "Thy kingdom come. Thy will be done in earth, as\nit is\n\nin heaven."
+    // — which then renders as four separate lines. We collapse every run of
+    // whitespace inside each verse to a single space so each verse renders
+    // as one clean wrapped paragraph. The verse number is prepended so the
+    // UI can style it separately.
+    let formatted = if let Some(verses) = json["verses"].as_array() {
+        if verses.is_empty() {
+            String::new()
+        } else {
+            verses
+                .iter()
+                .map(|v| {
+                    let num = v["verse"].as_i64().unwrap_or(0);
+                    let raw = v["text"].as_str().unwrap_or("");
+                    let normalized = raw
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    format!("{} {}", num, normalized)
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+    } else {
+        // Fallback for odd responses — collapse the whole thing and hope the
+        // caller didn't need verse numbers.
+        json["text"]
+            .as_str()
+            .unwrap_or("")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+
+    if formatted.trim().is_empty() {
+        return Err(format!("No text returned for '{}'", trimmed));
+    }
+
+    Ok(BibleVerse {
+        reference: json["reference"]
+            .as_str()
+            .unwrap_or(trimmed)
+            .to_string(),
+        text: formatted,
+        translation_name: json["translation_name"]
+            .as_str()
+            .unwrap_or("King James Version")
+            .to_string(),
+    })
 }
 
 /// Payload emitted on the `proxy-progress` event during transcoding.
@@ -383,7 +552,9 @@ pub fn run() {
             fetch_link_metadata,
             fetch_image_data_url,
             ensure_dir,
-            convert_to_webm
+            convert_to_webm,
+            read_clipboard_image_png,
+            fetch_bible_verse
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

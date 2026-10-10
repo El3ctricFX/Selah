@@ -46,7 +46,13 @@ export default function App() {
   const [vaultPath, setVaultPath] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<ActiveView>(null);
   const [activeCategoryId, setActiveCategoryId] = useState<string | null>(null);
-  const [todayNonce, setTodayNonce] = useState(0);
+  // Bumped on every journal navigation (sidebar click, Today button, or a
+  // note-link that resolves to a journal day). It is folded into JournalView's
+  // React key so that clicking a day in the sidebar always remounts the view —
+  // even when the target date happens to match whatever `activeView.focus`
+  // already was (which is the case if you arrow-navigated away and then
+  // clicked back to where you started).
+  const [journalNonce, setJournalNonce] = useState(0);
   const [focusMode, setFocusMode] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
@@ -121,7 +127,7 @@ export default function App() {
 
   const journalKey =
     activeView?.kind === "journal"
-      ? `${activeView.dir}-${activeView.focus?.year ?? "t"}-${activeView.focus?.month ?? "t"}-${activeView.focus?.day ?? "t"}-${activeView.focusMode ?? "day"}-${todayNonce}`
+      ? `${activeView.dir}-${activeView.focus?.year ?? "t"}-${activeView.focus?.month ?? "t"}-${activeView.focus?.day ?? "t"}-${activeView.focusMode ?? "day"}-${journalNonce}`
       : undefined;
 
   const sidebarHidden = focusMode || sidebarCollapsed;
@@ -134,6 +140,10 @@ export default function App() {
     if (dayInfo) {
       const parts = normalized.split("/");
       const journalDir = parts.slice(0, -3).join("/");
+      // Bump the nonce so a note-link that points at a day we're already
+      // "on" (per activeView.focus) still remounts JournalView with the
+      // right initialDate.
+      setJournalNonce((n) => n + 1);
       setActiveView({
         kind: "journal",
         dir: journalDir,
@@ -154,7 +164,14 @@ export default function App() {
         }`}
       >
         {!sidebarHidden && (
+          // Key the Sidebar on vaultPath so switching vaults fully resets its
+          // internal state (categories, folderMeta, and — crucially — the
+          // JournalTree / NotesTree child trees). Built-in category IDs like
+          // "journal" are identical across vaults, so without this React
+          // would reuse the same component instance and stale state would
+          // bleed from the previous vault into the new one.
           <Sidebar
+            key={vaultPath}
             vaultPath={vaultPath}
             activeCategoryId={activeCategoryId}
             activeView={activeView}
@@ -186,11 +203,18 @@ export default function App() {
             }}
             onOpenJournalToday={(cat) => {
               setActiveCategoryId(cat.id);
-              setTodayNonce((n) => n + 1);
+              setJournalNonce((n) => n + 1);
               setActiveView({ kind: "journal", dir: dirOf(cat) });
             }}
             onOpenJournalDay={(cat, year, month, day) => {
               setActiveCategoryId(cat.id);
+              // Always bump: the target date may equal activeView.focus
+              // (e.g. the user arrow-navigated away and is now clicking
+              // back to where they started), and without a fresh nonce the
+              // journalKey would be unchanged and JournalView would not
+              // remount — leaving its local `date` stuck on the arrowed-to
+              // day.
+              setJournalNonce((n) => n + 1);
               setActiveView({
                 kind: "journal",
                 dir: dirOf(cat),
@@ -200,6 +224,7 @@ export default function App() {
             }}
             onOpenJournalMonth={(cat, year, month) => {
               setActiveCategoryId(cat.id);
+              setJournalNonce((n) => n + 1);
               setActiveView({
                 kind: "journal",
                 dir: dirOf(cat),
