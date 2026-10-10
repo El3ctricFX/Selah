@@ -21,6 +21,7 @@ import {
   FOLDER_COLORS,
 } from './folderMeta';
 import { parseNoteFile, serializeNoteFile, type Frontmatter } from './noteFormat';
+import { moveJournalNoteToDate, parseFlexibleDate } from './journalDateMove';
 
 export interface Category {
   id: string;
@@ -1978,6 +1979,97 @@ function JournalTree({
     window.dispatchEvent(new CustomEvent('folder-changed', { detail: { path: monthPath } }));
   };
 
+  // Move a day entry (file + its assets folder + every reference inside) to
+  // a different date. Accepts the same flexible formats a user would type
+  // anywhere else — "2026-10-09", "10/09/2026", "October 9, 2026",
+  // "yesterday", "tomorrow", etc.
+  const changeDayDate = async () => {
+    if (!ctx || ctx.kind !== 'day') return;
+    const { year, month, day, file } = ctx;
+    setCtx(null);
+
+    const dir = await categoryDir(category);
+    const currentPath = await dayFilePath(year, month, file);
+    const currentY = Number(year);
+    const currentM = Number(month);
+    const currentD = day;
+    const currentLabel = `${monthLabel(month)} ${currentD}, ${year}`;
+    const defaultVal = `${year}-${pad(currentM)}-${pad(currentD)}`;
+
+    const input = await promptAsync(
+      `Change "${currentLabel}" to a new date.\n\nFormats: 2026-10-09 · 10/09/2026 · October 9, 2026 · yesterday`,
+      defaultVal
+    );
+    if (!input) return;
+
+    const parsed = parseFlexibleDate(input);
+    if (!parsed) {
+      await confirmAsync(
+        `Could not understand "${input.trim()}".\n\nTry YYYY-MM-DD, like 2026-10-09.`
+      );
+      return;
+    }
+
+    // No-op
+    if (
+      parsed.year === currentY &&
+      parsed.month === currentM &&
+      parsed.day === currentD
+    ) {
+      return;
+    }
+
+    const newLabel = `${monthLabel(String(parsed.month))} ${parsed.day}, ${parsed.year}`;
+    const destName = `${newLabel}.selah`;
+    const destPath = await join(
+      dir,
+      String(parsed.year),
+      pad(parsed.month),
+      destName
+    );
+
+    if (await exists(destPath)) {
+      const ok = await confirmAsync(
+        `A note already exists for "${newLabel}". It will be moved to the trash and replaced.\n\nContinue?`
+      );
+      if (!ok) return;
+    }
+
+    // Tell any open editor bound to the old file to stop writing — otherwise
+    // its pending debounced save (or its unmount flush when the user
+    // navigates away) would recreate the old file at its stale path.
+    notifyNoteDeleted(currentPath);
+
+    try {
+      await moveJournalNoteToDate(
+        dir,
+        currentPath,
+        parsed.year,
+        parsed.month,
+        parsed.day
+      );
+
+      // Refresh both month folders so the sidebar picks up the move
+      // immediately, wherever the destination landed.
+      window.dispatchEvent(
+        new CustomEvent('folder-changed', {
+          detail: { path: await join(dir, year, month) },
+        })
+      );
+      window.dispatchEvent(
+        new CustomEvent('folder-changed', {
+          detail: { path: await join(dir, String(parsed.year), pad(parsed.month)) },
+        })
+      );
+
+      // Navigate the main pane to the moved entry so the user lands on it.
+      onOpenDay(category, parsed.year, parsed.month, parsed.day);
+    } catch (e: any) {
+      console.error('[journal] change date failed:', e);
+      await confirmAsync(`Could not change date: ${e?.message ?? String(e)}`);
+    }
+  };
+
   const deleteMonthNote = async () => {
     if (!ctx || ctx.kind !== 'month') return;
     const { year, month } = ctx;
@@ -2089,6 +2181,12 @@ function JournalTree({
               </button>
               <button onClick={async () => { const { year, month, file } = ctx; const path = await dayFilePath(year, month, file); openPicker('color', { notePath: path, label: file.replace(/\.(selah|md)$/, '') }, ctx.x, ctx.y); }} className="w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-[#2a3136] flex items-center space-x-2 border-b border-[#2a3136]">
                 <Pencil size={13} /> <span>Change color</span>
+              </button>
+              <button
+                onClick={changeDayDate}
+                className="w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-[#2a3136] flex items-center space-x-2 border-b border-[#2a3136]"
+              >
+                <CalendarDays size={13} /> <span>Change date…</span>
               </button>
               <button onClick={deleteDay} className="w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-[#2a3136] flex items-center space-x-2">
                 <Trash2 size={13} /> <span>Move entry to trash</span>
