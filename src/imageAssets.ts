@@ -6,6 +6,11 @@ import { moveToTrash } from "./trash";
 
 const ASSETS_DIR = "assets";
 
+// Must match the SRC_SEP used in DmArchive.tsx. Duplicated here on purpose
+// to avoid a circular import (DmArchive imports from this file, so this
+// file can't import from DmArchive).
+const DM_SRC_SEP = "\u001E";
+
 export async function assetsDirForNote(notePath: string): Promise<string> {
   const lastSlash = Math.max(notePath.lastIndexOf("/"), notePath.lastIndexOf("\\"));
   const noteDir = notePath.substring(0, lastSlash);
@@ -204,4 +209,57 @@ export function videoSrcsToRelativePaths(md: string, noteDir: string): string {
     const rel = normAbs.slice(normNote.length + 1);
     return pre + rel.replace(/ /g, "%20") + post;
   });
+}
+
+// ─── DM archive src transforms ──────────────────────────────────────────────
+// The `srcs` attribute on a dmarchive block is a Unit-Separator-joined list
+// of paths. Same idea as the video transforms, but per-element within the
+// attribute value.
+
+function convertSrcs(
+  srcsRaw: string,
+  noteDir: string,
+  direction: "toAsset" | "toRelative"
+): string {
+  const parts = srcsRaw.split(DM_SRC_SEP);
+  const mapped = parts.map((src) => {
+    if (!src) return src;
+
+    if (direction === "toAsset") {
+      if (/^(https?:|data:|blob:|asset:)/i.test(src)) return src;
+      const decoded = safeDecode(src);
+      const sep = noteDir.includes("\\") ? "\\" : "/";
+      const abs = noteDir.replace(/[\\/]+$/, "") + sep + decoded;
+      try {
+        return convertFileSrc(abs);
+      } catch {
+        return src;
+      }
+    }
+
+    const absPath = assetUrlToAbsolutePath(src);
+    if (!absPath) return src;
+    const normNote = noteDir.replace(/\\/g, "/").replace(/\/+$/, "");
+    const normAbs = absPath.replace(/\\/g, "/");
+    if (!normAbs.startsWith(normNote + "/")) return src;
+    const rel = normAbs.slice(normNote.length + 1);
+    return rel.replace(/ /g, "%20");
+  });
+  return mapped.join(DM_SRC_SEP);
+}
+
+export function dmarchiveSrcsToAssetUrls(md: string, noteDir: string): string {
+  return md.replace(
+    /(::: dmarchive\b[^\n]*?\bsrcs=")([^"]*)(")/g,
+    (_m, pre, srcsRaw, post) =>
+      pre + convertSrcs(String(srcsRaw), noteDir, "toAsset") + post
+  );
+}
+
+export function dmarchiveSrcsToRelativePaths(md: string, noteDir: string): string {
+  return md.replace(
+    /(::: dmarchive\b[^\n]*?\bsrcs=")([^"]*)(")/g,
+    (_m, pre, srcsRaw, post) =>
+      pre + convertSrcs(String(srcsRaw), noteDir, "toRelative") + post
+  );
 }

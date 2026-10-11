@@ -42,6 +42,7 @@ import { createCallout } from "./Callout";
 import { createBookmark } from "./Bookmark";
 import { createVideo } from "./VideoBlock";
 import { createScripture } from "./ScriptureBlock";
+import { createDmArchive } from "./DmArchive";
 import { isReliablyEmbeddable } from "./embeds";
 import { useNoteMode } from "./useNoteMode";
 import { NoteContext } from "./NoteContext";
@@ -60,6 +61,8 @@ import {
   markdownImagesToRelativePaths,
   videoSrcsToAssetUrls,
   videoSrcsToRelativePaths,
+  dmarchiveSrcsToAssetUrls,
+  dmarchiveSrcsToRelativePaths,
   assetUrlToAbsolutePath,
   isInsideNoteAssets,
   deleteImageFromNoteAssets,
@@ -275,6 +278,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
             bookmark: createBookmark(),
             video: createVideo(),
             scripture: createScripture(),
+            dmarchive: createDmArchive(),
           },
         })
       ),
@@ -328,7 +332,8 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       try {
         const rawBody = await blocksToNoteBody(editor, editor.document);
         const withImgs = markdownImagesToRelativePaths(rawBody, noteDirOf(path));
-        const body = videoSrcsToRelativePaths(withImgs, noteDirOf(path));
+        const withVideos = videoSrcsToRelativePaths(withImgs, noteDirOf(path));
+        const body = dmarchiveSrcsToRelativePaths(withVideos, noteDirOf(path));
         const wordCount = countWords(body);
         onWordCountChange?.(wordCount);
 
@@ -675,7 +680,11 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
 
           const withImgs = markdownImagesToAssetUrls(body, noteDirOf(path));
           const withVideos = videoSrcsToAssetUrls(withImgs, noteDirOf(path));
-          const blocks = await noteBodyToBlocks(editor, withVideos);
+          const withDmArchives = dmarchiveSrcsToAssetUrls(
+            withVideos,
+            noteDirOf(path)
+          );
+          const blocks = await noteBodyToBlocks(editor, withDmArchives);
           if (isMounted && editor) {
             editor.replaceBlocks(
               editor.document,
@@ -1036,6 +1045,58 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       [editor]
     );
 
+    // DM archive. Inserts an empty block; the block itself handles picking
+    // screenshots via its empty-state button (which keeps the block in
+    // charge of its own lifecycle — no need to duplicate the file-copy
+    // logic between the menu and the block).
+    const insertDmArchiveMenuItem = useCallback(
+      () => ({
+        title: "DM archive",
+        subtext: "Collapsible archive of chat screenshots",
+        onItemClick: () => {
+          try {
+            const cursor = editor.getTextCursorPosition?.();
+            const refBlock =
+              cursor?.block || editor.document[editor.document.length - 1];
+            if (!refBlock) return;
+            const today = new Date().toISOString().slice(0, 10);
+            const inserted = editor.insertBlocks(
+              [
+                {
+                  type: "dmarchive",
+                  props: {
+                    platform: "discord",
+                    who: "",
+                    date: today,
+                    caption: "",
+                    collapsed: true,
+                    srcs: "",
+                  },
+                } as any,
+              ],
+              refBlock,
+              "after"
+            );
+            if (inserted?.[0]?.id) {
+              try {
+                editor.setTextCursorPosition(inserted[0].id, "end");
+              } catch {}
+            }
+          } catch (e) {
+            console.error("[dmarchive] insert failed:", e);
+          }
+        },
+        aliases: [
+          "dmarchive", "dm", "screenshot", "chat", "message",
+          "discord", "instagram", "imessage", "text", "conversation",
+          "archive", "log", "chatlog",
+        ],
+        group: "Basic blocks",
+        icon: <span className="text-base">💬</span>,
+      }),
+      [editor]
+    );
+
     const getSlashMenuItems = useMemo(() => {
       return async (query: string) => {
         const defaultItems = getDefaultReactSlashMenuItems(editor);
@@ -1044,6 +1105,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         );
         const extra = [
           insertCallout(editor),
+          insertDmArchiveMenuItem(),
           insertNoteLinkMenuItem(),
           insertImageMenuItem(),
           insertVideoMenuItem(),
@@ -1060,7 +1122,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         );
       };
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [editor, openLinkPicker, insertImageMenuItem, insertVideoMenuItem, insertScriptureMenuItem]);
+    }, [editor, openLinkPicker, insertImageMenuItem, insertVideoMenuItem, insertScriptureMenuItem, insertDmArchiveMenuItem]);
 
     useEffect(() => {
       if (!editor) return;

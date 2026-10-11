@@ -29,7 +29,6 @@ export interface Frontmatter {
   [key: string]: unknown;
 }
 
-/** Keys we always leave as plain strings, never quote. */
 const PLAIN_STRING_KEYS = new Set([
   "icon", "color", "coverType", "coverValue", "iconAnchor", "titleAnchor",
   "titleFont", "docWidth", "mode", "created", "modified",
@@ -47,8 +46,6 @@ function isRiskyString(v: string): boolean {
 }
 
 export function parseNoteFile(raw: string): { frontmatter: Frontmatter; body: string } {
-  // Strip a UTF-8 BOM and any leading whitespace/blank lines before we try to
-  // match the frontmatter block.
   const cleaned = raw.replace(/^\uFEFF/, "").replace(/^[ \t]*\r?\n/, "");
   const match = cleaned.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
   if (!match) return { frontmatter: {}, body: raw };
@@ -61,8 +58,6 @@ export function parseNoteFile(raw: string): { frontmatter: Frontmatter; body: st
     const val = line.slice(colon + 1).trim();
     if (!key) continue;
 
-    // `json:` prefix — used for arrays of objects (e.g. links) and any
-    // non-primitive value that must round-trip through frontmatter verbatim.
     if (val.startsWith("json:")) {
       try {
         fm[key] = JSON.parse(val.slice(5));
@@ -72,7 +67,6 @@ export function parseNoteFile(raw: string): { frontmatter: Frontmatter; body: st
       }
     }
 
-    // JSON-quoted strings get unquoted with proper escape handling.
     if (
       (val.startsWith('"') && val.endsWith('"')) ||
       (val.startsWith("'") && val.endsWith("'"))
@@ -116,9 +110,6 @@ export function serializeNoteFile(fm: Frontmatter, body: string): string {
 
     if (Array.isArray(v)) {
       if (v.length === 0) continue;
-      // Simple arrays of short strings keep the classic [a, b, c] form.
-      // Anything else — arrays of objects, strings with commas or newlines —
-      // gets JSON-encoded behind the `json:` prefix so it round-trips.
       const simple = v.every(
         (x) => typeof x === "string" && !/[\n\r,]/.test(x)
       );
@@ -130,9 +121,6 @@ export function serializeNoteFile(fm: Frontmatter, body: string): string {
     } else if (v !== null && typeof v === "object") {
       lines.push(`${k}: json:${JSON.stringify(v)}`);
     } else if (typeof v === "string") {
-      // Safety: any string value that contains a newline, colon, or other
-      // YAML-significant character gets JSON-quoted so parsing on the next
-      // read can't misinterpret it.
       if (!PLAIN_STRING_KEYS.has(k) && isRiskyString(v)) {
         lines.push(`${k}: ${JSON.stringify(v)}`);
       } else {
@@ -156,7 +144,7 @@ interface ColumnSpec {
 }
 
 interface Segment {
-  kind: "md" | "columns" | "callout" | "bookmark" | "video" | "scripture";
+  kind: "md" | "columns" | "callout" | "bookmark" | "video" | "scripture" | "dmarchive";
   text?: string;
   columns?: ColumnSpec[];
   callout?: { icon: string; color: string; inner: string };
@@ -176,6 +164,15 @@ interface Segment {
   scripture?: {
     reference: string;
     text: string;
+  };
+  dmarchive?: {
+    platform: string;
+    who: string;
+    link: string;
+    date: string;
+    caption: string;
+    collapsed: boolean;
+    srcs: string;
   };
 }
 
@@ -202,7 +199,7 @@ function escAttr(s: unknown): string {
 }
 
 const NESTED_BLOCK_RE = /^:::\s+(columns|column|callout)\b/;
-const SELF_CONTAINED_BLOCK_RE = /^:::\s+(bookmark|video|scripture)\b/;
+const SELF_CONTAINED_BLOCK_RE = /^:::\s+(bookmark|video|scripture|dmarchive)\b/;
 
 function readUntilCloser(
   lines: string[],
@@ -356,6 +353,26 @@ function splitNoteBody(body: string): Segment[] {
       continue;
     }
 
+    if (trimmed.startsWith("::: dmarchive")) {
+      flush();
+      const attrs = parseAttrs(trimmed);
+      i++;
+      if (i < lines.length && lines[i].trim() === ":::") i++;
+      out.push({
+        kind: "dmarchive",
+        dmarchive: {
+          platform: unescapeAttr(attrs.platform || "discord"),
+          who: unescapeAttr(attrs.who || ""),
+          link: unescapeAttr(attrs.link || ""),
+          date: unescapeAttr(attrs.date || ""),
+          caption: unescapeAttr(attrs.caption || ""),
+          collapsed: attrs.collapsed === "true",
+          srcs: unescapeAttr(attrs.srcs || ""),
+        },
+      });
+      continue;
+    }
+
     buf.push(lines[i]);
     i++;
   }
@@ -403,32 +420,6 @@ function encodeColumnWidth(raw: unknown): string {
 }
 
 // ── Inline style markers ────────────────────────────────────────────────────
-//
-// BlockNote's markdown serializer only round-trips a subset of inline styles.
-// textColor and backgroundColor are dropped entirely; underline survives on
-// some platforms and not others. We smuggle all three through as invisible
-// private-use characters around the text.
-//
-// Format:  <START><key=value;key=value;…><SEP>text<END>
-//
-// Keys:
-//   c = textColor       (e.g. "c=blue")
-//   b = backgroundColor (e.g. "b=yellow")
-//   u = underline       (e.g. "u=1")
-//
-// Two rules keep this reliable:
-//
-//   1. NEVER let a marker pair span a newline. BlockNote splits text nodes at
-//      hard breaks during the markdown round-trip, and a marker whose START,
-//      SEP, and END end up in different text nodes can't be reassembled on
-//      the way back — which is why color used to break on Shift+Enter. We
-//      split the text at '\n' before encoding so each line gets its own
-//      self-contained marker pair.
-//
-//   2. On decode, merge adjacent text nodes that share identical styles
-//      first. This heals the case where markdown parsing split a marker pair
-//      across nodes for any other reason.
-
 const TC_START = "\uE000";
 const TC_SEP = "\uE002";
 const TC_END = "\uE001";
@@ -450,7 +441,6 @@ function parseMarkerMeta(meta: string): {
   backgroundColor?: string;
   underline?: boolean;
 } {
-  // Legacy format (pre-fix): just the color name, e.g. "blue".
   if (!meta.includes("=")) {
     return { textColor: meta || undefined };
   }
@@ -483,8 +473,6 @@ function encodeColorsInContent(content: any[]): any[] {
       const meta = buildMarkerMeta(node.styles);
       const prefix = `${TC_START}${meta}${TC_SEP}`;
 
-      // Split on '\n' and emit each line as its own self-contained run so
-      // a marker pair never spans a hard break.
       const pieces = String(node.text).split(/(\n)/);
       for (const piece of pieces) {
         if (piece === "\n") {
@@ -558,9 +546,6 @@ function expandColorMarkers(text: string, baseStyles: any): any[] {
   return runs;
 }
 
-/** Two style bags are "the same" if every truthy key matches. Falsy keys
- *  (undefined, false, "") are ignored so `{bold:false}` and `{}` compare
- *  equal — which is what we want for healing split markers. */
 function sameStyles(a: any, b: any): boolean {
   const keysA = a ? Object.keys(a).filter((k) => a[k]) : [];
   const keysB = b ? Object.keys(b).filter((k) => b[k]) : [];
@@ -569,7 +554,6 @@ function sameStyles(a: any, b: any): boolean {
 }
 
 function decodeColorsInContent(content: any[]): any[] {
-  // Pass 1: merge adjacent text nodes that share identical styles.
   const merged: any[] = [];
   for (const node of content) {
     const prev = merged[merged.length - 1];
@@ -586,7 +570,6 @@ function decodeColorsInContent(content: any[]): any[] {
     }
   }
 
-  // Pass 2: decode markers.
   const out: any[] = [];
   for (const node of merged) {
     if (
@@ -694,6 +677,20 @@ async function parseBodyToBlocks(
           text: s.text,
         },
       });
+    } else if (seg.kind === "dmarchive") {
+      const d = seg.dmarchive!;
+      blocks.push({
+        type: "dmarchive",
+        props: {
+          platform: d.platform,
+          who: d.who,
+          link: d.link,
+          date: d.date,
+          caption: d.caption,
+          collapsed: d.collapsed,
+          srcs: d.srcs,
+        },
+      });
     }
   }
 
@@ -768,6 +765,20 @@ async function serializeBlockList(
           p.text
         )}"`
       );
+    } else if (block.type === "dmarchive") {
+      await flush();
+      const p = block.props || {};
+      chunks.push(
+        `::: dmarchive platform="${escAttr(
+          p.platform || "discord"
+        )}" who="${escAttr(p.who)}" link="${escAttr(
+          p.link
+        )}" date="${escAttr(p.date)}" caption="${escAttr(
+          p.caption
+        )}" collapsed="${p.collapsed ? "true" : "false"}" srcs="${escAttr(
+          p.srcs
+        )}"`
+      );
     } else {
       pending.push(block);
     }
@@ -808,6 +819,23 @@ export function flattenToObsidianMarkdown(raw: string): string {
     } else if (seg.kind === "scripture") {
       const s = seg.scripture!;
       out.push(`> **${s.reference}** (KJV)\n>\n> ${s.text}`);
+    } else if (seg.kind === "dmarchive") {
+      const d = seg.dmarchive!;
+      // If a link is set, prefer making the header line itself a link.
+      const headerParts = [d.platform, d.who || "Conversation", d.date].filter(
+        Boolean
+      );
+      const header = headerParts.join(" · ");
+      if (d.link) {
+        out.push(`**[${header}](${d.link})**`);
+      } else {
+        out.push(`**${header}**`);
+      }
+      if (d.caption) out.push(`> ${d.caption}`);
+      const srcs = d.srcs.split("\u001E").filter(Boolean);
+      for (const src of srcs) {
+        out.push(`![Screenshot](${src})`);
+      }
     }
   }
 
