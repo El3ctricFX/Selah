@@ -76,18 +76,13 @@ interface NoteBodyProps {
   onWordCountChange?: (count: number) => void;
   onFrontmatterLoaded?: (fm: Frontmatter) => void;
   onOpenNoteByPath?: (path: string) => void;
-  // Called when the user clicks an image. Receives every image src in the
-  // note (in DOM order) plus the index of the one that was clicked.
   onImageClick?: (srcs: string[], index: number) => void;
 }
 
 export interface NoteBodyHandle {
   updateFrontmatter: (patch: Partial<Frontmatter>) => Promise<void>;
   flush: () => Promise<void>;
-  /** Tell the component to skip its unmount flush. Used before a rename so
-   *  the debounced save can't recreate the old file at the stale path. */
   dispose: () => void;
-  /** Undo a prior dispose() so the debounced save can run again. */
   rearm: () => void;
 }
 
@@ -262,7 +257,6 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
     const isNewFileRef = useRef(false);
     const dirtyRef = useRef(false);
     const bracketTriggerRef = useRef(false);
-    /** Set by dispose() to suppress the unmount flush (used before a rename). */
     const disposedRef = useRef(false);
 
     const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -330,9 +324,6 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
 
     const saveBody = async () => {
       if (!editor) return;
-      // If the note was deleted while we still had it open, do not write
-      // the stale buffer back to disk — that would recreate the file at
-      // its old path and make the deleted note "reappear".
       if (disposedRef.current) return;
       try {
         const rawBody = await blocksToNoteBody(editor, editor.document);
@@ -479,21 +470,6 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
 
     const wrapperRef = useRef<HTMLDivElement>(null);
 
-    // Paste handler.
-    //
-    // Attached to `document` in the capture phase rather than to the wrapper
-    // element directly, for two reasons:
-    //
-    //   1. The wrapper ref is null on the first render. If we attached to
-    //      `wrapperRef.current` inside an effect that only depends on
-    //      `[isLoading, …]`, the listener could be permanently skipped if the
-    //      ref wasn't populated by the time the effect ran.
-    //   2. In a Tauri webview the paste event may be dispatched on a
-    //      descendant (or even on `body`) depending on focus, and capture
-    //      guarantees we see it before BlockNote's own handlers.
-    //
-    // The handler then gates on `wrapper.contains(target)` so we only react
-    // to pastes that are actually inside the note editor.
     useEffect(() => {
       if (isLoading) return;
 
@@ -502,8 +478,6 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         const wrapper = wrapperRef.current;
         if (!target || !wrapper || !wrapper.contains(target)) return;
 
-        // Let plain inputs / textareas (link picker search, caption fields)
-        // handle their own pastes without interference.
         const el = target as HTMLElement;
         if (el.closest?.("input, textarea")) return;
 
@@ -513,9 +487,6 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
           return;
         }
 
-        // Collect image/video Files from both `items` and `files` — some
-        // webviews populate only one of the two, and on some platforms the
-        // file only shows up via `items[i].getAsFile()`.
         const collected: File[] = [];
 
         if (cd.items && cd.items.length > 0) {
@@ -554,17 +525,6 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
           return;
         }
 
-        // ── Fallback: ask Rust for the clipboard image ──────────────────
-        //
-        // Some webviews (notably WebKitGTK on Linux, occasionally WebView2)
-        // deliver a `paste` event with no `File` payload at all, even though
-        // the clipboard clearly contains an image — they expose it as a
-        // `text/html` string instead, or as nothing. Read the bitmap
-        // directly from the OS clipboard via `arboard` on the Rust side.
-        //
-        // This runs async, so we can't call `preventDefault()` until after
-        // we know the clipboard actually had an image. Otherwise a normal
-        // text paste would be silently swallowed.
         void (async () => {
           try {
             const pngBytes = await invoke<number[] | null>(
@@ -583,7 +543,6 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
           }
         })();
 
-        // ── Fallback: URL paste → paste menu ────────────────────────────
         const text = cd.getData("text/plain")?.trim() || "";
         if (!URL_RE.test(text)) return;
 
@@ -742,24 +701,12 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
 
     useEffect(() => {
       return () => {
-        // If the parent called dispose() (typically right before a rename),
-        // skip the flush — otherwise the debounced save would recreate the
-        // old file at the stale `path` with only the in-memory body.
         if (disposedRef.current) return;
         flush();
       };
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [path]);
 
-    // If the note we're editing is deleted elsewhere (sidebar right-click →
-    // Move to trash, or a file/folder delete from a Notes view), stop
-    // writing to disk. Without this, either the pending debounced save or
-    // the unmount flush when the user navigates away would recreate the
-    // file at its old path, making the deleted note "reappear".
-    //
-    // The event carries the deleted path; we accept it if it matches our
-    // own path exactly OR if our path lives inside it (so folder deletes
-    // also match).
     useEffect(() => {
       const handler = (e: Event) => {
         const detail = (e as CustomEvent).detail as { path?: string } | undefined;
@@ -781,9 +728,6 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       return () => window.removeEventListener("note-deleted", handler);
     }, [path]);
 
-    // Persist any pending image-delete prompt across remounts. Without this,
-    // navigating away and back while the confirm modal is open silently
-    // discards the user's chance to cancel.
     useEffect(() => {
       try {
         const raw = sessionStorage.getItem(`pendingImgDel:${path}`);
@@ -1249,9 +1193,6 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       ? isReliablyEmbeddable(pasteMenu.url)
       : false;
 
-    // Provide the note's directory to descendant blocks (e.g. VideoBlock)
-    // so they can resolve relative asset paths without relying on the
-    // fragile markdown ↔ asset:// round-trip.
     const noteContextValue = useMemo(
       () => ({ notePath: path, noteDir: noteDirOf(path) }),
       [path]

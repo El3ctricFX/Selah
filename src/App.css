@@ -103,8 +103,7 @@ html, body, #root {
         the library's exact class names.
    ═══════════════════════════════════════════════════════════════════════ */
 
-/* 1. Gutter on the right edge of every column. The handle lives in this
-      strip, which is why we make it wide enough to actually hit. */
+/* 1. Gutter on the right edge of every column. */
 .bn-block-column,
 .bn-block-column-list > .bn-block-column {
   padding-right: 14px !important;
@@ -119,9 +118,7 @@ html, body, #root {
   max-width: calc(100% - 6px) !important;
 }
 
-/* 3. Raise the handle above anything a block might render on top of it.
-      Broad on purpose — different versions of the library use different
-      class names, and z-index is harmless if we over-match. */
+/* 3. Raise the handle above anything a block might render on top of it. */
 [class*="resize" i],
 [class*="Resize"],
 [data-column-resize-handle],
@@ -134,8 +131,7 @@ html, body, #root {
   pointer-events: auto !important;
 }
 
-/* 4. Belt-and-braces: the handle is often absolutely positioned inside
-      the column list. Make sure the list itself doesn't clip it. */
+/* 4. Belt-and-braces: don't let the column list clip the handle. */
 .bn-block-column-list {
   overflow: visible !important;
 }

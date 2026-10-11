@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "selah",
+  "productName": "Selah",
   "version": "0.1.2",
   "identifier": "io.github.el3ctricfx.selah",
   "build": {

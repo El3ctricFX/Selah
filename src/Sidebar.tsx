@@ -436,15 +436,25 @@ export default function Sidebar(props: SidebarProps) {
       />
 
       <div className="flex-shrink-0 border-b border-[#2a3136]">
-        <div className="px-3 pt-3 pb-2 flex items-center justify-between">
-          <div
-            className="font-semibold text-xs text-gray-400 uppercase tracking-wider truncate cursor-pointer hover:text-gray-200"
+        {/* ─── Header: logo + vault name ─────────────────────────────── */}
+        <div className="px-3 pt-3 pb-2 flex items-center justify-between gap-2">
+          <button
+            type="button"
             onClick={onSwitchVault}
             title={vaultPath}
+            className="flex items-center gap-2 min-w-0 flex-1 cursor-pointer text-left"
           >
-            {vaultName}
-          </div>
-          <div className="flex items-center space-x-0.5">
+            <img
+              src="/logo.png"
+              alt="Selah"
+              className="w-6 h-6 flex-shrink-0 select-none"
+              draggable={false}
+            />
+            <div className="font-semibold text-xs text-gray-400 uppercase tracking-wider truncate hover:text-gray-200">
+              {vaultName}
+            </div>
+          </button>
+          <div className="flex items-center space-x-0.5 flex-shrink-0">
             <button
               onClick={toggleShowExtensions}
               className={`p-1 rounded hover:bg-[#1e2327] transition-colors ${

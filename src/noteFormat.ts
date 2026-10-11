@@ -48,8 +48,7 @@ function isRiskyString(v: string): boolean {
 
 export function parseNoteFile(raw: string): { frontmatter: Frontmatter; body: string } {
   // Strip a UTF-8 BOM and any leading whitespace/blank lines before we try to
-  // match the frontmatter block. Without this, a file that starts with
-  // "\uFEFF---" or "\n---" is treated as pure body and all frontmatter is lost.
+  // match the frontmatter block.
   const cleaned = raw.replace(/^\uFEFF/, "").replace(/^[ \t]*\r?\n/, "");
   const match = cleaned.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
   if (!match) return { frontmatter: {}, body: raw };
@@ -61,6 +60,17 @@ export function parseNoteFile(raw: string): { frontmatter: Frontmatter; body: st
     const key = line.slice(0, colon).trim();
     const val = line.slice(colon + 1).trim();
     if (!key) continue;
+
+    // `json:` prefix — used for arrays of objects (e.g. links) and any
+    // non-primitive value that must round-trip through frontmatter verbatim.
+    if (val.startsWith("json:")) {
+      try {
+        fm[key] = JSON.parse(val.slice(5));
+        continue;
+      } catch {
+        // fall through to plain string handling
+      }
+    }
 
     // JSON-quoted strings get unquoted with proper escape handling.
     if (
@@ -103,19 +113,29 @@ export function serializeNoteFile(fm: Frontmatter, body: string): string {
   for (const [k, v] of Object.entries(fm)) {
     if (v === undefined || v === null) continue;
     if (typeof v === "string" && v === "") continue;
+
     if (Array.isArray(v)) {
       if (v.length === 0) continue;
-      lines.push(`${k}: [${v.join(", ")}]`);
+      // Simple arrays of short strings keep the classic [a, b, c] form.
+      // Anything else — arrays of objects, strings with commas or newlines —
+      // gets JSON-encoded behind the `json:` prefix so it round-trips.
+      const simple = v.every(
+        (x) => typeof x === "string" && !/[\n\r,]/.test(x)
+      );
+      if (simple) {
+        lines.push(`${k}: [${v.join(", ")}]`);
+      } else {
+        lines.push(`${k}: json:${JSON.stringify(v)}`);
+      }
+    } else if (v !== null && typeof v === "object") {
+      lines.push(`${k}: json:${JSON.stringify(v)}`);
     } else if (typeof v === "string") {
       // Safety: any string value that contains a newline, colon, or other
       // YAML-significant character gets JSON-quoted so parsing on the next
-      // read can't misinterpret it (and so multi-line values don't shred the
-      // frontmatter block into extra keys).
+      // read can't misinterpret it.
       if (!PLAIN_STRING_KEYS.has(k) && isRiskyString(v)) {
         lines.push(`${k}: ${JSON.stringify(v)}`);
       } else {
-        // Even "plain" keys are safe to quote if they contain newlines — do
-        // it, because otherwise a newline splits into two frontmatter keys.
         if (/[\r\n]/.test(v)) {
           lines.push(`${k}: ${JSON.stringify(v)}`);
         } else {
@@ -167,25 +187,6 @@ function parseAttrs(line: string): Record<string, string> {
   return out;
 }
 
-// Attribute escaping for the `:::` block fences.
-//
-// The whole block lives on a single physical line in the .selah file, so any
-// newline inside an attribute value (scripture verse text, video captions,
-// bookmark descriptions…) has to be encoded rather than emitted raw —
-// otherwise it would terminate the line and shred the fence. Historically
-// this replaced `\n` with a literal space, which was lossy: the verse
-// formatting was destroyed the moment the note was saved, and reloading
-// showed flat prose.
-//
-// We now encode newlines as `&#10;` (the HTML numeric reference for LF),
-// which is only five ASCII characters, keeps the whole block on one line,
-// and — because it contains no `"` and no `&` at the point it's written —
-// composes cleanly with the `&` and `"` escaping that runs before it.
-//
-// Decoding order matters. `escAttr` runs `&` → `&amp;` first, so a
-// user-typed literal `&#10;` becomes `&amp;#10;` on disk. The unescape
-// therefore has to run `&#10;` → `\n` BEFORE `&amp;` → `&`, otherwise that
-// escaped literal would be wrongly decoded back into a real newline.
 function unescapeAttr(s: string): string {
   return s
     .replace(/&quot;/g, '"')
@@ -200,31 +201,9 @@ function escAttr(s: unknown): string {
     .replace(/\n/g, "&#10;");
 }
 
-/**
- * `::: <keyword>` lines that open a *nested* block whose body is terminated
- * by a matching bare `:::`. These must increment nesting depth so the parser
- * doesn't mistake a nested closer for the enclosing block's closer.
- */
 const NESTED_BLOCK_RE = /^:::\s+(columns|column|callout)\b/;
-
-/**
- * `::: <keyword>` lines for blocks that carry all their data on the opening
- * line and have no body / closer. They never affect nesting depth.
- */
 const SELF_CONTAINED_BLOCK_RE = /^:::\s+(bookmark|video|scripture)\b/;
 
-/**
- * Scan forward from `start` looking for the bare `:::` that closes the block
- * we're already inside. Tracks nesting depth: nested `:::` openers increment
- * it, bare `:::` lines decrement it, and we return when depth would go below
- * zero (i.e. we found the closer for our block).
- *
- * Self-contained blocks (`::: bookmark`, `::: video`, `::: scripture`) don't
- * affect depth — they have no body and no closer.
- *
- * Returns the lines strictly between the fences (excluding the opening line
- * and the closing `:::`) plus the index just past the closer.
- */
 function readUntilCloser(
   lines: string[],
   start: number
@@ -262,7 +241,6 @@ function readUntilCloser(
     i++;
   }
 
-  // Malformed input — no closer found. Treat EOF as the close.
   return { content, end: i };
 }
 
@@ -288,9 +266,6 @@ function splitNoteBody(body: string): Segment[] {
       const { content, end } = readUntilCloser(lines, i);
       i = end;
 
-      // The columns body is a sequence of `::: column width="..."` blocks.
-      // Each column's own content may itself contain nested `:::` blocks;
-      // readUntilCloser handles that when we recurse per column.
       const cols: ColumnSpec[] = [];
       let j = 0;
       while (j < content.length) {
@@ -334,8 +309,6 @@ function splitNoteBody(body: string): Segment[] {
       flush();
       const attrs = parseAttrs(trimmed);
       i++;
-      // Bookmarks have no body. Older files have no closer; new ones don't
-      // either — but be lenient and skip a bare `:::` if present.
       if (i < lines.length && lines[i].trim() === ":::") i++;
       const mode = attrs.mode === "embed" ? "embed" : "bookmark";
       out.push({
@@ -372,8 +345,6 @@ function splitNoteBody(body: string): Segment[] {
       flush();
       const attrs = parseAttrs(trimmed);
       i++;
-      // Scripture blocks are self-contained — no body, no closer. But be
-      // lenient and skip a bare `:::` if a hand-edited file has one.
       if (i < lines.length && lines[i].trim() === ":::") i++;
       out.push({
         kind: "scripture",
@@ -393,27 +364,6 @@ function splitNoteBody(body: string): Segment[] {
   return out;
 }
 
-/**
- * Canonicalize a column width to a value `@blocknote/xl-multi-column` can
- * actually use.
- *
- * The library stores width in one of two shapes:
- *   - the literal string "1fr" for flexible sizing
- *   - a NUMBER in pixels after the user drags the resize handle
- *
- * Its drag handler has a bug: if it's given a string it can't numerically
- * coerce (like "1fr"), it falls into a `currentWidth + delta` path where
- * `delta` is NaN, and produces values like "1frNaNNaNNaN". That garbage
- * round-trips through the serializer verbatim, and on the next load the
- * library can't parse it — so it silently refuses to attach a resize handle
- * and the column stays frozen.
- *
- * We collapse every known-bad shape back to a value the library understands.
- * Corrupted files self-heal on open, and the library's output can never be
- * persisted in a broken state either.
- *
- * Returns: a positive number (pixels), an fr string like "2fr", or "1fr".
- */
 function sanitizeColumnWidth(raw: unknown): string | number {
   if (raw === undefined || raw === null) return "1fr";
 
@@ -424,28 +374,23 @@ function sanitizeColumnWidth(raw: unknown): string | number {
   const trimmed = String(raw).trim();
   if (!trimmed) return "1fr";
 
-  // Exact "Nfr" — the only fr form the library emits. Preserve it as a string.
   const frMatch = trimmed.match(/^(\d+(?:\.\d+)?)fr$/);
   if (frMatch) {
     const n = Number(frMatch[1]);
     return Number.isFinite(n) && n > 0 ? `${frMatch[1]}fr` : "1fr";
   }
 
-  // Bare number: "312", "0.5"
   if (/^\d+(\.\d+)?$/.test(trimmed)) {
     const n = Number(trimmed);
     return Number.isFinite(n) && n > 0 ? n : "1fr";
   }
 
-  // "300px"
   const pxMatch = trimmed.match(/^(\d+(?:\.\d+)?)px$/);
   if (pxMatch) {
     const n = Number(pxMatch[1]);
     return Number.isFinite(n) && n > 0 ? n : "1fr";
   }
 
-  // Anything else is corruption ("1frNaNNaN…", "NaN", "undefined", …) that
-  // would break `grid-template-columns` and kill the resize handle. Reset.
   return "1fr";
 }
 
@@ -457,49 +402,101 @@ function encodeColumnWidth(raw: unknown): string {
   return String(sanitizeColumnWidth(raw));
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  TEXT COLOR PERSISTENCE
+// ── Inline style markers ────────────────────────────────────────────────────
 //
-//  Markdown has no syntax for text color, so BlockNote's markdown serializer
-//  silently drops `textColor` styles when saving a note. We work around this
-//  by wrapping colored runs with invisible marker characters before
-//  serialization and expanding them back into styled text nodes after
-//  parsing.
+// BlockNote's markdown serializer only round-trips a subset of inline styles.
+// textColor and backgroundColor are dropped entirely; underline survives on
+// some platforms and not others. We smuggle all three through as invisible
+// private-use characters around the text.
 //
-//  Format: <START><colorName><SEP><text><END>
-//    START = U+E000
-//    SEP   = U+E002
-//    END   = U+E001
+// Format:  <START><key=value;key=value;…><SEP>text<END>
 //
-//  These code points live in the Unicode Private Use Area, so markdown
-//  tooling won't escape or trim them, and they're extremely unlikely to
-//  appear in user-authored text.
+// Keys:
+//   c = textColor       (e.g. "c=blue")
+//   b = backgroundColor (e.g. "b=yellow")
+//   u = underline       (e.g. "u=1")
 //
-//  Colors survive because we encode before handing blocks to
-//  `blocksToMarkdownLossy` and decode right after `tryParseMarkdownToBlocks`.
-//  All other styles (bold, italic, etc.) ride along on the same text node.
-// ═══════════════════════════════════════════════════════════════════════════
+// Two rules keep this reliable:
+//
+//   1. NEVER let a marker pair span a newline. BlockNote splits text nodes at
+//      hard breaks during the markdown round-trip, and a marker whose START,
+//      SEP, and END end up in different text nodes can't be reassembled on
+//      the way back — which is why color used to break on Shift+Enter. We
+//      split the text at '\n' before encoding so each line gets its own
+//      self-contained marker pair.
+//
+//   2. On decode, merge adjacent text nodes that share identical styles
+//      first. This heals the case where markdown parsing split a marker pair
+//      across nodes for any other reason.
 
 const TC_START = "\uE000";
 const TC_SEP = "\uE002";
 const TC_END = "\uE001";
 
-/**
- * Walk a block's inline content and wrap every text node that carries a
- * `textColor` style with the marker trio. Non-color styles stay on the node
- * so the markdown serializer can still see them.
- */
+function hasEncodableStyles(styles: any): boolean {
+  return !!(styles?.textColor || styles?.backgroundColor || styles?.underline);
+}
+
+function buildMarkerMeta(styles: any): string {
+  const parts: string[] = [];
+  if (styles?.textColor) parts.push(`c=${styles.textColor}`);
+  if (styles?.backgroundColor) parts.push(`b=${styles.backgroundColor}`);
+  if (styles?.underline) parts.push(`u=1`);
+  return parts.join(";");
+}
+
+function parseMarkerMeta(meta: string): {
+  textColor?: string;
+  backgroundColor?: string;
+  underline?: boolean;
+} {
+  // Legacy format (pre-fix): just the color name, e.g. "blue".
+  if (!meta.includes("=")) {
+    return { textColor: meta || undefined };
+  }
+  const result: {
+    textColor?: string;
+    backgroundColor?: string;
+    underline?: boolean;
+  } = {};
+  for (const kv of meta.split(";")) {
+    const eq = kv.indexOf("=");
+    if (eq === -1) continue;
+    const key = kv.slice(0, eq).trim();
+    const val = kv.slice(eq + 1).trim();
+    if (key === "c") result.textColor = val;
+    else if (key === "b") result.backgroundColor = val;
+    else if (key === "u") result.underline = val === "1" || val === "true";
+  }
+  return result;
+}
+
 function encodeColorsInContent(content: any[]): any[] {
   const out: any[] = [];
   for (const node of content) {
-    if (node?.type === "text" && node.styles?.textColor) {
+    if (node?.type === "text" && hasEncodableStyles(node.styles)) {
       const restStyles = { ...node.styles };
       delete restStyles.textColor;
-      out.push({
-        type: "text",
-        text: `${TC_START}${node.styles.textColor}${TC_SEP}${node.text}${TC_END}`,
-        styles: restStyles,
-      });
+      delete restStyles.backgroundColor;
+      delete restStyles.underline;
+
+      const meta = buildMarkerMeta(node.styles);
+      const prefix = `${TC_START}${meta}${TC_SEP}`;
+
+      // Split on '\n' and emit each line as its own self-contained run so
+      // a marker pair never spans a hard break.
+      const pieces = String(node.text).split(/(\n)/);
+      for (const piece of pieces) {
+        if (piece === "\n") {
+          out.push({ type: "text", text: "\n", styles: restStyles });
+        } else if (piece.length > 0) {
+          out.push({
+            type: "text",
+            text: `${prefix}${piece}${TC_END}`,
+            styles: restStyles,
+          });
+        }
+      }
     } else if (node?.type === "link" && Array.isArray(node.content)) {
       out.push({ ...node, content: encodeColorsInContent(node.content) });
     } else {
@@ -524,11 +521,6 @@ function encodeColorsInBlocks(blocks: any[]): any[] {
   return blocks.map(encodeColorsInBlock);
 }
 
-/**
- * Take a plain string that may contain one or more <START>color<SEP>text<END>
- * runs and split it into properly styled text nodes. Text outside markers
- * keeps the base styles.
- */
 function expandColorMarkers(text: string, baseStyles: any): any[] {
   const runs: any[] = [];
   let i = 0;
@@ -553,21 +545,50 @@ function expandColorMarkers(text: string, baseStyles: any): any[] {
       runs.push({ type: "text", text: text.slice(start), styles: baseStyles });
       break;
     }
-    const colorName = text.slice(start + 1, sep);
-    const inner = text.slice(sep + 1, end);
+    const meta = text.slice(start + TC_START.length, sep);
+    const inner = text.slice(sep + TC_SEP.length, end);
+    const style = parseMarkerMeta(meta);
     runs.push({
       type: "text",
       text: inner,
-      styles: { ...baseStyles, textColor: colorName },
+      styles: { ...baseStyles, ...style },
     });
-    i = end + 1;
+    i = end + TC_END.length;
   }
   return runs;
 }
 
+/** Two style bags are "the same" if every truthy key matches. Falsy keys
+ *  (undefined, false, "") are ignored so `{bold:false}` and `{}` compare
+ *  equal — which is what we want for healing split markers. */
+function sameStyles(a: any, b: any): boolean {
+  const keysA = a ? Object.keys(a).filter((k) => a[k]) : [];
+  const keysB = b ? Object.keys(b).filter((k) => b[k]) : [];
+  if (keysA.length !== keysB.length) return false;
+  return keysA.every((k) => a[k] === b[k]);
+}
+
 function decodeColorsInContent(content: any[]): any[] {
-  const out: any[] = [];
+  // Pass 1: merge adjacent text nodes that share identical styles.
+  const merged: any[] = [];
   for (const node of content) {
+    const prev = merged[merged.length - 1];
+    if (
+      prev?.type === "text" &&
+      node?.type === "text" &&
+      typeof prev.text === "string" &&
+      typeof node.text === "string" &&
+      sameStyles(prev.styles, node.styles)
+    ) {
+      merged[merged.length - 1] = { ...prev, text: prev.text + node.text };
+    } else {
+      merged.push(node);
+    }
+  }
+
+  // Pass 2: decode markers.
+  const out: any[] = [];
+  for (const node of merged) {
     if (
       node?.type === "text" &&
       typeof node.text === "string" &&
@@ -613,9 +634,6 @@ async function parseBodyToBlocks(
     } else if (seg.kind === "columns") {
       const columnChildren = await Promise.all(
         (seg.columns || []).map(async (col) => {
-          // Recurse so callouts / bookmarks / videos nested inside a column
-          // survive the round-trip. The previous implementation called
-          // tryParseMarkdownToBlocks directly, which silently dropped them.
           const inner = await parseBodyToBlocks(editor, col.content || "");
           return {
             type: "column",
@@ -698,9 +716,6 @@ async function serializeBlockList(
 
   const flush = async () => {
     if (!pending.length) return;
-    // Encode text colors into invisible markers before the markdown
-    // serializer runs — otherwise BlockNote drops them, since markdown has
-    // no way to represent inline color.
     const md = await editor.blocksToMarkdownLossy(encodeColorsInBlocks(pending));
     if (md.trim()) chunks.push(md.trim());
     pending = [];
@@ -711,9 +726,6 @@ async function serializeBlockList(
       await flush();
       const colTexts: string[] = [];
       for (const col of block.children || []) {
-        // Recurse so custom blocks inside columns serialize with their
-        // correct `:::` fences instead of being dropped by the built-in
-        // markdown serializer.
         const inner = await serializeBlockList(editor, col.children || []);
         const width = encodeColumnWidth(col.props?.width);
         colTexts.push(`::: column width="${width}"\n${inner.trimEnd()}\n:::`);
