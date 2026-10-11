@@ -201,8 +201,8 @@ function StableField({
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     // The prop type is the intersection of both element variants' handlers;
-    // TypeScript can't narrow the union automatically, and the runtime shape
-    // is identical either way, so cast is safe.
+    // TS can't narrow the union automatically, but the runtime shape is the
+    // same, so the cast is safe.
     externalOnKeyDown?.(e as any);
     if (e.defaultPrevented) return;
     const ctrl = e.ctrlKey || e.metaKey;
@@ -1102,14 +1102,9 @@ export default function AbbaView({ abbaDir, name, icon }: AbbaViewProps) {
     const patch = { icon: emoji || undefined };
 
     if (RICH_SECTIONS.has(section)) {
-      // Rich sections are owned by NoteBody when open; from the list view
-      // nothing is mounted, so a direct file write is safe and preserves
-      // the body.
       await writeAbbaEntryIcon(abbaDir, section, id, emoji);
     }
 
-    // Update local state so the list re-renders immediately. For non-rich
-    // sections this also triggers a debounced write via commitX.
     switch (section) {
       case "sermons":
         commitSermons(sermons.map((s) => s.id === id ? { ...s, ...patch } : s));
@@ -1524,10 +1519,6 @@ export default function AbbaView({ abbaDir, name, icon }: AbbaViewProps) {
   const openStudy = openStudyId ? studies.find((s) => s.id === openStudyId) || null : null;
   const openEvent = openEventId ? events.find((e) => e.id === openEventId) || null : null;
 
-  const openLightbox = (scope: AbbaScope, images: string[], index = 0) => {
-    setLightbox({ scope, images, index });
-  };
-
   const totalUnusedBytes = optimizeUnused.reduce((sum, u) => sum + u.size, 0);
 
   return (
@@ -1549,7 +1540,6 @@ export default function AbbaView({ abbaDir, name, icon }: AbbaViewProps) {
             onIndexChange={(i) => setRichLightbox((prev) => (prev ? { ...prev, index: i } : null))} />
         )}
 
-        {/* Right-click context menu for list entries */}
         {ctxMenu && (
           <div
             className="fixed z-[400] bg-[#1e2327] border border-[#2a3136] rounded-md shadow-2xl py-1 w-[220px]"
@@ -1585,7 +1575,6 @@ export default function AbbaView({ abbaDir, name, icon }: AbbaViewProps) {
           </div>
         )}
 
-        {/* Icon picker popup */}
         {iconPicker && createPortal(
           <div
             ref={iconPickerRef}
