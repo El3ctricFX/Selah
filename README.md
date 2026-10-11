@@ -2,6 +2,9 @@
   <img src="public/logo.png" alt="Selah logo" width="320" />
 
   # Selah
+  
+[![Release](https://img.shields.io/github/v/release/El3ctricFX/Selah)](https://github.com/El3ctricFX/Selah/releases)
+[![Downloads](https://img.shields.io/github/downloads/El3ctricFX/Selah/total)](https://github.com/El3ctricFX/Selah/releases)
 
   **Pause. Reflect. Write. Grow.**
 
