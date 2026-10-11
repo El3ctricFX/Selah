@@ -43,6 +43,15 @@ modules:
       - mkdir -p /app/lib/ffmpeg
       - ar x Selah_0.1.3_amd64.deb
       - tar -xf data.tar.* -C /app
+
+      # Tauri 2 names the binary inside the .deb after Cargo.toml's
+      # [package] name (lowercase "selah"), while the .deb filename itself
+      # uses productName ("Selah"). Normalize the extracted paths so the
+      # rest of this recipe can use the capitalized name consistently with
+      # the app-id and the `command:` field above.
+      - if [ -f /app/usr/bin/selah ] && [ ! -f /app/usr/bin/Selah ]; then mv /app/usr/bin/selah /app/usr/bin/Selah; fi
+      - if [ -f /app/usr/share/applications/selah.desktop ] && [ ! -f /app/usr/share/applications/Selah.desktop ]; then mv /app/usr/share/applications/selah.desktop /app/usr/share/applications/Selah.desktop; fi
+
       - patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2 /app/usr/bin/Selah
       - patchelf --remove-rpath /app/usr/bin/Selah
       - install -Dm755 /app/usr/bin/Selah /app/bin/Selah
