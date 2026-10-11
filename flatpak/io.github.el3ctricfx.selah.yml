@@ -3,7 +3,7 @@ app-id: io.github.el3ctricfx.selah
 runtime: org.gnome.Platform
 runtime-version: '48'
 sdk: org.gnome.Sdk
-command: Selah
+command: selah
 
 finish-args:
   - --share=ipc
@@ -44,18 +44,37 @@ modules:
       - ar x Selah_0.1.3_amd64.deb
       - tar -xf data.tar.* -C /app
 
-      # Tauri 2 names the binary inside the .deb after Cargo.toml's
-      # [package] name (lowercase "selah"), while the .deb filename itself
-      # uses productName ("Selah"). Normalize the extracted paths so the
-      # rest of this recipe can use the capitalized name consistently with
-      # the app-id and the `command:` field above.
-      - if [ -f /app/usr/bin/selah ] && [ ! -f /app/usr/bin/Selah ]; then mv /app/usr/bin/selah /app/usr/bin/Selah; fi
-      - if [ -f /app/usr/share/applications/selah.desktop ] && [ ! -f /app/usr/share/applications/Selah.desktop ]; then mv /app/usr/share/applications/selah.desktop /app/usr/share/applications/Selah.desktop; fi
+      # The binary inside the .deb is lowercase ("selah", from Cargo.toml's
+      # package name). Keep it lowercase here so it matches what the desktop
+      # file's Exec= line references — if they diverge, the launcher entry
+      # silently fails to start anything.
+      - patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2 /app/usr/bin/selah
+      - patchelf --remove-rpath /app/usr/bin/selah
+      - install -Dm755 /app/usr/bin/selah /app/bin/selah
 
-      - patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2 /app/usr/bin/Selah
-      - patchelf --remove-rpath /app/usr/bin/Selah
-      - install -Dm755 /app/usr/bin/Selah /app/bin/Selah
-      - install -Dm644 /app/usr/share/applications/Selah.desktop /app/share/applications/io.github.el3ctricfx.selah.desktop
+      # The .deb drops icons under /app/usr/share/icons/... but flatpak only
+      # looks in /app/share/icons/... — so copy them over. We also rename
+      # each one to the app-id, which is what the desktop file's Icon= field
+      # will point at.
+      - |
+        for dir in /app/usr/share/icons/hicolor/*/apps; do
+          [ -d "$dir" ] || continue
+          size=$(basename "$(dirname "$dir")")
+          for f in "$dir"/*.png; do
+            [ -f "$f" ] || continue
+            install -Dm644 "$f" "/app/share/icons/hicolor/${size}/apps/io.github.el3ctricfx.selah.png"
+          done
+        done
+
+      # Tauri's generated desktop file has Exec=selah and Icon=selah. Rewrite
+      # it to use the app-id for the icon (so the launcher picks it up) and
+      # install it under the app-id name.
+      - |
+        sed -e 's|^Exec=.*|Exec=selah|' \
+            -e 's|^Icon=.*|Icon=io.github.el3ctricfx.selah|' \
+            /app/usr/share/applications/Selah.desktop \
+            > /tmp/Selah.desktop
+        install -Dm644 /tmp/Selah.desktop /app/share/applications/io.github.el3ctricfx.selah.desktop
     sources:
       - type: file
         path: ../src-tauri/target/release/bundle/deb/Selah_0.1.3_amd64.deb
