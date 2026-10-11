@@ -14,7 +14,7 @@ import {
   Plus, Trash2, X, Upload, ExternalLink,
   Music, ListMusic, Image as ImageIcon, User, FileAudio, Save,
   ChevronLeft, ChevronRight, Pencil, BookMarked,
-  Search, Clock, Calendar, Maximize2, ZoomIn, ZoomOut,
+  Search, Clock, Calendar, ZoomIn, ZoomOut,
   Sparkles, Loader2, AlertTriangle, Star, MapPin,
   List as ListIcon, LayoutGrid, Smile,
   Bookmark as BookmarkIcon, Play as PlayIcon,
@@ -200,7 +200,10 @@ function StableField({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-    externalOnKeyDown?.(e);
+    // The prop type is the intersection of both element variants' handlers;
+    // TypeScript can't narrow the union automatically, and the runtime shape
+    // is identical either way, so cast is safe.
+    externalOnKeyDown?.(e as any);
     if (e.defaultPrevented) return;
     const ctrl = e.ctrlKey || e.metaKey;
     if (!ctrl) return;
@@ -236,17 +239,6 @@ const SECTION_DIR: Record<AbbaSection, string> = {
 const RICH_SECTIONS = new Set<AbbaSection>([
   "prayers", "testimonies", "events", "studies",
 ]);
-
-function baseNameForSection(section: AbbaSection): string {
-  switch (section) {
-    case "sermons":     return "sermon";
-    case "prayers":     return "prayer";
-    case "testimonies": return "testimony";
-    case "studies":     return "study";
-    case "events":      return "event";
-    case "links":       return "link";
-  }
-}
 
 const BODY_FIELD: Record<AbbaSection, string | null> = {
   sermons: "notes", prayers: "body", testimonies: "body",
@@ -1693,7 +1685,7 @@ export default function AbbaView({ abbaDir, name, icon }: AbbaViewProps) {
                 onUpdate={(patch) => updateSermon(openSermon.id, patch)}
                 onDelete={() => deleteSermon(openSermon)}
                 pickAudio={pickAudio}
-                fetchLinkMeta={fetchLinkMeta} onOpenLightbox={openLightbox} />
+                fetchLinkMeta={fetchLinkMeta} />
             ) : (
               <SermonsList sermons={sermons} viewMode={viewMode} abbaDir={abbaDir}
                 onOpen={(id) => setOpenSermonId(id)} onCreate={promptNewSermon}
@@ -2766,15 +2758,13 @@ function StudiesList({ studies, viewMode, onOpen, onCreate, onContextMenu }: {
 // ═══════════════════════════════════════════════════════════════════════════
 function SermonDetail({
   sermon, abbaDir, isEdit, onBack, onUpdate, onDelete,
-  pickAudio, fetchLinkMeta, onOpenLightbox,
+  pickAudio, fetchLinkMeta,
 }: {
   sermon: Sermon; abbaDir: string; isEdit: boolean;
   onBack: () => void; onUpdate: (patch: Partial<Sermon>) => void; onDelete: () => void;
   pickAudio: () => Promise<{ sourcePath: string; name: string } | null>;
   fetchLinkMeta: (url: string) => Promise<Partial<AbbaLink>>;
-  onOpenLightbox: (scope: AbbaScope, images: string[], index: number) => void;
 }) {
-  const scope: AbbaScope = { abbaDir, section: "sermons", noteId: sermon.id };
   const { mode, toggle, setMode } = useNoteMode();
   const [linkDraft, setLinkDraft] = useState("");
   const [savingLink, setSavingLink] = useState(false);
