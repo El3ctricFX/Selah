@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="public/selah-logo.png" alt="Selah logo" width="320" />
+  <img src="public/logo.png" alt="Selah logo" width="320" />
 
   # Selah
 
