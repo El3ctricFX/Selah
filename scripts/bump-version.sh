@@ -37,7 +37,17 @@ if [ ! -f package.json ] || [ ! -d src-tauri ]; then
 fi
 
 OLD=$(grep -m1 '"version"' package.json | sed -E 's/.*"version": *"([^"]+)".*/\1/')
-echo "Bumping $OLD -> $NEW"
+
+# Read the product name from tauri.conf.json so the flatpak deb filename we
+# build (e.g. "Selah_0.1.3_amd64.deb") always matches what tauri actually
+# produces. If productName ever changes, this script follows automatically.
+PRODUCT=$(node -p "require('./src-tauri/tauri.conf.json').productName")
+if [ -z "$PRODUCT" ]; then
+  echo "error: could not read productName from src-tauri/tauri.conf.json"
+  exit 1
+fi
+
+echo "Bumping $OLD -> $NEW  (product: $PRODUCT)"
 echo
 
 # 1. package.json + package-lock.json (npm handles both)
@@ -53,16 +63,19 @@ echo "  ✓ src-tauri/tauri.conf.json"
 sed -i "0,/^version = \".*\"/s//version = \"$NEW\"/" src-tauri/Cargo.toml
 echo "  ✓ src-tauri/Cargo.toml"
 
-# 4. flatpak manifest — both selah_X.Y.Z_amd64.deb references
-sed -i "s/selah_[0-9][0-9.]*_amd64\.deb/selah_${NEW}_amd64.deb/g" \
+# 4. flatpak manifest — both ${PRODUCT}_X.Y.Z_amd64.deb references.
+#    Case-sensitive match against whatever productName actually is.
+#    Escapes the product name in case it ever contains regex metacharacters.
+ESCAPED_PRODUCT=$(printf '%s' "$PRODUCT" | sed -E 's/[][\\.^$*+?(){}|]/\\&/g')
+sed -i -E "s/${ESCAPED_PRODUCT}_[0-9]+\\.[0-9]+\\.[0-9]+_amd64\\.deb/${PRODUCT}_${NEW}_amd64.deb/g" \
   flatpak/io.github.el3ctricfx.selah.yml
-echo "  ✓ flatpak/io.github.el3ctricfx.selah.yml (2 lines)"
+echo "  ✓ flatpak/io.github.el3ctricfx.selah.yml"
 
 echo
 echo "Verify with:"
 echo "  grep '\"version\"' package.json"
 echo "  grep '\"version\"' src-tauri/tauri.conf.json"
 echo "  grep '^version' src-tauri/Cargo.toml"
-echo "  grep 'selah_.*deb' flatpak/io.github.el3ctricfx.selah.yml"
+echo "  grep '${PRODUCT}_.*deb' flatpak/io.github.el3ctricfx.selah.yml"
 echo
 echo "Then: commit + push in GitHub Desktop, create tag v$NEW."
