@@ -5,8 +5,6 @@ import {
   useCreateBlockNote,
   getDefaultReactSlashMenuItems,
   SuggestionMenuController,
-  FormattingToolbar,
-  useBlockNoteEditor,
 } from "@blocknote/react";
 import { BlockNoteView } from "@blocknote/mantine";
 import * as locales from "@blocknote/core/locales";
@@ -44,7 +42,6 @@ import {
   Link as LinkIcon,
   Type as TypeIcon,
   Play as PlayIcon,
-  Maximize2,
   Copy,
   ExternalLink,
   Square,
@@ -293,33 +290,6 @@ const IMAGE_WIDTH_PRESETS: { label: string; px: number | null; icon: any }[] = [
 ];
 
 const PREVIEW_WIDTH_PX = 512;
-
-/**
- * BlockNote's default formatting toolbar morphs into an image-actions bar
- * when an image is selected. We already have a right-click menu for those,
- * so hide the toolbar entirely on node selections — but keep it for normal
- * text selections so bold/italic/links still work.
- */
-function NoteFormattingToolbar() {
-  const editor = useBlockNoteEditor();
-  const tiptap: any = (editor as any)._tiptapEditor;
-  const selection = tiptap?.state?.selection;
-
-  // A NodeSelection (image, video, etc.) has `.node` set; a text selection
-  // does not. Hide the toolbar in that case.
-  if (selection?.node) return null;
-
-  // Belt and braces: also hide it whenever the selected block is a file-type
-  // block (image/video/audio/file), even if the selection isn't a NodeSelection.
-  try {
-    const blockType = editor.getTextCursorPosition().block.type;
-    if (["image", "video", "audio", "file"].includes(blockType)) return null;
-  } catch {
-    /* no cursor position yet; fall through */
-  }
-
-  return <FormattingToolbar />;
-}
 
 type ImageMenuMode = "main" | "caption" | "rename";
 
@@ -1968,7 +1938,6 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
             editor={editor}
             theme="dark"
             slashMenu={false}
-            formattingToolbar={NoteFormattingToolbar}
             onChange={handleContentChange}
           >
             <SuggestionMenuController
