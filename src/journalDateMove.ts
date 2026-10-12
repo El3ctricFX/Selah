@@ -1,10 +1,11 @@
 // src/journalDateMove.ts
 import {
-  readTextFile, writeTextFile, mkdir, exists, rename as fsRename,
+  readTextFile, mkdir, exists, readDir, copyFile,
 } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import { parseNoteFile, serializeNoteFile } from "./noteFormat";
 import { moveToTrash } from "./trash";
+import { writeFileAtomic } from "./safeWrite";
 
 const MONTH_NAMES = [
   "January", "February", "March", "April", "May", "June",
@@ -23,9 +24,22 @@ async function safeExists(path: string): Promise<boolean> {
   try { return await exists(path); } catch { return false; }
 }
 
+async function copyDirRecursive(src: string, dst: string): Promise<void> {
+  await mkdir(dst, { recursive: true });
+  const entries = await readDir(src);
+  for (const e of entries) {
+    if (!e.name) continue;
+    const s = await join(src, e.name);
+    const d = await join(dst, e.name);
+    if (e.isDirectory) {
+      await copyDirRecursive(s, d);
+    } else {
+      await copyFile(s, d);
+    }
+  }
+}
+
 // ─── Flexible date parsing ──────────────────────────────────────────────────
-// Accepts the formats a user is likely to type. Returns null if nothing
-// matches, so the caller can show a helpful error.
 
 function monthIndexFromName(name: string): number {
   const n = name.toLowerCase().replace(/\./g, "");
@@ -72,14 +86,12 @@ export function parseFlexibleDate(
     return ymd(d);
   }
 
-  // YYYY-MM-DD / YYYY/MM/DD / YYYY.MM.DD
   let m = s.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})$/);
   if (m) {
     const y = +m[1], mo = +m[2], d = +m[3];
     if (isValidYmd(y, mo, d)) return { year: y, month: mo, day: d };
   }
 
-  // MM/DD/YYYY or M/D/YY (assumed US order for ambiguous input)
   m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);
   if (m) {
     let y = +m[3];
@@ -88,7 +100,6 @@ export function parseFlexibleDate(
     if (isValidYmd(y, mo, d)) return { year: y, month: mo, day: d };
   }
 
-  // "October 9, 2026" / "Oct 9 2026" / "October 9th, 2026"
   m = s.match(/^([a-z]+)\.?\s+(\d{1,2})(?:st|nd|rd|th)?[,\s]+(\d{2,4})$/);
   if (m) {
     const idx = monthIndexFromName(m[1]);
@@ -100,7 +111,6 @@ export function parseFlexibleDate(
     }
   }
 
-  // "9 October 2026" / "9 Oct 2026"
   m = s.match(/^(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]+)\.?[,\s]+(\d{2,4})$/);
   if (m) {
     const idx = monthIndexFromName(m[2]);
@@ -112,7 +122,6 @@ export function parseFlexibleDate(
     }
   }
 
-  // "October 9" / "Oct 9" — current year
   m = s.match(/^([a-z]+)\.?\s+(\d{1,2})(?:st|nd|rd|th)?$/);
   if (m) {
     const idx = monthIndexFromName(m[1]);
@@ -123,7 +132,6 @@ export function parseFlexibleDate(
     }
   }
 
-  // "9 October" / "9 Oct" — current year
   m = s.match(/^(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]+)\.?$/);
   if (m) {
     const idx = monthIndexFromName(m[2]);
@@ -147,23 +155,6 @@ export interface MoveResult {
   overwroteExisting: boolean;
 }
 
-/**
- * Move a journal day note to a new date.
- *
- * What moves:
- *   - The .selah file itself: `<dir>/<oldDay>.selah` → `<newDir>/<newDay>.selah`
- *   - The note's assets folder: `assets/<oldBase>/` → `assets/<newBase>/`
- *   - Every `assets/<oldBase>/…` reference inside the note body (both raw
- *     spaces and `%20`-encoded forms, since the markdown writer percent-encodes
- *     spaces when saving image paths)
- *   - Frontmatter `coverValue` if it points inside the old assets folder
- *
- * If the destination file exists, it is moved to the trash before the new
- * one is written — the caller is expected to have warned the user first.
- *
- * The new file is written *before* the old one is trashed, so a mid-flight
- * failure (disk full, permission error) leaves the original fully intact.
- */
 export async function moveJournalNoteToDate(
   journalDir: string,
   oldPath: string,
@@ -191,56 +182,10 @@ export async function moveJournalNoteToDate(
 
   await mkdir(newDir, { recursive: true });
 
-  // Read the source note before touching anything so a read failure bails
-  // out cleanly with the original still intact.
   const raw = await readTextFile(oldPath);
   const { frontmatter, body } = parseNoteFile(raw);
 
-  // ── Handle an existing destination file ─────────────────────────────────
-  let overwroteExisting = false;
-  if (await safeExists(newPath)) {
-    try {
-      await moveToTrash(newPath);
-      overwroteExisting = true;
-    } catch (e) {
-      console.warn("[journal-move] could not trash existing dest note:", e);
-    }
-  }
-
-  // ── Move the assets folder ──────────────────────────────────────────────
-  const oldAssetsRoot = await join(oldDir, "assets");
-  const newAssetsRoot = await join(newDir, "assets");
-  const oldAssetsDir = await join(oldAssetsRoot, oldBase);
-  const newAssetsDir = await join(newAssetsRoot, newBase);
-
-  let assetsMoved = false;
-  if (await safeExists(oldAssetsDir)) {
-    await mkdir(newAssetsRoot, { recursive: true });
-
-    // If the destination assets folder already exists (e.g. from a note we
-    // just trashed above, or a stray folder), clear it out of the way so the
-    // rename has an empty slot.
-    if (await safeExists(newAssetsDir)) {
-      try { await moveToTrash(newAssetsDir); } catch (e) {
-        console.warn("[journal-move] could not clear dest assets dir:", e);
-      }
-    }
-
-    try {
-      await fsRename(oldAssetsDir, newAssetsDir);
-      assetsMoved = true;
-    } catch (e) {
-      console.error("[journal-move] assets rename failed:", e);
-      // Non-fatal: the note will still be written, just with refs pointing
-      // at the (now missing) new location. The caller surfaces no error —
-      // the user can manually repair if they notice.
-    }
-  }
-
-  // ── Rewrite asset references in the body ────────────────────────────────
-  // The markdown writer stores paths relative to the note's own directory
-  // and percent-encodes spaces as %20. So we have to replace both the raw
-  // and encoded forms of the old base name.
+  // ── Compute the updated body and frontmatter IN MEMORY first ─────────
   const oldBaseEnc = oldBase.replace(/ /g, "%20");
   const newBaseEnc = newBase.replace(/ /g, "%20");
 
@@ -251,7 +196,11 @@ export async function moveJournalNoteToDate(
       .split(`assets/${oldBaseEnc}/`).join(`assets/${newBaseEnc}/`);
   }
 
-  // ── Rewrite frontmatter.coverValue if it points into the old assets dir ─
+  const oldAssetsRoot = await join(oldDir, "assets");
+  const newAssetsRoot = await join(newDir, "assets");
+  const oldAssetsDir = await join(oldAssetsRoot, oldBase);
+  const newAssetsDir = await join(newAssetsRoot, newBase);
+
   const updatedFm = { ...frontmatter };
   if (typeof updatedFm.coverValue === "string" && updatedFm.coverValue) {
     const cv = updatedFm.coverValue;
@@ -267,13 +216,54 @@ export async function moveJournalNoteToDate(
     }
   }
 
-  // ── Write the new file, then trash the old one ──────────────────────────
-  await writeTextFile(newPath, serializeNoteFile(updatedFm, updatedBody));
+  // ── Handle a pre-existing destination file ───────────────────────────
+  let overwroteExisting = false;
+  if (await safeExists(newPath)) {
+    try {
+      await moveToTrash(newPath);
+      overwroteExisting = true;
+    } catch (e) {
+      console.warn("[journal-move] could not trash existing dest note:", e);
+    }
+  }
 
+  // ── 1. COPY the assets folder into place ─────────────────────────────
+  // Copy, not move: the source note must remain fully functional until
+  // every subsequent step has succeeded.
+  let assetsMoved = false;
+  const oldAssetsExists = await safeExists(oldAssetsDir);
+  if (oldAssetsExists) {
+    try {
+      await mkdir(newAssetsRoot, { recursive: true });
+      if (await safeExists(newAssetsDir)) {
+        try { await moveToTrash(newAssetsDir); } catch (e) {
+          console.warn("[journal-move] could not clear dest assets dir:", e);
+        }
+      }
+      await copyDirRecursive(oldAssetsDir, newAssetsDir);
+      assetsMoved = true;
+    } catch (e) {
+      console.error("[journal-move] assets copy failed:", e);
+    }
+  }
+
+  // ── 2. Write the new note file (atomic) ──────────────────────────────
+  await writeFileAtomic(newPath, serializeNoteFile(updatedFm, updatedBody));
+
+  // ── 3. Trash the old note file ───────────────────────────────────────
   try {
     await moveToTrash(oldPath);
   } catch (e) {
     console.warn("[journal-move] could not trash old note:", e);
+  }
+
+  // ── 4. Trash the old assets folder, now that the new note is safe ────
+  if (oldAssetsExists) {
+    try {
+      await moveToTrash(oldAssetsDir);
+    } catch (e) {
+      console.warn("[journal-move] could not trash old assets dir:", e);
+    }
   }
 
   return {

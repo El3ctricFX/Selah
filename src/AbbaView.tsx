@@ -17,7 +17,6 @@ import {
   Search, Clock, Calendar, ZoomIn, ZoomOut,
   Sparkles, Loader2, AlertTriangle, Star, MapPin,
   List as ListIcon, LayoutGrid, Smile,
-  Bookmark as BookmarkIcon, Play as PlayIcon,
 } from "lucide-react";
 import EmojiPicker, { Theme, EmojiStyle } from "emoji-picker-react";
 import { useModal } from "./Modal";
@@ -31,9 +30,8 @@ import {
 } from "./abbaAssets";
 import { parseNoteFile, serializeNoteFile } from "./noteFormat";
 import { moveToTrash } from "./trash";
-import { getEmbedInfo } from "./embeds";
 
-// ─── URL normalization & embed resolution ───────────────────────────────────
+// ─── URL normalization ──────────────────────────────────────────────────────
 function normalizeUrl(raw: string): string {
   if (!raw) return "";
   let s = raw.trim();
@@ -45,65 +43,12 @@ function normalizeUrl(raw: string): string {
   return s;
 }
 
-interface ResolvedEmbed {
-  src: string;
-  label: string;
-  aspectRatio: number;
-  height?: number;
-  allow?: string;
-  reliable: boolean;
-}
-
-function resolveEmbedUrl(rawUrl: string): ResolvedEmbed | null {
-  const url = normalizeUrl(rawUrl);
-  if (!url) return null;
-  const known = getEmbedInfo(url);
-  if (known) {
-    return {
-      src: known.src, label: known.label,
-      aspectRatio: known.aspectRatio, height: known.height,
-      allow: known.allow, reliable: known.reliable,
-    };
+function hostnameOf(rawUrl: string): string {
+  try {
+    return new URL(normalizeUrl(rawUrl)).hostname.replace(/^www\./, "");
+  } catch {
+    return "";
   }
-  if (/^https?:\/\//i.test(url)) {
-    let label = "Web";
-    try { label = new URL(url).hostname.replace(/^www\./, ""); } catch {}
-    return { src: url, label, aspectRatio: 16 / 9, reliable: false };
-  }
-  return null;
-}
-
-function resolveEmbed(link: AbbaLink): ResolvedEmbed | null {
-  return resolveEmbedUrl(link.url);
-}
-
-function defaultModeForUrl(url: string): "bookmark" | "embed" {
-  const r = resolveEmbedUrl(url);
-  return r && r.reliable ? "embed" : "bookmark";
-}
-
-function EmbedFrame({ embed }: { embed: ResolvedEmbed }) {
-  if (typeof embed.height === "number") {
-    return (
-      <div className="w-full bg-black" style={{ height: `${embed.height}px` }}>
-        <iframe
-          src={embed.src} className="w-full h-full border-0 block"
-          allow={embed.allow} allowFullScreen loading="lazy"
-          referrerPolicy="strict-origin-when-cross-origin"
-        />
-      </div>
-    );
-  }
-  const padPct = (1 / (embed.aspectRatio || 16 / 9)) * 100;
-  return (
-    <div className="w-full bg-black" style={{ position: "relative", height: 0, paddingBottom: `${padPct}%` }}>
-      <iframe
-        src={embed.src} className="absolute inset-0 w-full h-full border-0 block"
-        allow={embed.allow} allowFullScreen loading="lazy"
-        referrerPolicy="strict-origin-when-cross-origin"
-      />
-    </div>
-  );
 }
 
 // ─── Stable (uncontrolled) form fields with manual undo/redo ───────────────
@@ -200,9 +145,6 @@ function StableField({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-    // The prop type is the intersection of both element variants' handlers;
-    // TS can't narrow the union automatically, but the runtime shape is the
-    // same, so the cast is safe.
     externalOnKeyDown?.(e as any);
     if (e.defaultPrevented) return;
     const ctrl = e.ctrlKey || e.metaKey;
@@ -277,8 +219,6 @@ async function ensureAbbaNoteFile(
   return path;
 }
 
-// Read the note file, patch just the frontmatter `icon` key, write it back.
-// Preserves the body verbatim so BlockNote content survives.
 async function writeAbbaEntryIcon(
   abbaDir: string,
   section: AbbaSection,
@@ -546,54 +486,19 @@ function AbImage({
   return <img src={url} alt={alt || ""} className={className} />;
 }
 
-// ─── Link display ───────────────────────────────────────────────────────────
+// ─── Link display (compact, bookmark-only) ──────────────────────────────────
 function AbbaLinkDisplay({
-  link, isEdit, onRemove, onToggleMode,
+  link, isEdit, onRemove,
 }: {
   link: AbbaLink; isEdit: boolean;
-  onRemove: () => void; onToggleMode: () => void;
+  onRemove: () => void;
 }) {
-  const embed = resolveEmbed(link);
-  const mode = link.mode === "embed" ? "embed" : "bookmark";
-  const showingEmbed = mode === "embed" && !!embed;
-
   const openExternal = (e?: React.MouseEvent) => {
     e?.preventDefault(); e?.stopPropagation();
     if (!link.url) return;
     openUrl(normalizeUrl(link.url)).catch((err) =>
       console.error("[abba] open link failed:", err));
   };
-
-  if (showingEmbed && embed) {
-    return (
-      <div className="rounded-md overflow-hidden border border-[#2a3136] bg-[#0f1315]">
-        <div className="flex items-center gap-2 px-2.5 py-1.5 bg-[#161a1d] border-b border-[#2a3136]">
-          {link.icon && (
-            <img src={link.icon} alt="" className="w-3.5 h-3.5 rounded-sm flex-shrink-0"
-              onError={(e) => ((e.target as HTMLImageElement).style.display = "none")} />
-          )}
-          <span className="text-xs text-gray-300 truncate flex-1 min-w-0">{link.title || link.url}</span>
-          <span className="text-[10px] uppercase tracking-wider text-gray-500 flex-shrink-0">{embed.label}</span>
-          {!embed.reliable && (
-            <span className="text-[9px] uppercase tracking-wider text-amber-500/80 flex-shrink-0"
-              title="This provider may refuse to render inside the app.">may not load</span>
-          )}
-          <button type="button" onClick={onToggleMode}
-            className="text-gray-500 hover:text-gray-200 p-0.5 flex-shrink-0"
-            title="Show as bookmark card"><BookmarkIcon size={12} /></button>
-          <button type="button" onClick={openExternal}
-            className="text-gray-500 hover:text-gray-200 p-0.5 flex-shrink-0"
-            title="Open in browser"><ExternalLink size={12} /></button>
-          {isEdit && (
-            <button type="button" onClick={onRemove}
-              className="text-gray-500 hover:text-red-400 p-0.5 flex-shrink-0"
-              title="Remove"><X size={12} /></button>
-          )}
-        </div>
-        <EmbedFrame embed={embed} />
-      </div>
-    );
-  }
 
   return (
     <div className="flex items-center gap-2 px-2 py-1.5 rounded bg-[#0f1315] border border-[#2a3136]">
@@ -606,13 +511,6 @@ function AbbaLinkDisplay({
       <button type="button" onClick={openExternal}
         className="text-xs text-gray-300 hover:text-blue-300 truncate flex-1 text-left"
         title={link.url}>{link.title || link.url}</button>
-      {embed && (
-        <button type="button" onClick={onToggleMode}
-          className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-[#1e2327] border border-[#30363d] text-gray-300 hover:text-blue-300 hover:border-blue-500/50 flex-shrink-0"
-          title={`Embed in place (${embed.label})`}>
-          <PlayIcon size={9} /><span>Embed</span>
-        </button>
-      )}
       {isEdit && (
         <button type="button" onClick={onRemove}
           className="text-gray-500 hover:text-red-400 p-0.5 flex-shrink-0"
@@ -764,7 +662,6 @@ function Lightbox({
 interface AbbaLink {
   id: string; url: string; title: string; description: string;
   icon: string; image: string;
-  mode?: "bookmark" | "embed";
   created?: string; modified?: string; _fileName?: string;
 }
 
@@ -1249,7 +1146,6 @@ export default function AbbaView({ abbaDir, name, icon }: AbbaViewProps) {
       setLinks(li.map((x) => ({
         ...x, url: x.url ?? "", title: x.title ?? "",
         description: x.description ?? "", icon: x.icon ?? "", image: x.image ?? "",
-        mode: x.mode === "embed" ? "embed" : "bookmark",
       })));
       setLoading(false);
     })();
@@ -1440,7 +1336,7 @@ export default function AbbaView({ abbaDir, name, icon }: AbbaViewProps) {
     const now = nowIso();
     const l: AbbaLink = {
       id: newId("link"), url: "", title: "", description: "",
-      icon: "", image: "", mode: "bookmark", created: now, modified: now,
+      icon: "", image: "", created: now, modified: now,
     };
     commitLinks([l, ...links]);
   };
@@ -2183,7 +2079,6 @@ function RichLinksSection({
       id: newId("link"), url,
       title: meta.title || url, description: meta.description || "",
       icon: meta.icon || "", image: meta.image || "",
-      mode: defaultModeForUrl(url),
       created: nowIso(), modified: nowIso(),
     };
     onChange([...links, l]);
@@ -2192,9 +2087,6 @@ function RichLinksSection({
   };
 
   const removeLink = (id: string) => onChange(links.filter((l) => l.id !== id));
-  const toggleLinkMode = (id: string) =>
-    onChange(links.map((l) =>
-      l.id === id ? { ...l, mode: l.mode === "embed" ? "bookmark" : "embed" } : l));
 
   return (
     <section className="mt-8 rounded-lg border border-[#2a3136] bg-[#161a1d] p-4">
@@ -2203,8 +2095,7 @@ function RichLinksSection({
         <div className="space-y-1.5 mb-2">
           {links.map((l) => (
             <AbbaLinkDisplay key={l.id} link={l} isEdit={isEdit}
-              onRemove={() => removeLink(l.id)}
-              onToggleMode={() => toggleLinkMode(l.id)} />
+              onRemove={() => removeLink(l.id)} />
           ))}
         </div>
       )}
@@ -2793,16 +2684,12 @@ function SermonDetail({
       id: newId("link"), url,
       title: meta.title || url, description: meta.description || "",
       icon: meta.icon || "", image: meta.image || "",
-      mode: defaultModeForUrl(url),
       created: nowIso(), modified: nowIso(),
     };
     onUpdate({ links: [...sermon.links, l] });
     setLinkDraft(""); setSavingLink(false);
   };
   const removeLink = (id: string) => onUpdate({ links: sermon.links.filter((l) => l.id !== id) });
-  const toggleLinkMode = (id: string) =>
-    onUpdate({ links: sermon.links.map((l) =>
-      l.id === id ? { ...l, mode: l.mode === "embed" ? "bookmark" : "embed" } : l) });
 
   const dateValue = sermon.date ? sermon.date.slice(0, 10) : "";
 
@@ -2949,8 +2836,7 @@ function SermonDetail({
                 <div className="space-y-1.5 mb-2">
                   {sermon.links.map((l) => (
                     <AbbaLinkDisplay key={l.id} link={l} isEdit={isEdit}
-                      onRemove={() => removeLink(l.id)}
-                      onToggleMode={() => toggleLinkMode(l.id)} />
+                      onRemove={() => removeLink(l.id)} />
                   ))}
                 </div>
               )}
@@ -3007,7 +2893,7 @@ function EmptyCTA({
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  Links section
+//  Links section (bookmark-only)
 // ═══════════════════════════════════════════════════════════════════════════
 function LinksSection({
   links, isEdit, onAdd, onUpdate, onRemove, fetchLinkMeta,
@@ -3018,30 +2904,78 @@ function LinksSection({
   onRemove: (l: AbbaLink) => void;
   fetchLinkMeta: (url: string) => Promise<Partial<AbbaLink>>;
 }) {
+  const { mode, toggle } = useNoteMode();
+
   return (
     <div className="max-w-3xl mx-auto px-6 py-6">
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center justify-between mb-4 gap-3">
         <div>
           <h3 className="text-base font-semibold text-gray-100">Saved Links</h3>
           <p className="text-[11px] text-gray-500 mt-0.5">
             {links.length} {links.length === 1 ? "link" : "links"}
           </p>
         </div>
-        <button type="button" onClick={onAdd}
-          className="flex items-center gap-1.5 text-xs bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded transition-colors cursor-pointer font-medium">
-          <Plus size={13} /><span>Add Link</span>
-        </button>
+
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {isEdit && (
+            <button
+              type="button"
+              onClick={onAdd}
+              className="flex items-center gap-1.5 text-xs bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded transition-colors cursor-pointer font-medium"
+            >
+              <Plus size={13} /><span>Add Link</span>
+            </button>
+          )}
+
+          <span className="text-[10px] uppercase tracking-wider text-gray-500">
+            {mode === "edit" ? "Editing" : "Reading"}
+          </span>
+          <button
+            type="button"
+            onClick={toggle}
+            className="flex items-center justify-center w-7 h-7 rounded text-gray-400 hover:text-gray-100 hover:bg-[#1e2327] transition-colors cursor-pointer"
+            title={
+              mode === "edit"
+                ? "Switch to read mode (Ctrl+E)"
+                : "Switch to edit mode (Ctrl+E)"
+            }
+          >
+            {mode === "edit" ? <BookOpen size={15} /> : <Pencil size={15} />}
+          </button>
+        </div>
       </div>
+
       {links.length === 0 ? (
-        <EmptyCTA icon={LinkIcon} title="No links saved"
-          subtitle="Add a sermon video, worship song, commentary, or resource."
-          buttonLabel="Add your first link" onCreate={onAdd} />
+        isEdit ? (
+          <EmptyCTA
+            icon={LinkIcon}
+            title="No links saved"
+            subtitle="Add a sermon video, worship song, commentary, or resource."
+            buttonLabel="Add your first link"
+            onCreate={onAdd}
+          />
+        ) : (
+          <div className="flex flex-col items-center justify-center text-gray-500 mt-16 gap-4">
+            <LinkIcon size={40} className="opacity-30" />
+            <div className="text-center">
+              <p className="text-sm text-gray-400">No links saved</p>
+              <p className="text-xs text-gray-600 mt-1">
+                Switch to edit mode to add a link.
+              </p>
+            </div>
+          </div>
+        )
       ) : (
         <div className="space-y-3">
           {links.map((l) => (
-            <LinkCard key={l.id} link={l} isEdit={isEdit}
+            <LinkCard
+              key={l.id}
+              link={l}
+              isEdit={isEdit}
               onUpdate={(patch) => onUpdate(l.id, patch)}
-              onRemove={() => onRemove(l)} fetchLinkMeta={fetchLinkMeta} />
+              onRemove={() => onRemove(l)}
+              fetchLinkMeta={fetchLinkMeta}
+            />
           ))}
         </div>
       )}
@@ -3058,9 +2992,9 @@ function LinkCard({
   fetchLinkMeta: (url: string) => Promise<Partial<AbbaLink>>;
 }) {
   const [fetching, setFetching] = useState(false);
-  const embed = resolveEmbed(link);
-  const mode = link.mode === "embed" ? "embed" : "bookmark";
-  const showingEmbed = mode === "embed" && !!embed;
+  const [iconError, setIconError] = useState(false);
+  const [imageError, setImageError] = useState(false);
+  const [urlEditing, setUrlEditing] = useState(false);
 
   const refetch = async () => {
     if (!link.url) return;
@@ -3074,134 +3008,185 @@ function LinkCard({
     });
     setFetching(false);
   };
-  const open = () => { if (link.url) openUrl(normalizeUrl(link.url)).catch(console.error); };
-  const toggleMode = () => onUpdate({ mode: mode === "embed" ? "bookmark" : "embed" });
+
+  const open = () => {
+    if (link.url) openUrl(normalizeUrl(link.url)).catch(console.error);
+  };
 
   const handleUrlChange = (raw: string) => onUpdate({ url: raw });
+
   const handleUrlBlur = () => {
     const trimmed = normalizeUrl(link.url);
     if (trimmed !== link.url) onUpdate({ url: trimmed });
-    if (link.mode !== "embed" && !link.title) {
-      const m = defaultModeForUrl(trimmed);
-      if (m === "embed") onUpdate({ mode: "embed" });
-    }
     if (link.url && (!link.title || link.title === link.url)) refetch();
   };
 
-  if (!isEdit) {
-    if (showingEmbed && embed) {
-      return (
-        <div className="rounded-lg border border-[#2a3136] bg-[#161a1d] overflow-hidden group">
-          <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[#2a3136] bg-[#1a1e21]">
-            {link.icon && (
-              <img src={link.icon} alt="" className="w-3.5 h-3.5 rounded-sm flex-shrink-0"
-                onError={(e) => ((e.target as HTMLImageElement).style.display = "none")} />
-            )}
-            <span className="text-xs text-gray-200 truncate flex-1">{link.title || link.url}</span>
-            <span className="text-[10px] uppercase tracking-wider text-gray-500 flex-shrink-0">{embed.label}</span>
-            {!embed.reliable && (
-              <span className="text-[9px] uppercase tracking-wider text-amber-500/80 flex-shrink-0"
-                title="May not load">may not load</span>
-            )}
-            <button type="button" onClick={toggleMode}
-              className="text-gray-500 hover:text-gray-200 p-0.5 flex-shrink-0"
-              title="Show as bookmark card"><BookmarkIcon size={12} /></button>
-            <button type="button" onClick={open}
-              className="text-gray-500 hover:text-gray-200 p-0.5 flex-shrink-0"
-              title="Open in browser"><ExternalLink size={12} /></button>
-          </div>
-          <EmbedFrame embed={embed} />
-        </div>
-      );
-    }
-    return (
-      <div className="rounded-lg border border-[#2a3136] bg-[#161a1d] overflow-hidden">
-        <button type="button" onClick={open}
-          className="w-full text-left flex hover:bg-[#1a1e21] transition-colors" title={link.url}>
-          <div className="flex-1 p-3 min-w-0 flex flex-col justify-center">
-            <div className="flex items-center gap-1.5 text-sm text-gray-100 font-medium truncate">
-              {link.icon && (
-                <img src={link.icon} alt="" className="w-3.5 h-3.5 rounded-sm flex-shrink-0"
-                  onError={(e) => ((e.target as HTMLImageElement).style.display = "none")} />
+  const hostname = hostnameOf(link.url);
+
+  return (
+    <div className="rounded-lg border border-[#2a3136] bg-[#161a1d] overflow-hidden group hover:border-[#3a4147] transition-colors">
+      <div className="flex">
+        {/* Left: title, description, hostname */}
+        <div className="flex-1 min-w-0 p-3">
+          {/* Title + actions */}
+          <div className="flex items-start gap-2">
+            <div className="flex-1 min-w-0">
+              {isEdit ? (
+                <StableField
+                  as="input"
+                  type="text"
+                  value={link.title}
+                  onChange={(v) => onUpdate({ title: v })}
+                  placeholder={hostname || "Untitled link"}
+                  className="w-full bg-transparent border-none outline-none text-sm font-medium text-gray-100 placeholder-gray-500 focus:bg-white/5 px-1 py-0.5 rounded -mx-1"
+                />
+              ) : (
+                <button
+                  type="button"
+                  onClick={open}
+                  className="text-sm font-medium text-gray-100 hover:text-blue-300 truncate text-left block w-full"
+                  title={link.url}
+                >
+                  {link.title || hostname || link.url || "Untitled link"}
+                </button>
               )}
-              <span className="truncate">{link.title || link.url}</span>
             </div>
-            {link.description && (
-              <div className="text-xs text-gray-400 mt-1 leading-relaxed line-clamp-2">{link.description}</div>
+
+            {isEdit && (
+              <div className="flex items-center gap-0.5 flex-shrink-0 -mt-0.5 -mr-1">
+                <button
+                  type="button"
+                  onClick={refetch}
+                  disabled={fetching || !link.url}
+                  className="p-1 rounded text-gray-500 hover:text-gray-200 hover:bg-[#2a3136] transition-colors disabled:opacity-40"
+                  title="Refresh metadata from URL"
+                >
+                  {fetching ? (
+                    <Loader2 size={11} className="animate-spin" />
+                  ) : (
+                    <Save size={11} />
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={onRemove}
+                  className="p-1 rounded text-gray-500 hover:text-red-400 hover:bg-[#2a3136] transition-colors"
+                  title="Remove"
+                >
+                  <Trash2 size={11} />
+                </button>
+              </div>
             )}
           </div>
-          {link.image && (
-            <div className="w-32 flex-shrink-0 bg-[#0f1315]">
-              <img src={link.image} alt="" className="w-full h-full object-cover"
-                onError={(e) => ((e.target as HTMLImageElement).style.display = "none")} />
+
+          {/* Description */}
+          {(isEdit || link.description) && (
+            <div className="mt-1">
+              {isEdit ? (
+                <StableField
+                  as="textarea"
+                  value={link.description}
+                  onChange={(v) => onUpdate({ description: v })}
+                  placeholder="Add a description…"
+                  rows={2}
+                  className="w-full bg-transparent border-none outline-none text-xs text-gray-400 leading-relaxed resize-none placeholder-gray-600 focus:bg-white/5 px-1 py-0.5 rounded -mx-1"
+                  style={{ minHeight: "2rem" }}
+                />
+              ) : (
+                <div className="text-xs text-gray-400 leading-relaxed line-clamp-3">
+                  {link.description}
+                </div>
+              )}
             </div>
           )}
-        </button>
-        {(link.created || link.modified || !!embed) && (
-          <div className="flex items-center justify-between px-3 py-2 border-t border-[#2a3136] bg-[#1a1e21]">
-            <TimeMeta created={link.created} modified={link.modified} />
-            {embed && (
-              <button type="button" onClick={toggleMode}
-                className="flex items-center gap-1 text-[11px] text-gray-400 hover:text-blue-300 px-2 py-0.5 rounded hover:bg-[#2a3136]"
-                title={`Embed in place (${embed.label})`}>
-                <PlayIcon size={11} /><span>Embed</span>
+
+          {/* Favicon + hostname line */}
+          <div className="flex items-center gap-1.5 mt-2 min-w-0">
+            {link.icon && !iconError ? (
+              <img
+                src={link.icon}
+                alt=""
+                className="w-3.5 h-3.5 rounded-sm flex-shrink-0"
+                onError={() => setIconError(true)}
+              />
+            ) : (
+              <LinkIcon size={11} className="text-gray-500 flex-shrink-0" />
+            )}
+
+            {isEdit && urlEditing ? (
+              <input
+                autoFocus
+                type="text"
+                value={link.url}
+                onChange={(e) => handleUrlChange(e.target.value)}
+                onBlur={() => {
+                  handleUrlBlur();
+                  setUrlEditing(false);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    (e.currentTarget as HTMLInputElement).blur();
+                  } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    setUrlEditing(false);
+                  }
+                }}
+                placeholder="https://…"
+                className="flex-1 min-w-0 bg-[#0f1315] border border-[#30363d] rounded px-2 py-0.5 text-[11px] text-gray-200 outline-none focus:ring-1 focus:ring-blue-500 font-mono"
+              />
+            ) : isEdit ? (
+              <button
+                type="button"
+                onClick={() => setUrlEditing(true)}
+                className="text-[11px] text-gray-500 hover:text-blue-400 truncate min-w-0 text-left"
+                title="Click to edit URL"
+              >
+                {hostname || link.url || "Add URL…"}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={open}
+                className="text-[11px] text-gray-500 hover:text-blue-400 truncate min-w-0 text-left"
+                title={link.url}
+              >
+                {hostname || link.url}
+              </button>
+            )}
+
+            {isEdit && !urlEditing && link.url && (
+              <button
+                type="button"
+                onClick={open}
+                className="text-gray-500 hover:text-gray-200 p-0.5 flex-shrink-0"
+                title="Open in browser"
+              >
+                <ExternalLink size={10} />
               </button>
             )}
           </div>
-        )}
-      </div>
-    );
-  }
-
-  return (
-    <div className="rounded-lg border border-[#2a3136] bg-[#161a1d] overflow-hidden">
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-[#2a3136] bg-[#1a1e21]">
-        {link.icon && (
-          <img src={link.icon} alt="" className="w-3.5 h-3.5 rounded-sm flex-shrink-0"
-            onError={(e) => ((e.target as HTMLImageElement).style.display = "none")} />
-        )}
-        <StableField as="input" type="text" value={link.title}
-          onChange={(v) => onUpdate({ title: v })} placeholder="Title…"
-          className="flex-1 bg-transparent border-none outline-none text-sm font-medium text-gray-100 placeholder-gray-600" />
-        {embed && (
-          <button type="button" onClick={toggleMode}
-            className={`p-1 rounded transition-colors ${
-              mode === "embed" ? "text-blue-300 bg-[#2a3136]" : "text-gray-500 hover:text-gray-200"}`}
-            title={mode === "embed" ? "Show as bookmark card" : `Embed in place (${embed.label})`}>
-            {mode === "embed" ? <BookmarkIcon size={12} /> : <PlayIcon size={12} />}
-          </button>
-        )}
-        <button type="button" onClick={refetch} disabled={fetching || !link.url}
-          className="text-gray-500 hover:text-gray-200 p-1 rounded transition-colors disabled:opacity-40"
-          title="Refresh metadata from URL"><Save size={12} /></button>
-        <button type="button" onClick={onRemove}
-          className="text-gray-500 hover:text-red-400 p-1 rounded transition-colors"
-          title="Remove"><Trash2 size={13} /></button>
-      </div>
-      <div className="p-3 space-y-2">
-        <div className="flex items-center gap-1.5">
-          <StableField as="input" type="text" value={link.url}
-            onChange={handleUrlChange} onBlur={handleUrlBlur}
-            placeholder="https://…"
-            className="flex-1 bg-[#0f1315] border border-[#30363d] rounded px-3 py-1.5 text-xs text-gray-200 outline-none focus:ring-1 focus:ring-blue-500" />
-          {link.url && (
-            <button type="button" onClick={open}
-              className="text-gray-400 hover:text-gray-100 p-1.5 rounded bg-[#2a3136] hover:bg-[#30363d] transition-colors"
-              title="Open in browser"><ExternalLink size={13} /></button>
-          )}
         </div>
-        <StableField as="textarea" value={link.description}
-          onChange={(v) => onUpdate({ description: v })} placeholder="Description…" rows={2}
-          className="w-full bg-[#0f1315] border border-[#30363d] rounded px-3 py-2 text-xs text-gray-300 outline-none focus:ring-1 focus:ring-blue-500 resize-y" />
-        {showingEmbed && embed && (
-          <div className="rounded-md overflow-hidden border border-[#2a3136] bg-black">
-            <EmbedFrame embed={embed} />
+
+        {/* Right: preview image from URL metadata */}
+        {link.image && !imageError && (
+          <div className="w-32 sm:w-40 flex-shrink-0 bg-[#0f1315] flex items-center justify-center overflow-hidden">
+            <img
+              src={link.image}
+              alt=""
+              className="w-full h-full object-cover"
+              onError={() => setImageError(true)}
+            />
           </div>
         )}
-        <div className="pt-2 border-t border-[#2a3136]">
+      </div>
+
+      {/* Footer: timestamps */}
+      {(link.created || link.modified) && (
+        <div className="px-3 py-1.5 border-t border-[#2a3136] bg-[#1a1e21]">
           <TimeMeta created={link.created} modified={link.modified} />
         </div>
-      </div>
+      )}
     </div>
   );
 }

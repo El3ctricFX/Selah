@@ -87,6 +87,25 @@ function safeDecode(s: string): string {
   }
 }
 
+/** Percent-encode the characters that break a markdown `(...)` link.
+ *  We deliberately don't use `encodeURIComponent`, because that would
+ *  also encode characters like `~` and `-` that are safe in links and
+ *  common in filenames — making paths unreadable. This targets exactly
+ *  the characters the markdown parser cares about. */
+function encodeAssetPathSegment(seg: string): string {
+  return seg
+    .replace(/%/g, "%25")   // must run first
+    .replace(/ /g, "%20")
+    .replace(/#/g, "%23")
+    .replace(/\?/g, "%3F")
+    .replace(/\(/g, "%28")
+    .replace(/\)/g, "%29");
+}
+
+function encodeAssetPath(rel: string): string {
+  return rel.split("/").map(encodeAssetPathSegment).join("/");
+}
+
 // Turn an asset:// URL back into the absolute filesystem path it points at.
 export function assetUrlToAbsolutePath(url: string): string | null {
   if (!url) return null;
@@ -130,18 +149,31 @@ export async function deleteImageFromNoteAssets(
 }
 
 // ---- markdown <-> asset URL transforms ----
+//
+// Note: these functions also carry through a `?w=NNN` (or `&w=NNN`) suffix
+// that blocknote.ts appends to image URLs when the user has resized an
+// image. It must survive both directions of the transform, since it's what
+// preserves the image's custom width across a save/load cycle.
+
+// Split a URL into [baseUrl, widthSuffix]. The width suffix is "" if absent.
+function splitImageWidthSuffix(url: string): [string, string] {
+  const m = url.match(/[?&]w=\d+$/);
+  if (!m) return [url, ""];
+  return [url.slice(0, -m[0].length), m[0]];
+}
 
 export function markdownImagesToAssetUrls(md: string, noteDir: string): string {
   return md.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, url) => {
     if (/^(https?:|data:|blob:|asset:)/i.test(url)) return match;
     if (url.startsWith("http://asset.localhost/")) return match;
 
-    const decoded = safeDecode(url.replace(/^<|>$/g, ""));
+    const [cleanUrl, widthSuffix] = splitImageWidthSuffix(url);
+    const decoded = safeDecode(cleanUrl.replace(/^<|>$/g, ""));
     const sep = noteDir.includes("\\") ? "\\" : "/";
     const abs = noteDir.replace(/[\\/]+$/, "") + sep + decoded;
     try {
       const assetUrl = convertFileSrc(abs);
-      return `![${alt}](${assetUrl})`;
+      return `![${alt}](${assetUrl}${widthSuffix})`;
     } catch {
       return match;
     }
@@ -150,16 +182,18 @@ export function markdownImagesToAssetUrls(md: string, noteDir: string): string {
 
 export function markdownImagesToRelativePaths(md: string, noteDir: string): string {
   return md.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, url) => {
+    const [cleanUrl, widthSuffix] = splitImageWidthSuffix(url);
+
     let absPath: string | null = null;
 
-    let m = url.match(/^https?:\/\/asset\.localhost\/(.+)$/);
+    let m = cleanUrl.match(/^https?:\/\/asset\.localhost\/(.+)$/);
     if (m) absPath = safeDecode(m[1]);
     if (!absPath) {
-      m = url.match(/^asset:\/\/localhost\/(.+)$/);
+      m = cleanUrl.match(/^asset:\/\/localhost\/(.+)$/);
       if (m) absPath = safeDecode(m[1]);
     }
     if (!absPath) {
-      m = url.match(/^asset:\/\/\/(.+)$/);
+      m = cleanUrl.match(/^asset:\/\/\/(.+)$/);
       if (m) absPath = safeDecode(m[1]);
     }
     if (!absPath) return match;
@@ -169,8 +203,8 @@ export function markdownImagesToRelativePaths(md: string, noteDir: string): stri
     if (!normAbs.startsWith(normNote + "/")) return match;
 
     const rel = normAbs.slice(normNote.length + 1);
-    const encoded = rel.replace(/ /g, "%20");
-    return `![${alt}](${encoded})`;
+    const encoded = encodeAssetPath(rel);
+    return `![${alt}](${encoded}${widthSuffix})`;
   });
 }
 
@@ -207,7 +241,7 @@ export function videoSrcsToRelativePaths(md: string, noteDir: string): string {
     const normAbs = absPath.replace(/\\/g, "/");
     if (!normAbs.startsWith(normNote + "/")) return pre + url + post;
     const rel = normAbs.slice(normNote.length + 1);
-    return pre + rel.replace(/ /g, "%20") + post;
+    return pre + encodeAssetPath(rel) + post;
   });
 }
 
@@ -243,7 +277,7 @@ function convertSrcs(
     const normAbs = absPath.replace(/\\/g, "/");
     if (!normAbs.startsWith(normNote + "/")) return src;
     const rel = normAbs.slice(normNote.length + 1);
-    return rel.replace(/ /g, "%20");
+    return encodeAssetPath(rel);
   });
   return mapped.join(DM_SRC_SEP);
 }

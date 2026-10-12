@@ -9,7 +9,7 @@ import {
   List, Code2, Copy, Plus, Check, Maximize2, Minimize2, LayoutGrid,
 } from "lucide-react";
 import {
-  mkdir, exists, rename as renameFs, readDir, readTextFile, writeFile,
+  mkdir, exists, rename as renameFs, readDir, readTextFile,
 } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -22,6 +22,7 @@ import { useNoteMode } from "./useNoteMode";
 import { useModal } from "./Modal";
 import { parseNoteFile, type Frontmatter } from "./noteFormat";
 import { saveImageToNoteAssets, assetsDirForNote } from "./imageAssets";
+import { writeFileAtomic } from "./safeWrite";
 
 interface JournalViewProps {
   vaultPath: string;
@@ -56,9 +57,6 @@ type Anchor = "above" | "in" | "below";
 
 const IMAGE_FILE_RE = /\.(png|jpe?g|webp|gif|avif|bmp|svg)$/i;
 
-/** List images sitting in <noteDir>/assets/<noteBase>/ — i.e. files that
- *  were uploaded or pasted into this note. Used by the "In this note"
- *  picker in the header settings panel. */
 async function listNoteImages(notePath: string): Promise<{ name: string; abs: string }[]> {
   try {
     const dir = await assetsDirForNote(notePath);
@@ -208,20 +206,13 @@ export default function JournalView({
     { mx: number; my: number; px: number; py: number } | null
   >(null);
 
-  // ── "In this note" image picker state ─────────────────────────────────
   const [noteImages, setNoteImages] = useState<{ name: string; abs: string }[]>([]);
   const [noteImagesLoading, setNoteImagesLoading] = useState(false);
 
   const iconMenuRef = useRef<HTMLDivElement>(null);
   const titleMenuRef = useRef<HTMLDivElement>(null);
   const widthMenuRef = useRef<HTMLButtonElement>(null);
-  // Anchor for the emoji picker popup. We read its bounding rect at open
-  // time so we can position the (portaled) picker next to it without the
-  // note editor's `overflow-y-auto` container clipping it.
   const iconAnchorRef = useRef<HTMLButtonElement | null>(null);
-  // Ref on the picker's wrapper so an outside-click handler can tell
-  // whether a mousedown landed inside the picker (do nothing) or outside
-  // it (close it).
   const iconPickerRef = useRef<HTMLDivElement | null>(null);
 
   const year = date.getFullYear();
@@ -270,8 +261,6 @@ export default function JournalView({
     setNoteImages([]); setNoteImagesLoading(false);
   }, [currentPath]);
 
-  // When the header panel opens, scan the note's own assets folder for
-  // images so the "In this note" picker can show them as thumbnails.
   useEffect(() => {
     if (!coverPickerOpen || !currentPath) return;
     let cancelled = false;
@@ -345,9 +334,6 @@ export default function JournalView({
     return () => document.removeEventListener("keydown", onKey);
   }, [coverPickerOpen]);
 
-  // Close the emoji picker on Escape. Capture phase + stopPropagation so
-  // the picker's autofocused search input and any app-level global keydown
-  // handlers can't swallow or pre-empt the event.
   useEffect(() => {
     if (!iconPickerOpen) return;
     const onKey = (e: KeyboardEvent) => {
@@ -359,10 +345,6 @@ export default function JournalView({
     return () => document.removeEventListener("keydown", onKey, true);
   }, [iconPickerOpen]);
 
-  // Close the emoji picker when the user clicks anywhere outside it.
-  // We skip clicks inside the picker itself (so picking an emoji works) and
-  // clicks on the anchor button (so the button's own onClick toggle handles
-  // open/close without fighting this handler).
   useEffect(() => {
     if (!iconPickerOpen) return;
     const onDown = (e: MouseEvent) => {
@@ -571,7 +553,7 @@ export default function JournalView({
       try { await noteBodyRef.current?.flush(); } catch (e) {
         console.warn("[journal] flush before save failed:", e);
       }
-      await writeFile(currentPath, new TextEncoder().encode(sourceDraft));
+      await writeFileAtomic(currentPath, new TextEncoder().encode(sourceDraft));
       setRawSource(sourceDraft); setSourceNonce((n) => n + 1);
       await refreshFrontmatterFromDisk();
       window.dispatchEvent(new CustomEvent("file-changed", { detail: { path: currentPath } }));
@@ -581,10 +563,6 @@ export default function JournalView({
   };
 
   const revertSource = () => setSourceDraft(rawSource);
-
-  // ------------------------------------------------------------------
-  // CRUD
-  // ------------------------------------------------------------------
 
   const applyIcon = async (newIcon: string) => {
     setIcon(newIcon); setIconPickerOpen(false); setIconMenu(null);
@@ -652,7 +630,6 @@ export default function JournalView({
         currentPath, picked, `cover-${Date.now()}.${ext}`
       );
       await applyCover("image", destPath);
-      // Refresh the "In this note" grid so the newly-added file shows up.
       const imgs = await listNoteImages(currentPath);
       setNoteImages(imgs);
     } catch (e) { console.error("[journal] upload cover failed:", e); }
@@ -761,11 +738,6 @@ export default function JournalView({
         }
       : {};
 
-  // Portal the emoji picker to <body> so the note editor's scroll container
-  // (which has `overflow-y-auto`, and therefore clips horizontally too) can't
-  // cut it off. Position it with a `fixed` rect derived from the icon button
-  // and clamp it into the viewport so it never hangs off the edge on a
-  // narrow window.
   const iconPickerPopup = iconPickerOpen ? (() => {
     const W = 320;
     const H = 420;
@@ -1438,7 +1410,6 @@ export default function JournalView({
               )}
             </div>
 
-            {/* ── In this note ─────────────────────────────────────────── */}
             <div className="border-t border-[#2a3136] pt-3">
               <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-2 flex items-center gap-1.5">
                 <ImageIcon size={10} /> In this note
@@ -1484,8 +1455,6 @@ export default function JournalView({
     </div>
   );
 }
-
-// ─── helpers ────────────────────────────────────────────────────────────────
 
 function AnchorPicker({ value, onChange }: { value: Anchor; onChange: (a: Anchor) => void }) {
   const opts: { id: Anchor; label: string; icon: any }[] = [

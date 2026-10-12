@@ -1,6 +1,7 @@
 // src/App.tsx
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PanelLeftOpen } from "lucide-react";
 import Editor from "./Editor";
 import Sidebar, { type Category } from "./Sidebar";
@@ -11,6 +12,7 @@ import NotesView from "./NotesView";
 import "./App.css";
 import VaultWelcome from "./VaultWelcome";
 import { useRecentVaults } from "./useRecentVaults";
+import { flushAll } from "./flushRegistry";
 
 type JournalFocus = { year: number; month: number; day: number };
 
@@ -19,7 +21,7 @@ type ActiveView =
   | { kind: "journal"; dir: string; focus?: JournalFocus; focusMode?: "day" | "month" }
   | { kind: "gallery"; dir: string; name: string }
   | { kind: "abba"; dir: string; name: string; icon: string }
-  | { kind: "notes"; dir: string; name: string; icon: string }
+  | { kind: "notes"; dir: string; name: string; icon: string; categoryId: string }
   | null;
 
 const MONTH_NAMES = [
@@ -46,12 +48,6 @@ export default function App() {
   const [vaultPath, setVaultPath] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<ActiveView>(null);
   const [activeCategoryId, setActiveCategoryId] = useState<string | null>(null);
-  // Bumped on every journal navigation (sidebar click, Today button, or a
-  // note-link that resolves to a journal day). It is folded into JournalView's
-  // React key so that clicking a day in the sidebar always remounts the view —
-  // even when the target date happens to match whatever `activeView.focus`
-  // already was (which is the case if you arrow-navigated away and then
-  // clicked back to where you started).
   const [journalNonce, setJournalNonce] = useState(0);
   const [focusMode, setFocusMode] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -85,6 +81,35 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // Intercept window close. Ask every mounted editor to save before we
+  // actually shut down, so the last few seconds of typing are never lost.
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    (async () => {
+      try {
+        const win = getCurrentWindow();
+        const un = await win.onCloseRequested(async (event) => {
+          event.preventDefault();
+          try {
+            await flushAll();
+          } catch (e) {
+            console.error("[app] flush on close failed:", e);
+          }
+          await win.destroy();
+        });
+        if (cancelled) un();
+        else unlisten = un;
+      } catch (e) {
+        console.warn("[app] close handler not registered:", e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+    };
+  }, []);
+
   const handleSelectVault = async () => {
     const selected = await open({
       directory: true,
@@ -104,7 +129,7 @@ export default function App() {
 
   const handleOpenRecentVault = (path: string) => {
     setVaultPath(path);
-    addRecentVault(path); // bumps to top + updates lastOpened
+    addRecentVault(path);
     setActiveView(null);
     setActiveCategoryId(null);
     setFocusMode(false);
@@ -140,9 +165,6 @@ export default function App() {
     if (dayInfo) {
       const parts = normalized.split("/");
       const journalDir = parts.slice(0, -3).join("/");
-      // Bump the nonce so a note-link that points at a day we're already
-      // "on" (per activeView.focus) still remounts JournalView with the
-      // right initialDate.
       setJournalNonce((n) => n + 1);
       setActiveView({
         kind: "journal",
@@ -164,12 +186,6 @@ export default function App() {
         }`}
       >
         {!sidebarHidden && (
-          // Key the Sidebar on vaultPath so switching vaults fully resets its
-          // internal state (categories, folderMeta, and — crucially — the
-          // JournalTree / NotesTree child trees). Built-in category IDs like
-          // "journal" are identical across vaults, so without this React
-          // would reuse the same component instance and stale state would
-          // bleed from the previous vault into the new one.
           <Sidebar
             key={vaultPath}
             vaultPath={vaultPath}
@@ -196,6 +212,7 @@ export default function App() {
                   dir: dirOf(cat),
                   name: cat.name,
                   icon: cat.icon,
+                  categoryId: cat.id,
                 });
               } else {
                 setActiveView(null);
@@ -208,12 +225,6 @@ export default function App() {
             }}
             onOpenJournalDay={(cat, year, month, day) => {
               setActiveCategoryId(cat.id);
-              // Always bump: the target date may equal activeView.focus
-              // (e.g. the user arrow-navigated away and is now clicking
-              // back to where they started), and without a fresh nonce the
-              // journalKey would be unchanged and JournalView would not
-              // remount — leaving its local `date` stuck on the arrowed-to
-              // day.
               setJournalNonce((n) => n + 1);
               setActiveView({
                 kind: "journal",
@@ -256,6 +267,7 @@ export default function App() {
                 dir: dirOf(cat),
                 name: cat.name,
                 icon: cat.icon,
+                categoryId: cat.id,
               });
             }}
             onSwitchVault={handleSelectVault}
@@ -313,6 +325,8 @@ export default function App() {
             sectionDir={activeView.dir}
             sectionName={activeView.name}
             sectionIcon={activeView.icon}
+            categoryId={activeView.categoryId}
+            vaultPath={vaultPath}
             onOpenNote={(note) =>
               setActiveView({ kind: "note", path: note.path, name: note.name })
             }

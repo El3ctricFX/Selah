@@ -1,7 +1,7 @@
 // src/Editor.tsx
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { rename, readTextFile, writeFile, readDir } from "@tauri-apps/plugin-fs";
+import { rename, readTextFile, readDir } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -19,6 +19,8 @@ import { useNoteMode } from "./useNoteMode";
 import { useModal } from "./Modal";
 import { parseNoteFile, type Frontmatter } from "./noteFormat";
 import { saveImageToNoteAssets, assetsDirForNote } from "./imageAssets";
+import { writeFileAtomic } from "./safeWrite";
+import TagEditor, { scanAllVaultTags, invalidateTagCache } from "./TagEditor";
 
 interface EditorProps {
   activeNote: { path: string; name: string };
@@ -43,9 +45,6 @@ type Anchor = "above" | "in" | "below";
 
 const IMAGE_FILE_RE = /\.(png|jpe?g|webp|gif|avif|bmp|svg)$/i;
 
-/** List images sitting in <noteDir>/assets/<noteBase>/ — i.e. files that
- *  were uploaded or pasted into this note. Used by the "In this note"
- *  picker in the header settings panel. */
 async function listNoteImages(notePath: string): Promise<{ name: string; abs: string }[]> {
   try {
     const dir = await assetsDirForNote(notePath);
@@ -121,6 +120,11 @@ function stringToFmValue(s: string): unknown {
   return s;
 }
 
+function tagsFromFrontmatter(fm: Frontmatter): string[] {
+  if (!Array.isArray(fm.tags)) return [];
+  return (fm.tags as any[]).filter((t): t is string => typeof t === "string" && t.length > 0);
+}
+
 export default function Editor({
   activeNote,
   vaultPath,
@@ -157,6 +161,9 @@ export default function Editor({
   const [titleFont, setTitleFont] = useState("default");
   const [docWidth, setDocWidth] = useState<DocWidthId>("default");
 
+  const [tags, setTags] = useState<string[]>([]);
+  const [allVaultTags, setAllVaultTags] = useState<string[]>([]);
+
   const [lightbox, setLightbox] = useState<{ srcs: string[]; index: number } | null>(null);
 
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
@@ -180,18 +187,13 @@ export default function Editor({
   const [newPropValue, setNewPropValue] = useState("");
   const [copied, setCopied] = useState(false);
 
-  // ── "In this note" image picker state ─────────────────────────────────
   const [noteImages, setNoteImages] = useState<{ name: string; abs: string }[]>([]);
   const [noteImagesLoading, setNoteImagesLoading] = useState(false);
 
   const iconMenuRef = useRef<HTMLDivElement>(null);
   const titleMenuRef = useRef<HTMLDivElement>(null);
   const widthMenuRef = useRef<HTMLDivElement>(null);
-  // Anchor for the emoji picker popup — see JournalView for the rationale.
   const iconAnchorRef = useRef<HTMLButtonElement | null>(null);
-  // Ref on the picker's wrapper so an outside-click handler can tell
-  // whether a mousedown landed inside the picker (do nothing) or outside
-  // it (close it).
   const iconPickerRef = useRef<HTMLDivElement | null>(null);
 
   const isYear = isYearNote(activeNote.name);
@@ -225,6 +227,7 @@ export default function Editor({
     setTitleAnchor("in"); setTitleX(50); setTitleY(50);
     setTitleFont("default"); setDocWidth("default");
     setWordCount(0);
+    setTags([]);
     setIconPickerOpen(false); setCoverPickerOpen(false); setWidthMenuOpen(false);
     setCoverUrlDraft(""); setIconMenu(null); setTitleMenu(null); setDragStart(null);
     setPropertiesOpen(false); setSourceOpen(false); setSourceDraft("");
@@ -253,12 +256,20 @@ export default function Editor({
         setTitleY(typeof frontmatter.titleY === "number" ? frontmatter.titleY : 50);
         setTitleFont((frontmatter.titleFont as string) || "default");
         setDocWidth(((frontmatter.docWidth as string) as DocWidthId) || "default");
+        setTags(tagsFromFrontmatter(frontmatter));
       } catch {}
     })();
   }, [activeNote.path]);
 
-  // When the header panel opens, scan the note's own assets folder for
-  // images so the "In this note" picker can show them as thumbnails.
+  useEffect(() => {
+    if (!vaultPath) return;
+    let cancelled = false;
+    scanAllVaultTags(vaultPath).then((list) => {
+      if (!cancelled) setAllVaultTags(list);
+    });
+    return () => { cancelled = true; };
+  }, [vaultPath]);
+
   useEffect(() => {
     if (!coverPickerOpen || !activeNote.path) return;
     let cancelled = false;
@@ -284,6 +295,7 @@ export default function Editor({
           setShowHeaderIcon(frontmatter.showHeaderIcon !== false);
           setCoverType((frontmatter.coverType as string) || "");
           setCoverValue((frontmatter.coverValue as string) || "");
+          setTags(tagsFromFrontmatter(frontmatter));
         } catch {}
       })();
     };
@@ -300,6 +312,7 @@ export default function Editor({
         setShowHeaderIcon(frontmatter.showHeaderIcon !== false);
         setCoverType((frontmatter.coverType as string) || "");
         setCoverValue((frontmatter.coverValue as string) || "");
+        setTags(tagsFromFrontmatter(frontmatter));
       } catch {}
     };
     window.addEventListener("focus", onFocus);
@@ -324,9 +337,6 @@ export default function Editor({
     return () => document.removeEventListener("keydown", onKey);
   }, [coverPickerOpen]);
 
-  // Close the emoji picker on Escape. Capture phase + stopPropagation so
-  // the picker's autofocused search input and any app-level global keydown
-  // handlers can't swallow or pre-empt the event.
   useEffect(() => {
     if (!iconPickerOpen) return;
     const onKey = (e: KeyboardEvent) => {
@@ -338,10 +348,6 @@ export default function Editor({
     return () => document.removeEventListener("keydown", onKey, true);
   }, [iconPickerOpen]);
 
-  // Close the emoji picker when the user clicks anywhere outside it.
-  // We skip clicks inside the picker itself (so picking an emoji works) and
-  // clicks on the anchor button (so the button's own onClick toggle handles
-  // open/close without fighting this handler).
   useEffect(() => {
     if (!iconPickerOpen) return;
     const onDown = (e: MouseEvent) => {
@@ -485,7 +491,6 @@ export default function Editor({
       const ext = (picked.split(".").pop() || "png").toLowerCase();
       const destPath = await saveImageToNoteAssets(activeNote.path, picked, `cover-${Date.now()}.${ext}`);
       await applyCover("image", destPath);
-      // Refresh the "In this note" grid so the newly-added file shows up.
       const imgs = await listNoteImages(activeNote.path);
       setNoteImages(imgs);
     } catch (e) { console.error("[editor] upload cover failed:", e); }
@@ -560,6 +565,15 @@ export default function Editor({
     setCoverPickerOpen(true);
   };
 
+  const handleTagsChange = async (next: string[]) => {
+    setTags(next);
+    await noteBodyRef.current?.updateFrontmatter({ tags: next });
+    invalidateTagCache();
+    if (vaultPath) {
+      scanAllVaultTags(vaultPath, true).then(setAllVaultTags);
+    }
+  };
+
   const openProperties = async () => {
     try {
       const raw = await readTextFile(activeNote.path);
@@ -579,6 +593,7 @@ export default function Editor({
       setShowHeaderIcon(frontmatter.showHeaderIcon !== false);
       setCoverType((frontmatter.coverType as string) || "");
       setCoverValue((frontmatter.coverValue as string) || "");
+      setTags(tagsFromFrontmatter(frontmatter));
     } catch (e) { console.error("[editor] refresh failed:", e); }
   };
 
@@ -621,7 +636,7 @@ export default function Editor({
     setSourceSaving(true);
     try {
       try { await noteBodyRef.current?.flush(); } catch {}
-      await writeFile(activeNote.path, new TextEncoder().encode(sourceDraft));
+      await writeFileAtomic(activeNote.path, new TextEncoder().encode(sourceDraft));
       setRawSource(sourceDraft);
       setSourceNonce((n) => n + 1);
       await refreshFrontmatterFromDisk();
@@ -665,11 +680,6 @@ export default function Editor({
     maskComposite: "intersect",
   } : {};
 
-  // Portal the emoji picker to <body> and position it with `fixed` coords
-  // derived from the icon button. Rendering it inline would clip against
-  // the note editor's `overflow-y-auto` container (which also clips
-  // horizontally), and clamping keeps it on-screen when the button is near
-  // the right or bottom edge of the viewport.
   const iconPickerPopup = iconPickerOpen ? (() => {
     const W = 320;
     const H = 420;
@@ -941,13 +951,22 @@ export default function Editor({
           </div>
         )}
 
-        <div className={`${contentWrap} pt-2 pb-4`}>
+        <div className={`${contentWrap} pt-2 pb-3`}>
           <div className="flex items-center justify-center space-x-4 text-xs text-gray-400">
             <span>Created: {createdAt}</span>
             <span>•</span>
             <span>Last Modified: {modifiedAt}</span>
             {wordCount > 0 && (<><span>•</span><span>{wordCount} words</span></>)}
           </div>
+        </div>
+
+        <div className={`${contentWrap} pb-3`}>
+          <TagEditor
+            tags={tags}
+            allTags={allVaultTags}
+            onChange={handleTagsChange}
+            readOnly={mode !== "edit"}
+          />
         </div>
 
         <div className={`${contentWrap} pb-8`}>
@@ -981,6 +1000,7 @@ export default function Editor({
               setTitleY(typeof fm.titleY === "number" ? fm.titleY : 50);
               setTitleFont((fm.titleFont as string) || "default");
               setDocWidth(((fm.docWidth as string) as DocWidthId) || "default");
+              setTags(tagsFromFrontmatter(fm));
             }}
           />
         </div>
@@ -1059,7 +1079,6 @@ export default function Editor({
               )}
             </div>
 
-            {/* ── In this note ─────────────────────────────────────────── */}
             <div className="border-t border-[#2a3136] pt-3">
               <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-2 flex items-center gap-1.5">
                 <ImageIcon size={10} /> In this note

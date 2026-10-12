@@ -1,7 +1,7 @@
 // src/Sidebar.tsx
 import { useEffect, useRef, useState } from 'react';
 import {
-  readDir, mkdir, writeTextFile, readTextFile, exists, rename as fsRename, remove,
+  readDir, mkdir, writeTextFile, readTextFile, exists, rename as fsRename,
 } from '@tauri-apps/plugin-fs';
 import { join } from '@tauri-apps/api/path';
 import { createPortal } from 'react-dom';
@@ -13,7 +13,10 @@ import {
 import EmojiPicker, { Theme, EmojiStyle } from 'emoji-picker-react';
 import { useModal } from './Modal';
 import { moveToTrash } from './trash';
+import { writeFileAtomic } from './safeWrite';
 import CleanupPanel from './CleanupPanel';
+import TagPickerModal from './TagPickerModal';
+import { scanAllVaultTags, invalidateTagCache } from './TagEditor';
 import {
   type FolderMetaMap,
   makeFolderKey,
@@ -57,7 +60,6 @@ function formatDayName(year: number, month: number, day: number): string {
 }
 
 const NEW_DAY_RE = /^([A-Za-z]+)\s+(\d{1,2}),\s*(\d{4})\.(selah|md)$/;
-
 const OLD_DAY_RE = /^(\d{4})-(\d{2})-(\d{2})\.(selah|md)$/;
 
 function parseDayFile(name: string): { day: number } | null {
@@ -79,34 +81,10 @@ function parentDirOf(p: string): string {
   return i === -1 ? p : p.substring(0, i);
 }
 
-/**
- * Tell any open editor bound to (a file inside) this path to stop writing
- * to disk before we move the target to the trash. Without this, the
- * editor's pending debounced save — or its unmount flush when the user
- * navigates to a different note — would recreate the file at its old
- * path, making the deleted note "reappear".
- */
 function notifyNoteDeleted(targetPath: string) {
   window.dispatchEvent(
     new CustomEvent('note-deleted', { detail: { path: targetPath } })
   );
-}
-
-/**
- * Write a text file atomically: write to a `.tmp` sibling, then rename into
- * place. Prevents the file from being left in a truncated state if the app
- * is killed mid-write — which, for `.vault_metadata.json`, would silently
- * reset the entire sidebar (categories, icons, colors).
- */
-async function writeFileAtomic(path: string, contents: string): Promise<void> {
-  const tmp = `${path}.tmp`;
-  await writeTextFile(tmp, contents);
-  try {
-    await fsRename(tmp, path);
-  } catch (e) {
-    try { await remove(tmp); } catch {}
-    throw e;
-  }
 }
 
 async function readNoteMeta(path: string): Promise<{ icon: string; color: string; title: string }> {
@@ -171,6 +149,14 @@ export default function Sidebar(props: SidebarProps) {
   });
   const { modal, promptAsync, confirmAsync } = useModal();
   const switcherRef = useRef<HTMLDivElement>(null);
+
+  const [categoryIconPicker, setCategoryIconPicker] = useState<{
+    categoryId: string;
+    categoryName: string;
+    top: number;
+    left: number;
+  } | null>(null);
+  const categoryIconPickerRef = useRef<HTMLDivElement>(null);
 
   const toggleShowExtensions = () => {
     setShowExtensions((prev) => {
@@ -294,13 +280,34 @@ export default function Sidebar(props: SidebarProps) {
   useEffect(() => {
     if (!switcherOpen) return;
     const handler = (e: MouseEvent) => {
-      if (switcherRef.current && !switcherRef.current.contains(e.target as Node)) {
-        setSwitcherOpen(false);
-      }
+      const t = e.target as Node;
+      if (switcherRef.current?.contains(t)) return;
+      if (categoryIconPickerRef.current?.contains(t)) return;
+      setSwitcherOpen(false);
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [switcherOpen]);
+
+  useEffect(() => {
+    if (!categoryIconPicker) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (categoryIconPickerRef.current?.contains(t)) return;
+      const el = t as Element;
+      if (el.closest?.('[data-category-icon-btn]')) return;
+      setCategoryIconPicker(null);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setCategoryIconPicker(null);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [categoryIconPicker]);
 
   const sanitizeDirName = (name: string) => {
     let trimmed = name.trim().replace(/[\\/:*?"<>|]/g, '-').replace(/[\x00-\x1f]/g, '');
@@ -379,9 +386,30 @@ export default function Sidebar(props: SidebarProps) {
     await loadVault();
   };
 
-  const changeCategoryIcon = async (cat: Category) => {
-    const emoji = await promptAsync(`Icon for ${cat.name}:`, cat.icon);
-    if (!emoji) return;
+  const changeCategoryIcon = (cat: Category, x: number, y: number) => {
+    if (categoryIconPicker?.categoryId === cat.id) {
+      setCategoryIconPicker(null);
+      return;
+    }
+    const W = 340;
+    const H = 460;
+    const left = Math.min(x, window.innerWidth - W - 12);
+    const top = Math.min(y, window.innerHeight - H - 12);
+    setCategoryIconPicker({
+      categoryId: cat.id,
+      categoryName: cat.name,
+      top: Math.max(12, top),
+      left: Math.max(12, left),
+    });
+  };
+
+  const applyCategoryIcon = async (emoji: string) => {
+    if (!categoryIconPicker) return;
+    const cat = categories.find((c) => c.id === categoryIconPicker.categoryId);
+    if (!cat) {
+      setCategoryIconPicker(null);
+      return;
+    }
     await saveMetadata({
       ...metadata,
       categories: metadata.categories.map((c: Category) =>
@@ -389,6 +417,7 @@ export default function Sidebar(props: SidebarProps) {
       ),
     });
     await loadVault();
+    if (emoji === '') setCategoryIconPicker(null);
   };
 
   const deleteCategory = async (cat: Category) => {
@@ -435,8 +464,43 @@ export default function Sidebar(props: SidebarProps) {
         categories={categories}
       />
 
+      {categoryIconPicker && createPortal(
+        <div
+          ref={categoryIconPickerRef}
+          className="fixed z-[500] bg-[#1e2327] border border-[#2a3136] rounded-lg shadow-2xl overflow-hidden"
+          style={{ top: categoryIconPicker.top, left: categoryIconPicker.left }}
+        >
+          <div className="flex items-center justify-between px-3 py-2 border-b border-[#2a3136]">
+            <span className="text-xs text-gray-400 truncate">
+              Icon for <span className="text-gray-200">{categoryIconPicker.categoryName}</span>
+            </span>
+            <button
+              onClick={() => setCategoryIconPicker(null)}
+              className="text-gray-500 hover:text-gray-300 p-0.5"
+              title="Close"
+            >
+              <X size={12} />
+            </button>
+          </div>
+          <EmojiPicker
+            theme={Theme.DARK}
+            emojiStyle={EmojiStyle.NATIVE}
+            onEmojiClick={(d) => applyCategoryIcon(d.emoji)}
+            width={320}
+            height={360}
+            previewConfig={{ showPreview: false }}
+          />
+          <button
+            onClick={() => applyCategoryIcon('')}
+            className="w-full text-left text-xs text-gray-500 hover:text-red-400 hover:bg-[#2a3136] px-3 py-2 border-t border-[#2a3136]"
+          >
+            Remove icon
+          </button>
+        </div>,
+        document.body
+      )}
+
       <div className="flex-shrink-0 border-b border-[#2a3136]">
-        {/* ─── Header: logo + vault name ─────────────────────────────── */}
         <div className="px-3 pt-3 pb-2 flex items-center justify-between gap-2">
           <button
             type="button"
@@ -533,13 +597,33 @@ export default function Sidebar(props: SidebarProps) {
                   </button>
                   {!c.builtin && (
                     <div className="flex items-center space-x-0.5 opacity-0 group-hover/cat:opacity-100 transition-opacity">
-                      <button onClick={(e) => { e.stopPropagation(); renameCategory(c); }} className="text-gray-500 hover:text-gray-200 p-1">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); renameCategory(c); }}
+                        className="text-gray-500 hover:text-gray-200 p-1"
+                        title="Rename"
+                      >
                         <Pencil size={11} />
                       </button>
-                      <button onClick={(e) => { e.stopPropagation(); changeCategoryIcon(c); }} className="text-gray-500 hover:text-gray-200 p-1">
+                      <button
+                        data-category-icon-btn
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          changeCategoryIcon(c, e.clientX, e.clientY);
+                        }}
+                        className={`p-1 ${
+                          categoryIconPicker?.categoryId === c.id
+                            ? 'text-blue-400 hover:text-blue-300'
+                            : 'text-gray-500 hover:text-gray-200'
+                        }`}
+                        title="Change icon"
+                      >
                         <Smile size={11} />
                       </button>
-                      <button onClick={(e) => { e.stopPropagation(); deleteCategory(c); }} className="text-gray-500 hover:text-red-400 p-1">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); deleteCategory(c); }}
+                        className="text-gray-500 hover:text-red-400 p-1"
+                        title="Delete"
+                      >
                         <Trash2 size={11} />
                       </button>
                     </div>
@@ -589,6 +673,7 @@ export default function Sidebar(props: SidebarProps) {
             key={activeCategory.id}
             category={activeCategory}
             categoryDir={categoryDir}
+            vaultPath={vaultPath}
             activeView={activeView}
             folderMeta={folderMeta}
             saveFolderMeta={saveFolderMeta}
@@ -625,6 +710,23 @@ type NotesCtx =
   | { kind: 'background'; folderPath: string; x: number; y: number }
   | null;
 
+type NotesIconPickerState =
+  | {
+      kind: 'folder';
+      folderKey: string;
+      label: string;
+      top: number;
+      left: number;
+    }
+  | {
+      kind: 'note';
+      notePath: string;
+      label: string;
+      top: number;
+      left: number;
+    }
+  | null;
+
 function sortNotes(notes: NoteEntry[]): NoteEntry[] {
   return [...notes].sort((a, b) => a.title.localeCompare(b.title));
 }
@@ -632,6 +734,7 @@ function sortNotes(notes: NoteEntry[]): NoteEntry[] {
 function NotesTree({
   category,
   categoryDir,
+  vaultPath,
   activeView,
   folderMeta,
   saveFolderMeta,
@@ -643,6 +746,7 @@ function NotesTree({
 }: {
   category: Category;
   categoryDir: (cat: Category) => Promise<string>;
+  vaultPath: string;
   activeView: any;
   folderMeta: FolderMetaMap;
   saveFolderMeta: (patch: Record<string, any>) => Promise<void>;
@@ -660,13 +764,15 @@ function NotesTree({
   const [dragNote, setDragNote] = useState<NoteEntry | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
 
-  const [iconPicker, setIconPicker] = useState<{
-    folderKey: string;
-    folderName: string;
-    top: number;
-    left: number;
-  } | null>(null);
+  const [iconPicker, setIconPicker] = useState<NotesIconPickerState>(null);
   const iconPickerRef = useRef<HTMLDivElement>(null);
+
+  const [tagPickerNote, setTagPickerNote] = useState<{
+    path: string;
+    title: string;
+    tags: string[];
+  } | null>(null);
+  const [vaultTags, setVaultTags] = useState<string[]>([]);
 
   const expandedRef = useRef<Record<string, boolean>>({});
   const rootPathRef = useRef<string | null>(null);
@@ -674,13 +780,15 @@ function NotesTree({
 
   const justDroppedRef = useRef(false);
 
-  /**
-   * Build the folderMeta key for any folder path (absolute).
-   *
-   * Before `rootPath` loads, we can't compute the canonical relative key.
-   * We use the last two path segments as a best-effort stable suffix so we
-   * don't create two conflicting keys for the same folder across renders.
-   */
+  useEffect(() => {
+    if (!vaultPath) return;
+    let cancelled = false;
+    scanAllVaultTags(vaultPath).then((list) => {
+      if (!cancelled) setVaultTags(list);
+    });
+    return () => { cancelled = true; };
+  }, [vaultPath]);
+
   const folderKeyFor = (absPath: string): string => {
     const rp = rootPathRef.current;
     if (!rp) {
@@ -887,8 +995,6 @@ function NotesTree({
     const ok = await confirmAsync(`Move the folder "${folderName}" and everything inside it to the trash?`);
     if (!ok) return;
     try {
-      // Tell any open editor for a note inside this folder to stop writing
-      // before we move the folder to the trash.
       notifyNoteDeleted(folderPath);
       await moveToTrash(folderPath);
       const n = { ...expandedRef.current };
@@ -932,12 +1038,39 @@ function NotesTree({
     } catch (e) { console.error('[notes-tree] rename failed:', e); }
   };
 
-  const changeNoteIcon = async (note: NoteEntry) => {
-    const emoji = await promptAsync(`Icon for "${note.title}":`, note.icon || '');
-    if (emoji === null) return;
-    await writeNoteMeta(note.path, { icon: emoji });
+  const openNoteTagPicker = async (note: NoteEntry) => {
+    setCtx(null);
+    let tags: string[] = [];
+    try {
+      const raw = await readTextFile(note.path);
+      const { frontmatter } = parseNoteFile(raw);
+      if (Array.isArray(frontmatter.tags)) {
+        tags = (frontmatter.tags as any[]).filter(
+          (t): t is string => typeof t === 'string' && t.length > 0
+        );
+      }
+    } catch {}
+    if (vaultPath) {
+      const fresh = await scanAllVaultTags(vaultPath, true);
+      setVaultTags(fresh);
+    }
+    setTagPickerNote({ path: note.path, title: note.title, tags });
+  };
+
+  const commitNoteTags = async (next: string[]) => {
+    if (!tagPickerNote) return;
+    await writeNoteMeta(tagPickerNote.path, { tags: next as any });
     await reload();
-    window.dispatchEvent(new CustomEvent('note-frontmatter-changed', { detail: { path: note.path } }));
+    window.dispatchEvent(
+      new CustomEvent('file-changed', { detail: { path: tagPickerNote.path } })
+    );
+    window.dispatchEvent(
+      new CustomEvent('note-frontmatter-changed', { detail: { path: tagPickerNote.path } })
+    );
+    invalidateTagCache();
+    if (vaultPath) {
+      scanAllVaultTags(vaultPath, true).then(setVaultTags);
+    }
   };
 
   const openFolderIconPicker = (
@@ -952,20 +1085,48 @@ function NotesTree({
     const left = Math.min(x, window.innerWidth - W - 12);
     const top = Math.min(y, window.innerHeight - H - 12);
     setIconPicker({
+      kind: 'folder',
       folderKey: key,
-      folderName,
+      label: folderName,
       top: Math.max(12, top),
       left: Math.max(12, left),
     });
     setCtx(null);
   };
 
-  const applyFolderIcon = async (emoji: string) => {
-    if (!iconPicker) return;
-    const prev = folderMeta[iconPicker.folderKey] || {};
-    await saveFolderMeta({
-      [iconPicker.folderKey]: { ...prev, icon: emoji },
+  const openNoteIconPicker = (
+    note: NoteEntry,
+    x: number,
+    y: number
+  ) => {
+    const W = 340;
+    const H = 460;
+    const left = Math.min(x, window.innerWidth - W - 12);
+    const top = Math.min(y, window.innerHeight - H - 12);
+    setIconPicker({
+      kind: 'note',
+      notePath: note.path,
+      label: note.title,
+      top: Math.max(12, top),
+      left: Math.max(12, left),
     });
+    setCtx(null);
+  };
+
+  const applyIcon = async (emoji: string) => {
+    if (!iconPicker) return;
+    if (iconPicker.kind === 'folder') {
+      const prev = folderMeta[iconPicker.folderKey] || {};
+      await saveFolderMeta({
+        [iconPicker.folderKey]: { ...prev, icon: emoji },
+      });
+    } else {
+      await writeNoteMeta(iconPicker.notePath, { icon: emoji });
+      await reload();
+      window.dispatchEvent(
+        new CustomEvent('note-frontmatter-changed', { detail: { path: iconPicker.notePath } })
+      );
+    }
     if (emoji === '') setIconPicker(null);
   };
 
@@ -993,8 +1154,6 @@ function NotesTree({
           justDroppedRef.current = false;
           return;
         }
-        // Actually move the target to trash before renaming — otherwise
-        // `rename` silently clobbers on Unix and fails on Windows.
         try { await moveToTrash(dest); } catch (e) {
           console.warn('[notes-tree] could not trash overwrite target:', e);
         }
@@ -1267,6 +1426,16 @@ function NotesTree({
         handleDrop(rootPath);
       }}
     >
+      {tagPickerNote && (
+        <TagPickerModal
+          noteTitle={tagPickerNote.title}
+          initialTags={tagPickerNote.tags}
+          allTags={vaultTags}
+          onCommit={commitNoteTags}
+          onClose={() => setTagPickerNote(null)}
+        />
+      )}
+
       {ctx && (
         <div
           className="fixed z-50 bg-[#1e2327] border border-[#2a3136] rounded shadow-xl py-1 w-60"
@@ -1342,8 +1511,19 @@ function NotesTree({
               <button onClick={() => { const n = ctx.note; setCtx(null); renameNote(n); }} className="w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-[#2a3136] flex items-center space-x-2">
                 <Pencil size={13} /> <span>Rename</span>
               </button>
-              <button onClick={() => { const n = ctx.note; setCtx(null); changeNoteIcon(n); }} className="w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-[#2a3136] flex items-center space-x-2 border-b border-[#2a3136]">
+              <button
+                onClick={() => {
+                  const n = ctx.note;
+                  const x = ctx.x;
+                  const y = ctx.y;
+                  openNoteIconPicker(n, x, y);
+                }}
+                className="w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-[#2a3136] flex items-center space-x-2"
+              >
                 <Smile size={13} /> <span>Change icon</span>
+              </button>
+              <button onClick={() => { const n = ctx.note; void openNoteTagPicker(n); }} className="w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-[#2a3136] flex items-center space-x-2 border-b border-[#2a3136]">
+                <Tag size={13} /> <span>Edit tags…</span>
               </button>
               <button
                 onClick={() => { const p = parentDirOf(ctx.note.path); setCtx(null); createFolder(p); }}
@@ -1373,7 +1553,7 @@ function NotesTree({
         >
           <div className="flex items-center justify-between px-3 py-2 border-b border-[#2a3136]">
             <span className="text-xs text-gray-400 truncate">
-              Icon for <span className="text-gray-200">{iconPicker.folderName}</span>
+              Icon for <span className="text-gray-200">{iconPicker.label}</span>
             </span>
             <button
               onClick={() => setIconPicker(null)}
@@ -1385,13 +1565,13 @@ function NotesTree({
           <EmojiPicker
             theme={Theme.DARK}
             emojiStyle={EmojiStyle.NATIVE}
-            onEmojiClick={(d) => applyFolderIcon(d.emoji)}
+            onEmojiClick={(d) => applyIcon(d.emoji)}
             width={320}
             height={360}
             previewConfig={{ showPreview: false }}
           />
           <button
-            onClick={() => applyFolderIcon('')}
+            onClick={() => applyIcon('')}
             className="w-full text-left text-xs text-gray-500 hover:text-red-400 hover:bg-[#2a3136] px-3 py-2 border-t border-[#2a3136]"
           >
             Remove icon
@@ -1629,10 +1809,6 @@ function JournalTree({
       if (!mounted) return;
       setYears(ys);
 
-      // Preload months for every year in the background. This means
-      // expanding a year later never has to hit disk cold, and — more
-      // importantly — a partial read at mount time can't leave us showing
-      // a half-empty year until the user remounts the tree.
       const monthResults: Record<string, string[]> = {};
       for (const y of ys) {
         try {
@@ -1657,7 +1833,6 @@ function JournalTree({
       const normalizedChanged = changed.replace(/\\/g, '/');
       const normalizedCatDir = catDir.replace(/\\/g, '/').replace(/\/+$/, '');
 
-      // Must be inside this category's directory.
       if (
         normalizedChanged !== normalizedCatDir &&
         !normalizedChanged.startsWith(normalizedCatDir + '/')
@@ -1671,7 +1846,6 @@ function JournalTree({
           : normalizedChanged.slice(normalizedCatDir.length + 1);
       const parts = rel.split('/').filter(Boolean);
 
-      // Root of the journal — refresh the year list.
       if (parts.length === 0) {
         setYears(await readYears());
         return;
@@ -1679,9 +1853,6 @@ function JournalTree({
 
       const year = parts[0];
 
-      // Refresh the year's months and its year-note meta no matter whether
-      // the year is currently expanded. If the user expands it later, the
-      // data will already be correct.
       const ms = await readMonths(year);
       setMonths((p) => ({ ...p, [year]: ms }));
 
@@ -1699,7 +1870,6 @@ function JournalTree({
       }
       setYearNotes((p) => ({ ...p, [year]: yNote }));
 
-      // If it was a month folder that changed, refresh that month's days.
       if (parts.length >= 2) {
         const month = parts[1];
         const key = `${year}/${month}`;
@@ -1722,15 +1892,12 @@ function JournalTree({
       const year = parts[0];
       const month = parts[1];
 
-      // Year note (`2026/_2026-Year.selah`).
       if (parts.length === 2 && /^_.+-Year\.(selah|md)$/.test(parts[1])) {
         const meta = await readNoteMeta(p);
         setYearNotes((prev) => ({ ...prev, [year]: meta }));
         return;
       }
 
-      // Day file — refresh the whole month so sibling files that were just
-      // written around the same time are picked up too.
       const key = `${year}/${month}`;
       const ds = await readDays(year, month);
       setDays((prev) => ({ ...prev, [key]: ds }));
@@ -1781,8 +1948,6 @@ function JournalTree({
       return;
     }
     setExpandedYears((p) => ({ ...p, [year]: true }));
-    // Always re-read on expand so we never show a stale cache, even if an
-    // earlier read happened before the folder was fully flushed to disk.
     const ms = await readMonths(year);
     setMonths((p) => ({ ...p, [year]: ms }));
   };
@@ -1976,10 +2141,6 @@ function JournalTree({
     const dir = await categoryDir(category);
     const monthPath = await join(dir, year, month);
     const fullPath = await join(monthPath, file);
-    // Tell any open editor bound to this file to stop writing to disk
-    // before we move it to the trash. Without this, its pending debounced
-    // save (or its unmount flush when the user navigates to a different
-    // day) would recreate the file at the old path.
     notifyNoteDeleted(fullPath);
     await moveToTrash(fullPath);
     setDays((p) => ({
@@ -1989,10 +2150,6 @@ function JournalTree({
     window.dispatchEvent(new CustomEvent('folder-changed', { detail: { path: monthPath } }));
   };
 
-  // Move a day entry (file + its assets folder + every reference inside) to
-  // a different date. Accepts the same flexible formats a user would type
-  // anywhere else — "2026-10-09", "10/09/2026", "October 9, 2026",
-  // "yesterday", "tomorrow", etc.
   const changeDayDate = async () => {
     if (!ctx || ctx.kind !== 'day') return;
     const { year, month, day, file } = ctx;
@@ -2020,7 +2177,6 @@ function JournalTree({
       return;
     }
 
-    // No-op
     if (
       parsed.year === currentY &&
       parsed.month === currentM &&
@@ -2045,9 +2201,6 @@ function JournalTree({
       if (!ok) return;
     }
 
-    // Tell any open editor bound to the old file to stop writing — otherwise
-    // its pending debounced save (or its unmount flush when the user
-    // navigates away) would recreate the old file at its stale path.
     notifyNoteDeleted(currentPath);
 
     try {
@@ -2059,8 +2212,6 @@ function JournalTree({
         parsed.day
       );
 
-      // Refresh both month folders so the sidebar picks up the move
-      // immediately, wherever the destination landed.
       window.dispatchEvent(
         new CustomEvent('folder-changed', {
           detail: { path: await join(dir, year, month) },
@@ -2072,7 +2223,6 @@ function JournalTree({
         })
       );
 
-      // Navigate the main pane to the moved entry so the user lands on it.
       onOpenDay(category, parsed.year, parsed.month, parsed.day);
     } catch (e: any) {
       console.error('[journal] change date failed:', e);

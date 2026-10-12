@@ -1,8 +1,9 @@
 import { useState, useEffect } from "react";
-import { readDir, mkdir, writeTextFile, readTextFile, remove, rename } from "@tauri-apps/plugin-fs";
+import { readDir, mkdir, writeTextFile, readTextFile, rename } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import { ChevronRight, ChevronDown, Plus, FileText, Trash2, Smile } from "lucide-react";
 import { useModal } from "./Modal";
+import { moveToTrash } from "./trash";
 
 interface SectionHomeProps {
   vaultPath: string;
@@ -13,10 +14,6 @@ interface SectionHomeProps {
   activeNotePath?: string;
 }
 
-// A clean, flat "page" for a Notes section - this replaces the old nested
-// file-tree that used to render inline in the sidebar. Notes still support
-// light nesting (a note can hold sub-notes) and manual drag-to-reorder, but
-// it's presented as a simple list you land on, not an explorer.
 export default function SectionHome({ vaultPath, sectionDir, sectionName, sectionIcon, onOpenNote, activeNotePath }: SectionHomeProps) {
   const [tree, setTree] = useState<any[]>([]);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
@@ -215,11 +212,11 @@ export default function SectionHome({ vaultPath, sectionDir, sectionName, sectio
 
   const handleDelete = async (node: any) => {
     setContextMenu(null);
-    const ok = await confirmAsync(`Delete "${node.name}" and all its contents?`);
+    const ok = await confirmAsync(`Move "${node.name}" and all its contents to the trash?`);
     if (!ok) return;
     try {
       const targetPath = node.type === "page-folder" ? node.dirPath : node.path;
-      await remove(targetPath, { recursive: true });
+      await moveToTrash(targetPath);
       await load();
     } catch {}
   };

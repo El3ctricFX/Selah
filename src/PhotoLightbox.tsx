@@ -27,6 +27,10 @@ export default function PhotoLightbox({
     panY: number;
     moved: boolean;
   } | null>(null);
+  // Set to true when a mouse drag actually moved the image, so the click
+  // that the browser synthesizes at the end of a pan gesture doesn't get
+  // treated as "user clicked the backdrop → close".
+  const swallowNextClickRef = useRef(false);
 
   const current = srcs[index];
 
@@ -88,7 +92,12 @@ export default function PhotoLightbox({
     if (!d) return;
     const dx = e.clientX - d.startX;
     const dy = e.clientY - d.startY;
-    if (!d.moved && Math.abs(dx) + Math.abs(dy) > 3) d.moved = true;
+    if (!d.moved && Math.abs(dx) + Math.abs(dy) > 3) {
+      d.moved = true;
+      // The browser will fire a `click` after this drag ends — mark it so
+      // the backdrop-click handler ignores it.
+      swallowNextClickRef.current = true;
+    }
     if (!d.moved) return;
     setPan({ x: d.panX + dx, y: d.panY + dy });
   };
@@ -108,13 +117,32 @@ export default function PhotoLightbox({
     return () => document.removeEventListener("mouseup", up);
   }, []);
 
+  /**
+   * Click anywhere in the backdrop (the flex container around the image)
+   * to close. Clicks that land on the <img> itself are ignored, and clicks
+   * that end a pan drag are also swallowed so panning doesn't accidentally
+   * dismiss the lightbox.
+   */
+  const handleBackdropClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+
+    if (swallowNextClickRef.current) {
+      swallowNextClickRef.current = false;
+      return;
+    }
+
+    // Only close when the actual click target was the container itself
+    // (i.e. the user clicked the empty space around the image), not the
+    // image or any child element.
+    if (e.target === e.currentTarget) {
+      onClose();
+    }
+  };
+
   if (!current) return null;
 
   return (
-    <div
-      className="fixed inset-0 z-[500] bg-black/95 flex items-center justify-center overflow-hidden"
-      onClick={onClose}
-    >
+    <div className="fixed inset-0 z-[500] bg-black/95 flex items-center justify-center overflow-hidden">
       <div className="absolute top-4 right-4 flex items-center gap-2 z-10">
         <button
           type="button"
@@ -179,7 +207,7 @@ export default function PhotoLightbox({
 
       <div
         className="w-full h-full flex items-center justify-center"
-        onClick={(e) => e.stopPropagation()}
+        onClick={handleBackdropClick}
         onWheel={onWheel}
         onMouseDown={onMouseDown}
         onMouseMove={onMouseMove}
@@ -205,13 +233,13 @@ export default function PhotoLightbox({
       </div>
 
       {srcs.length > 1 && (
-        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 text-xs text-white/70 bg-black/60 px-3 py-1.5 rounded-full">
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 text-xs text-white/70 bg-black/60 px-3 py-1.5 rounded-full pointer-events-none">
           {index + 1} / {srcs.length}
         </div>
       )}
 
       {zoom === 1 && (
-        <div className="absolute bottom-4 right-4 text-[10px] text-white/50 bg-black/60 px-2 py-1 rounded">
+        <div className="absolute bottom-4 right-4 text-[10px] text-white/50 bg-black/60 px-2 py-1 rounded pointer-events-none">
           click to zoom · scroll to scale · drag to pan
         </div>
       )}

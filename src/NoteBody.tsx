@@ -5,6 +5,8 @@ import {
   useCreateBlockNote,
   getDefaultReactSlashMenuItems,
   SuggestionMenuController,
+  FormattingToolbar,
+  useBlockNoteEditor,
 } from "@blocknote/react";
 import { BlockNoteView } from "@blocknote/mantine";
 import * as locales from "@blocknote/core/locales";
@@ -23,11 +25,18 @@ import {
   useRef,
   useState,
 } from "react";
-import { readTextFile, writeTextFile, readDir } from "@tauri-apps/plugin-fs";
+import {
+  readTextFile,
+  readDir,
+  writeFile,
+  copyFile,
+  rename as fsRename,
+  exists as fsExists,
+} from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import { openUrl } from "@tauri-apps/plugin-opener";
-import { open } from "@tauri-apps/plugin-dialog";
+import { openUrl, openPath } from "@tauri-apps/plugin-opener";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   Trash2,
   AlertTriangle,
@@ -35,6 +44,22 @@ import {
   Link as LinkIcon,
   Type as TypeIcon,
   Play as PlayIcon,
+  Maximize2,
+  Copy,
+  ExternalLink,
+  Square,
+  RectangleHorizontal,
+  RectangleVertical,
+  RotateCcw,
+  Download,
+  Replace,
+  Pencil,
+  AlignLeft,
+  AlignCenter,
+  AlignRight,
+  Eye,
+  EyeOff,
+  FileText,
 } from "lucide-react";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
@@ -67,6 +92,8 @@ import {
   isInsideNoteAssets,
   deleteImageFromNoteAssets,
 } from "./imageAssets";
+import { writeFileAtomic } from "./safeWrite";
+import { registerFlusher } from "./flushRegistry";
 
 import "@blocknote/core/fonts/inter.css";
 import "@blocknote/mantine/style.css";
@@ -162,8 +189,37 @@ function countWords(markdown: string): number {
   return plain.split(" ").filter(Boolean).length;
 }
 
+function isEmptyParagraph(block: any): boolean {
+  if (!block || block.type !== "paragraph") return false;
+  const content = block.content;
+  if (!Array.isArray(content)) return true;
+  if (content.length === 0) return true;
+  return content.every(
+    (c: any) =>
+      !c || (c.type === "text" && !String(c.text ?? "").trim())
+  );
+}
+
+function guessImageFileName(url: string): string {
+  try {
+    const cleaned = url.split("?")[0].split("#")[0];
+    const parts = cleaned.split(/[/\\]/);
+    const last = parts[parts.length - 1] || "";
+    let decoded = last;
+    try { decoded = decodeURIComponent(last); } catch {}
+    if (!decoded) return "image.png";
+    if (!/\.(png|jpe?g|webp|gif|avif|bmp|svg)$/i.test(decoded)) {
+      return `${decoded}.png`;
+    }
+    return decoded;
+  } catch {
+    return "image.png";
+  }
+}
+
 const URL_RE = /^https?:\/\/\S+$/i;
-const DEBOUNCE_MS = 500;
+const DEBOUNCE_MS = 150;
+const MAX_DEBOUNCE_MS = 2000;
 
 const NOTE_LINK_KEY = new PluginKey("note-links");
 
@@ -229,6 +285,55 @@ const insertCallout = (editor: any) => ({
   icon: <span className="text-base">💡</span>,
 });
 
+const IMAGE_WIDTH_PRESETS: { label: string; px: number | null; icon: any }[] = [
+  { label: "Small (240px)",      px: 240,  icon: Square },
+  { label: "Medium (400px)",     px: 400,  icon: RectangleHorizontal },
+  { label: "Large (600px)",      px: 600,  icon: RectangleVertical },
+  { label: "Reset (responsive)", px: null, icon: RotateCcw },
+];
+
+const PREVIEW_WIDTH_PX = 512;
+
+/**
+ * BlockNote's default formatting toolbar morphs into an image-actions bar
+ * when an image is selected. We already have a right-click menu for those,
+ * so hide the toolbar entirely on node selections — but keep it for normal
+ * text selections so bold/italic/links still work.
+ */
+function NoteFormattingToolbar() {
+  const editor = useBlockNoteEditor();
+  const tiptap: any = (editor as any)._tiptapEditor;
+  const selection = tiptap?.state?.selection;
+
+  // A NodeSelection (image, video, etc.) has `.node` set; a text selection
+  // does not. Hide the toolbar in that case.
+  if (selection?.node) return null;
+
+  // Belt and braces: also hide it whenever the selected block is a file-type
+  // block (image/video/audio/file), even if the selection isn't a NodeSelection.
+  try {
+    const blockType = editor.getTextCursorPosition().block.type;
+    if (["image", "video", "audio", "file"].includes(blockType)) return null;
+  } catch {
+    /* no cursor position yet; fall through */
+  }
+
+  return <FormattingToolbar />;
+}
+
+type ImageMenuMode = "main" | "caption" | "rename";
+
+interface ImageMenuState {
+  x: number;
+  y: number;
+  blockId: string;
+  url: string;
+  caption: string;
+  textAlignment: string;
+  previewWidth: number | undefined;
+  mode: ImageMenuMode;
+}
+
 const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
   (
     {
@@ -256,6 +361,15 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
     } | null>(null);
     const pasteMenuRef = useRef<HTMLDivElement>(null);
 
+    const [imageMenu, setImageMenu] = useState<ImageMenuState | null>(null);
+    const imageMenuRef = useRef<HTMLDivElement>(null);
+    const captionInputRef = useRef<HTMLInputElement>(null);
+    const renameInputRef = useRef<HTMLInputElement>(null);
+
+    const [captionDraft, setCaptionDraft] = useState("");
+    const [renameDraft, setRenameDraft] = useState("");
+    const [renameError, setRenameError] = useState<string | null>(null);
+
     const frontmatterRef = useRef<Frontmatter>({});
     const isNewFileRef = useRef(false);
     const dirtyRef = useRef(false);
@@ -264,6 +378,8 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
 
     const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const writeQueueRef = useRef<Promise<void>>(Promise.resolve());
+    const saveBodyRef = useRef<() => Promise<void>>(async () => {});
+    const lastSaveAtRef = useRef<number>(Date.now());
 
     const prevImageUrlsRef = useRef<Set<string>>(new Set());
     const handlingDeleteRef = useRef(false);
@@ -296,6 +412,65 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       },
     });
 
+    // Hide BlockNote's floating toolbar while a file block (image/video/...) is
+    // selected. We toggle a body class and let CSS do the hiding, because the
+    // toolbar is portaled and can't be reliably suppressed from the component.
+    useEffect(() => {
+      if (!editor) return;
+      const FILE_TYPES = ["image", "video", "audio", "file"];
+      const update = () => {
+        let hide = false;
+        try {
+          const sel: any = (editor as any)._tiptapEditor?.state?.selection;
+          if (sel?.node) hide = true;
+          else hide = FILE_TYPES.includes(editor.getTextCursorPosition().block.type);
+        } catch {
+          /* ignore */
+        }
+        document.body.classList.toggle("bn-hide-file-toolbar", hide);
+      };
+      update();
+      const unsub = editor.onSelectionChange(update);
+      return () => {
+        document.body.classList.remove("bn-hide-file-toolbar");
+        if (typeof unsub === "function") unsub();
+      };
+    }, [editor]);
+
+    const insertBlocksSmart = useCallback(
+      (blocksToInsert: any[]): any[] => {
+        if (!editor || blocksToInsert.length === 0) return [];
+        try {
+          const cursor = editor.getTextCursorPosition?.();
+          const refBlock =
+            cursor?.block || editor.document[editor.document.length - 1];
+          if (!refBlock) return [];
+
+          if (isEmptyParagraph(refBlock)) {
+            try {
+              const replaced = editor.replaceBlocks(
+                [refBlock.id],
+                blocksToInsert
+              );
+              return replaced?.insertedBlocks || [];
+            } catch (e) {
+              console.warn("[insert] replaceBlocks failed, falling back:", e);
+            }
+          }
+          const inserted = editor.insertBlocks(
+            blocksToInsert,
+            refBlock,
+            "after"
+          );
+          return inserted || [];
+        } catch (e) {
+          console.error("[insert] failed:", e);
+          return [];
+        }
+      },
+      [editor]
+    );
+
     useEffect(() => {
       if (!editor) return;
       editor.isEditable = mode === "edit";
@@ -317,6 +492,537 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       };
     }, [editor]);
 
+    // ── Force deselect of an image when clicking anywhere else ──────────
+    useEffect(() => {
+      if (!editor) return;
+
+      const onDown = (e: MouseEvent) => {
+        const t = e.target as HTMLElement | null;
+        if (!t) return;
+        if (t.closest('[data-content-type="image"]')) return;
+
+        setTimeout(() => {
+          try {
+            const tiptap: any = (editor as any)._tiptapEditor;
+            if (!tiptap) return;
+            const state = tiptap.state;
+            if (!state?.selection) return;
+            if (!state.selection.node) return;
+
+            const from = state.selection.from;
+            const to = state.selection.to;
+            const docSize = state.doc.content.size;
+            const candidates = [
+              Math.max(0, from - 1),
+              Math.min(docSize, to + 1),
+            ];
+            for (const pos of candidates) {
+              try {
+                tiptap.commands.setTextSelection(pos);
+                return;
+              } catch {}
+            }
+            try { tiptap.commands.blur(); } catch {}
+          } catch (err) {
+            console.warn("[deselect] failed:", err);
+          }
+        }, 0);
+      };
+
+      document.addEventListener("mousedown", onDown);
+      return () => document.removeEventListener("mousedown", onDown);
+    }, [editor]);
+
+    // ── Right-click menu helpers ────────────────────────────────────────
+    const closeImageMenu = () => setImageMenu(null);
+
+    const backToMainMenu = () => {
+      setImageMenu((prev) => (prev ? { ...prev, mode: "main" } : prev));
+      setRenameError(null);
+    };
+
+    const applyImageWidth = (blockId: string, px: number | null) => {
+      closeImageMenu();
+      try {
+        editor.updateBlock(blockId, {
+          props: { previewWidth: px === null ? undefined : px } as any,
+        });
+      } catch (e) {
+        console.error("[image-menu] updateBlock failed:", e);
+      }
+    };
+
+    const applyImageAlignment = (
+      blockId: string,
+      alignment: "left" | "center" | "right"
+    ) => {
+      closeImageMenu();
+      try {
+        editor.updateBlock(blockId, {
+          props: { textAlignment: alignment } as any,
+        });
+      } catch (e) {
+        console.error("[image-menu] alignment failed:", e);
+      }
+    };
+
+    const togglePreview = () => {
+      if (!imageMenu) return;
+      const has =
+        typeof imageMenu.previewWidth === "number" &&
+        imageMenu.previewWidth > 0;
+      const next = has ? undefined : PREVIEW_WIDTH_PX;
+      try {
+        editor.updateBlock(imageMenu.blockId, {
+          props: { previewWidth: next } as any,
+        });
+      } catch (e) {
+        console.error("[image-menu] toggle preview failed:", e);
+      }
+      setImageMenu({ ...imageMenu, previewWidth: next, mode: "main" });
+    };
+
+    const enterCaptionMode = () => {
+      if (!imageMenu) return;
+      setCaptionDraft(imageMenu.caption);
+      setImageMenu({ ...imageMenu, mode: "caption" });
+    };
+
+    const saveCaptionInline = () => {
+      if (!imageMenu) return;
+      try {
+        editor.updateBlock(imageMenu.blockId, {
+          props: { caption: captionDraft },
+        });
+      } catch (e) {
+        console.error("[image-menu] caption save failed:", e);
+      }
+      setImageMenu({
+        ...imageMenu,
+        caption: captionDraft,
+        mode: "main",
+      });
+    };
+
+    const enterRenameMode = () => {
+      if (!imageMenu) return;
+      const abs = assetUrlToAbsolutePath(imageMenu.url);
+      if (!abs) {
+        return;
+      }
+      const fileName = abs.split(/[/\\]/).pop() || "";
+      const base = fileName.replace(/\.[^.]+$/, "");
+      setRenameDraft(base);
+      setRenameError(null);
+      setImageMenu({ ...imageMenu, mode: "rename" });
+    };
+
+    const saveRename = async () => {
+      if (!imageMenu) return;
+      const abs = assetUrlToAbsolutePath(imageMenu.url);
+      if (!abs) {
+        backToMainMenu();
+        return;
+      }
+
+      const oldName = abs.split(/[/\\]/).pop() || "";
+      const ext = oldName.match(/\.[^.]+$/)?.[0] || "";
+      const dir = abs.substring(0, abs.length - oldName.length);
+
+      const cleanBase = renameDraft
+        .trim()
+        .replace(/[\\/:*?"<>|]/g, "-")
+        .replace(/\.[^.]+$/, "");
+      if (!cleanBase) {
+        setRenameError("Name can't be empty.");
+        return;
+      }
+
+      const newName = `${cleanBase}${ext}`;
+      if (newName === oldName) {
+        backToMainMenu();
+        return;
+      }
+
+      const sep = abs.includes("\\") ? "\\" : "/";
+      const newAbs = `${dir}${sep}${newName}`;
+
+      try {
+        if (await fsExists(newAbs)) {
+          setRenameError("A file with that name already exists.");
+          return;
+        }
+        await fsRename(abs, newAbs);
+      } catch (e: any) {
+        console.error("[image-menu] rename failed:", e);
+        setRenameError(e?.message ?? String(e));
+        return;
+      }
+
+      const newUrl = convertFileSrc(newAbs);
+      try {
+        editor.updateBlock(imageMenu.blockId, {
+          props: { url: newUrl } as any,
+        });
+      } catch (e) {
+        console.error("[image-menu] url update failed:", e);
+      }
+      setImageMenu({ ...imageMenu, url: newUrl, mode: "main" });
+      setRenameError(null);
+    };
+
+    const openImageExternal = (url: string) => {
+      closeImageMenu();
+      const abs = assetUrlToAbsolutePath(url);
+      if (abs) {
+        openPath(abs).catch((e) =>
+          console.error("[image-menu] openPath failed:", e)
+        );
+        return;
+      }
+      if (/^https?:/i.test(url)) {
+        openUrl(url).catch((e) =>
+          console.error("[image-menu] openUrl failed:", e)
+        );
+      }
+    };
+
+    const copyImageUrl = async (url: string) => {
+      closeImageMenu();
+      try {
+        await navigator.clipboard.writeText(url);
+      } catch (e) {
+        console.error("[image-menu] copy failed:", e);
+      }
+    };
+
+    const downloadImage = async (url: string) => {
+      closeImageMenu();
+      try {
+        const defaultName = guessImageFileName(url);
+        const dest = await save({
+          defaultPath: defaultName,
+          filters: [
+            {
+              name: "Image",
+              extensions: [
+                "png", "jpg", "jpeg", "webp", "gif", "bmp", "avif", "svg",
+              ],
+            },
+          ],
+        });
+        if (!dest) return;
+
+        const abs = assetUrlToAbsolutePath(url);
+        if (abs) {
+          await copyFile(abs, dest);
+          return;
+        }
+
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const buf = new Uint8Array(await resp.arrayBuffer());
+        await writeFile(dest, buf);
+      } catch (e) {
+        console.error("[image-menu] download failed:", e);
+      }
+    };
+
+    const replaceImage = async (blockId: string) => {
+      closeImageMenu();
+      try {
+        const picked = await open({
+          multiple: false,
+          filters: [
+            {
+              name: "Image",
+              extensions: [
+                "png", "jpg", "jpeg", "webp", "gif", "bmp", "avif", "svg",
+              ],
+            },
+          ],
+        });
+        if (!picked || typeof picked !== "string") return;
+        const dest = await saveImageToNoteAssets(path, picked);
+        const url = convertFileSrc(dest);
+        editor.updateBlock(blockId, {
+          props: { url } as any,
+        });
+      } catch (e) {
+        console.error("[image-menu] replace failed:", e);
+      }
+    };
+
+    const removeImageBlock = (blockId: string) => {
+      closeImageMenu();
+      try {
+        editor.removeBlocks([blockId]);
+      } catch (e) {
+        console.error("[image-menu] removeBlocks failed:", e);
+      }
+    };
+
+    // Close the image menu on outside click.
+    useEffect(() => {
+      if (!imageMenu) return;
+      const onDown = (e: MouseEvent) => {
+        if (imageMenuRef.current?.contains(e.target as Node)) return;
+        setImageMenu(null);
+      };
+      document.addEventListener("mousedown", onDown);
+      return () => document.removeEventListener("mousedown", onDown);
+    }, [imageMenu]);
+
+    useEffect(() => {
+      if (!imageMenu) return;
+      const onKey = (e: KeyboardEvent) => {
+        if (e.key !== "Escape") return;
+        if (imageMenu.mode !== "main") return;
+        setImageMenu(null);
+      };
+      document.addEventListener("keydown", onKey);
+      return () => document.removeEventListener("keydown", onKey);
+    }, [imageMenu]);
+
+    useEffect(() => {
+      if (!imageMenu) return;
+      if (imageMenu.mode === "caption") {
+        const t = setTimeout(() => {
+          captionInputRef.current?.focus();
+          captionInputRef.current?.select();
+        }, 0);
+        return () => clearTimeout(t);
+      }
+      if (imageMenu.mode === "rename") {
+        const t = setTimeout(() => {
+          renameInputRef.current?.focus();
+          renameInputRef.current?.select();
+        }, 0);
+        return () => clearTimeout(t);
+      }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [imageMenu?.mode, imageMenu?.blockId]);
+
+    // ── Image right-click + left-drag handling ──────────────────────────
+    const wrapperRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+      const el = wrapperRef.current;
+      if (!el) return;
+      if (mode !== "edit") return;
+
+      let pending: {
+        blockId: string;
+        startX: number;
+        startY: number;
+        imgEl: HTMLImageElement;
+      } | null = null;
+      let ghostEl: HTMLDivElement | null = null;
+
+      const clearHighlights = () => {
+        document
+          .querySelectorAll<HTMLElement>("[data-drop-highlight]")
+          .forEach((n) => {
+            n.removeAttribute("data-drop-highlight");
+            n.style.outline = "";
+            n.style.outlineOffset = "";
+          });
+      };
+
+      const cleanup = () => {
+        if (ghostEl) {
+          ghostEl.remove();
+          ghostEl = null;
+        }
+        document.body.style.cursor = "";
+        clearHighlights();
+      };
+
+      const blockIdFromImg = (img: HTMLImageElement): string | null => {
+        const blockEl = img.closest("[data-id]") as HTMLElement | null;
+        return blockEl?.getAttribute("data-id") || null;
+      };
+
+      const onContextMenu = (e: MouseEvent) => {
+        const target = e.target as HTMLElement;
+        if (target.tagName !== "IMG") return;
+        const img = target as HTMLImageElement;
+        if (!el.contains(img)) return;
+        if (!img.closest('[data-content-type="image"]')) return;
+
+        const blockId = blockIdFromImg(img);
+        if (!blockId) return;
+
+        e.preventDefault();
+        e.stopPropagation();
+
+        let caption = "";
+        let textAlignment = "left";
+        let previewWidth: number | undefined;
+        try {
+          const block = editor.getBlock(blockId);
+          if (block) {
+            const bp = block.props as Record<string, unknown>;
+            caption = (bp?.caption as string) || "";
+            textAlignment =
+            (bp?.textAlignment as string) || "left";
+            const pw = bp?.previewWidth as number | undefined;
+            if (typeof pw === "number" && pw > 0) previewWidth = pw;
+          }
+        } catch {}
+
+        const W = 232;
+        const H = 460;
+        setImageMenu({
+          x: Math.min(e.clientX, window.innerWidth - W - 8),
+          y: Math.min(e.clientY, window.innerHeight - H - 8),
+          blockId,
+          url: img.src,
+          caption,
+          textAlignment,
+          previewWidth,
+          mode: "main",
+        });
+      };
+
+      const onMouseDown = (e: MouseEvent) => {
+        if (e.button !== 0) return;
+        const target = e.target as HTMLElement;
+        if (target.tagName !== "IMG") return;
+        const img = target as HTMLImageElement;
+        if (!el.contains(img)) return;
+        if (!img.closest('[data-content-type="image"]')) return;
+
+        const blockId = blockIdFromImg(img);
+        if (!blockId) return;
+
+        pending = {
+          blockId,
+          startX: e.clientX,
+          startY: e.clientY,
+          imgEl: img,
+        };
+      };
+
+      const onMouseMove = (e: MouseEvent) => {
+        if (!pending) return;
+
+        if (!ghostEl) {
+          const dx = e.clientX - pending.startX;
+          const dy = e.clientY - pending.startY;
+          if (Math.abs(dx) + Math.abs(dy) < 8) return;
+
+          ghostEl = document.createElement("div");
+          ghostEl.style.position = "fixed";
+          ghostEl.style.width = "96px";
+          ghostEl.style.height = "72px";
+          ghostEl.style.backgroundImage = `url("${pending.imgEl.src}")`;
+          ghostEl.style.backgroundSize = "cover";
+          ghostEl.style.backgroundPosition = "center";
+          ghostEl.style.borderRadius = "6px";
+          ghostEl.style.pointerEvents = "none";
+          ghostEl.style.zIndex = "9999";
+          ghostEl.style.opacity = "0.85";
+          ghostEl.style.boxShadow = "0 8px 24px rgba(0,0,0,0.6)";
+          ghostEl.style.border = "2px solid #3b82f6";
+          document.body.appendChild(ghostEl);
+          document.body.style.cursor = "grabbing";
+        }
+
+        ghostEl.style.left = `${e.clientX + 14}px`;
+        ghostEl.style.top = `${e.clientY + 14}px`;
+
+        const under = document.elementFromPoint(
+          e.clientX,
+          e.clientY
+        ) as HTMLElement | null;
+        clearHighlights();
+        const col = under?.closest(
+          ".bn-block-column, [data-node-type='column']"
+        ) as HTMLElement | null;
+        if (col) {
+          col.setAttribute("data-drop-highlight", "1");
+          col.style.outline = "2px solid #3b82f6";
+          col.style.outlineOffset = "-2px";
+        }
+      };
+
+      const onMouseUp = (e: MouseEvent) => {
+        if (!pending) return;
+        const wasDragging = !!ghostEl;
+        const blockId = pending.blockId;
+        pending = null;
+        cleanup();
+
+        if (!wasDragging) return;
+
+        const under = document.elementFromPoint(
+          e.clientX,
+          e.clientY
+        ) as HTMLElement | null;
+        const col = under?.closest(
+          ".bn-block-column, [data-node-type='column']"
+        ) as HTMLElement | null;
+        if (!col) return;
+
+        const colId = col.getAttribute("data-id");
+        if (!colId) return;
+
+        const srcEl = document.querySelector(
+          `[data-id="${blockId}"]`
+        ) as HTMLElement | null;
+        if (
+          srcEl?.closest(".bn-block-column, [data-node-type='column']") === col
+        )
+          return;
+
+        try {
+          const block = editor.getBlock(blockId);
+          if (!block) return;
+          editor.insertBlocks(
+            [
+              {
+                type: block.type,
+                props: { ...(block.props as any) },
+              } as any,
+            ],
+            colId,
+            "nested" as any
+          );
+          editor.removeBlocks([blockId]);
+        } catch (err) {
+          console.error("[drag] move into column failed:", err);
+        }
+      };
+
+      const onDragStart = (e: DragEvent) => {
+        const target = e.target as HTMLElement;
+        if (target.tagName === "IMG" && el.contains(target)) {
+          e.preventDefault();
+        }
+      };
+
+      el.addEventListener("contextmenu", onContextMenu);
+      el.addEventListener("mousedown", onMouseDown);
+      el.addEventListener("dragstart", onDragStart, true);
+      document.addEventListener("mousemove", onMouseMove);
+      document.addEventListener("mouseup", onMouseUp);
+
+      return () => {
+        el.removeEventListener("contextmenu", onContextMenu);
+        el.removeEventListener("mousedown", onMouseDown);
+        el.removeEventListener("dragstart", onDragStart, true);
+        document.removeEventListener("mousemove", onMouseMove);
+        document.removeEventListener("mouseup", onMouseUp);
+        cleanup();
+      };
+    }, [editor, mode]);
+
+    // ── Save plumbing ───────────────────────────────────────────────────
+    // The debounce is trailing-edge (wait for a pause) but capped by
+    // MAX_DEBOUNCE_MS: if the user has been typing continuously without
+    // pausing for that long, we force a flush anyway. Without the cap, a
+    // writer who doesn't stop for thirty minutes never hits disk.
     const queueWrite = <T,>(fn: () => Promise<T>): Promise<T> => {
       const run = writeQueueRef.current.then(() => fn());
       writeQueueRef.current = run.then(
@@ -349,7 +1055,10 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         fm.modified = new Date().toISOString();
         frontmatterRef.current = fm;
 
-        await writeTextFile(path, serializeNoteFile(fm, body));
+        // Atomic, crash-safe write. Never touches the original until the
+        // new content is fully staged in a sibling .tmp file.
+        await writeFileAtomic(path, serializeNoteFile(fm, body));
+        lastSaveAtRef.current = Date.now();
         dirtyRef.current = false;
         onSaved?.();
 
@@ -365,12 +1074,25 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       }
     };
 
+    saveBodyRef.current = saveBody;
+
     const scheduleSave = () => {
       dirtyRef.current = true;
-      if (saveTimerRef.current !== null) clearTimeout(saveTimerRef.current);
+      const overdue = Date.now() - lastSaveAtRef.current >= MAX_DEBOUNCE_MS;
+
+      if (saveTimerRef.current !== null) {
+        clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+      }
+
+      if (overdue) {
+        queueWrite(saveBodyRef.current);
+        return;
+      }
+
       saveTimerRef.current = setTimeout(() => {
         saveTimerRef.current = null;
-        queueWrite(saveBody);
+        queueWrite(saveBodyRef.current);
       }, DEBOUNCE_MS);
     };
 
@@ -384,30 +1106,20 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         await writeQueueRef.current;
         return;
       }
-      await queueWrite(saveBody);
+      await queueWrite(saveBodyRef.current);
     };
 
     const insertImageBlocks = useCallback(
       (urls: string[]) => {
         if (!editor || urls.length === 0) return;
-        try {
-          const cursor = editor.getTextCursorPosition?.();
-          const refBlock =
-            cursor?.block || editor.document[editor.document.length - 1];
-          if (!refBlock) return;
-          editor.insertBlocks(
-            urls.map((url) => ({
-              type: "image",
-              props: { url, caption: "" },
-            })),
-            refBlock,
-            "after"
-          );
-        } catch (e) {
-          console.error("[image] insert failed:", e);
-        }
+        insertBlocksSmart(
+          urls.map((url) => ({
+            type: "image",
+            props: { url, caption: "" },
+          }))
+        );
       },
-      [editor]
+      [editor, insertBlocksSmart]
     );
 
     const saveAndInsertImageFiles = useCallback(
@@ -451,29 +1163,19 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
             const dest = await writeImageBytesToNoteAssets(path, bytes, name);
             const url = convertFileSrc(dest);
 
-            const cursor = editor.getTextCursorPosition?.();
-            const refBlock =
-              cursor?.block || editor.document[editor.document.length - 1];
-            if (!refBlock) return;
-            editor.insertBlocks(
-              [
-                {
-                  type: "video",
-                  props: { src: url, caption: "", fileName: name },
-                },
-              ],
-              refBlock,
-              "after"
-            );
+            insertBlocksSmart([
+              {
+                type: "video",
+                props: { src: url, caption: "", fileName: name },
+              },
+            ]);
           } catch (e) {
             console.error("[video] save pasted video failed:", e);
           }
         }
       },
-      [path, editor]
+      [path, insertBlocksSmart]
     );
-
-    const wrapperRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
       if (isLoading) return;
@@ -609,28 +1311,19 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
     ) => {
       setPasteMenu(null);
       try {
-        const cursor = editor.getTextCursorPosition?.();
-        const refBlock =
-          cursor?.block || editor.document[editor.document.length - 1];
-        if (!refBlock) return;
-
-        const inserted = editor.insertBlocks(
-          [
-            {
-              type: "bookmark",
-              props: {
-                url,
-                title: url,
-                description: "",
-                icon: "",
-                image: "",
-                mode: linkMode,
-              },
+        const inserted = insertBlocksSmart([
+          {
+            type: "bookmark",
+            props: {
+              url,
+              title: url,
+              description: "",
+              icon: "",
+              image: "",
+              mode: linkMode,
             },
-          ],
-          refBlock,
-          "after"
-        );
+          },
+        ]);
         const newId = inserted?.[0]?.id;
         if (!newId) return;
 
@@ -773,6 +1466,13 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         disposedRef.current = false;
       },
       updateFrontmatter: async (patch) => {
+        // If this editor has been disposed (note deleted, moved, or the
+        // pane switched to a different note), do NOT recreate the file on
+        // disk. Without this guard, a late UI action — a slider drag
+        // ending, a cover picker closing — can bring a just-trashed file
+        // back as an empty stub.
+        if (disposedRef.current) return;
+
         await queueWrite(async () => {
           let raw: string | null = null;
           try {
@@ -784,10 +1484,11 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
           if (raw === null) {
             frontmatterRef.current = { ...frontmatterRef.current, ...patch };
             isNewFileRef.current = false;
-            await writeTextFile(
+            await writeFileAtomic(
               path,
               serializeNoteFile(frontmatterRef.current, "")
             );
+            lastSaveAtRef.current = Date.now();
             window.dispatchEvent(
               new CustomEvent("file-changed", { detail: { path } })
             );
@@ -811,7 +1512,8 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
           }
           frontmatterRef.current = merged;
           try {
-            await writeTextFile(path, serializeNoteFile(merged, body));
+            await writeFileAtomic(path, serializeNoteFile(merged, body));
+            lastSaveAtRef.current = Date.now();
             window.dispatchEvent(
               new CustomEvent("file-changed", { detail: { path } })
             );
@@ -821,6 +1523,13 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         });
       },
     }));
+
+    // Register with the app-wide flusher so window-close saves us.
+    useEffect(() => {
+      const unreg = registerFlusher(() => flush());
+      return unreg;
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     const handleContentChange = () => {
       if (isLoading) return;
@@ -998,20 +1707,12 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
             const dest = await saveFileToNoteAssets(path, picked);
             const url = convertFileSrc(dest);
             const fileName = dest.split(/[/\\]/).pop() || "video";
-            const cursor = editor.getTextCursorPosition?.();
-            const refBlock =
-              cursor?.block || editor.document[editor.document.length - 1];
-            if (!refBlock) return;
-            editor.insertBlocks(
-              [
-                {
-                  type: "video",
-                  props: { src: url, caption: "", fileName },
-                },
-              ],
-              refBlock,
-              "after"
-            );
+            insertBlocksSmart([
+              {
+                type: "video",
+                props: { src: url, caption: "", fileName },
+              },
+            ]);
           } catch (e) {
             console.error("[video] picker failed:", e);
           }
@@ -1020,7 +1721,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         group: "Basic blocks",
         icon: <span className="text-base">🎬</span>,
       }),
-      [path, editor]
+      [path, insertBlocksSmart]
     );
 
     const insertScriptureMenuItem = useCallback(
@@ -1028,55 +1729,37 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         title: "Bible verse",
         subtext: "Look up a KJV verse",
         onItemClick: () => {
-          const cursor = editor.getTextCursorPosition?.();
-          const refBlock =
-            cursor?.block || editor.document[editor.document.length - 1];
-          if (!refBlock) return;
-          editor.insertBlocks(
-            [{ type: "scripture", props: { reference: "", text: "" } }],
-            refBlock,
-            "after"
-          );
+          insertBlocksSmart([
+            { type: "scripture", props: { reference: "", text: "" } },
+          ]);
         },
         aliases: ["scripture", "bible", "verse", "kjv"],
         group: "Basic blocks",
         icon: <span className="text-base">📖</span>,
       }),
-      [editor]
+      [insertBlocksSmart]
     );
 
-    // DM archive. Inserts an empty block; the block itself handles picking
-    // screenshots via its empty-state button (which keeps the block in
-    // charge of its own lifecycle — no need to duplicate the file-copy
-    // logic between the menu and the block).
     const insertDmArchiveMenuItem = useCallback(
       () => ({
         title: "DM archive",
         subtext: "Collapsible archive of chat screenshots",
         onItemClick: () => {
           try {
-            const cursor = editor.getTextCursorPosition?.();
-            const refBlock =
-              cursor?.block || editor.document[editor.document.length - 1];
-            if (!refBlock) return;
             const today = new Date().toISOString().slice(0, 10);
-            const inserted = editor.insertBlocks(
-              [
-                {
-                  type: "dmarchive",
-                  props: {
-                    platform: "discord",
-                    who: "",
-                    date: today,
-                    caption: "",
-                    collapsed: true,
-                    srcs: "",
-                  },
-                } as any,
-              ],
-              refBlock,
-              "after"
-            );
+            const inserted = insertBlocksSmart([
+              {
+                type: "dmarchive",
+                props: {
+                  platform: "discord",
+                  who: "",
+                  date: today,
+                  caption: "",
+                  collapsed: true,
+                  srcs: "",
+                },
+              } as any,
+            ]);
             if (inserted?.[0]?.id) {
               try {
                 editor.setTextCursorPosition(inserted[0].id, "end");
@@ -1094,7 +1777,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         group: "Basic blocks",
         icon: <span className="text-base">💬</span>,
       }),
-      [editor]
+      [editor, insertBlocksSmart]
     );
 
     const getSlashMenuItems = useMemo(() => {
@@ -1260,6 +1943,21 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       [path]
     );
 
+    const alignBtnClass = (active: boolean) =>
+      `flex-1 flex items-center justify-center py-1.5 rounded transition-colors ${
+        active
+          ? "bg-blue-600/25 text-blue-200"
+          : "text-gray-400 hover:text-gray-100 hover:bg-[#2a3136]"
+      }`;
+
+    const imageIsLocal = imageMenu
+      ? !!assetUrlToAbsolutePath(imageMenu.url)
+      : false;
+    const previewOn =
+      !!imageMenu &&
+      typeof imageMenu.previewWidth === "number" &&
+      imageMenu.previewWidth > 0;
+
     return (
       <NoteContext.Provider value={noteContextValue}>
         <div
@@ -1270,6 +1968,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
             editor={editor}
             theme="dark"
             slashMenu={false}
+            formattingToolbar={NoteFormattingToolbar}
             onChange={handleContentChange}
           >
             <SuggestionMenuController
@@ -1277,6 +1976,241 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
               getItems={getSlashMenuItems}
             />
           </BlockNoteView>
+
+          {imageMenu && (
+            <div
+              ref={imageMenuRef}
+              className="fixed z-[500] bg-[#1e2327] border border-[#2a3136] rounded-md shadow-2xl py-1 w-[232px] max-h-[80vh] overflow-y-auto"
+              style={{ top: imageMenu.y, left: imageMenu.x }}
+              onMouseDown={(e) => e.stopPropagation()}
+              onContextMenu={(e) => e.preventDefault()}
+            >
+              {imageMenu.mode === "caption" ? (
+                <>
+                  <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
+                    <Pencil size={10} /> Image caption
+                  </div>
+                  <div className="px-2 pb-2">
+                    <input
+                      ref={captionInputRef}
+                      type="text"
+                      value={captionDraft}
+                      onChange={(e) => setCaptionDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          saveCaptionInline();
+                        } else if (e.key === "Escape") {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          backToMainMenu();
+                        }
+                      }}
+                      placeholder="Describe this image…"
+                      className="w-full bg-[#0f1315] border border-[#30363d] rounded px-2 py-1.5 text-xs text-gray-100 outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                    <div className="flex gap-1.5 mt-2">
+                      <button
+                        onClick={backToMainMenu}
+                        className="flex-1 px-2 py-1 text-xs text-gray-400 hover:text-gray-200 hover:bg-[#2a3136] rounded transition-colors"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={saveCaptionInline}
+                        className="flex-1 px-2 py-1 text-xs bg-blue-600 hover:bg-blue-500 text-white rounded transition-colors font-medium"
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </div>
+                </>
+              ) : imageMenu.mode === "rename" ? (
+                <>
+                  <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
+                    <FileText size={10} /> Rename image
+                  </div>
+                  <div className="px-2 pb-2">
+                    <input
+                      ref={renameInputRef}
+                      type="text"
+                      value={renameDraft}
+                      onChange={(e) => {
+                        setRenameDraft(e.target.value);
+                        if (renameError) setRenameError(null);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          void saveRename();
+                        } else if (e.key === "Escape") {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          backToMainMenu();
+                        }
+                      }}
+                      placeholder="new-filename"
+                      className="w-full bg-[#0f1315] border border-[#30363d] rounded px-2 py-1.5 text-xs text-gray-100 outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                    {renameError && (
+                      <div className="text-[10px] text-red-400 mt-1 break-words">
+                        {renameError}
+                      </div>
+                    )}
+                    <div className="flex gap-1.5 mt-2">
+                      <button
+                        onClick={backToMainMenu}
+                        className="flex-1 px-2 py-1 text-xs text-gray-400 hover:text-gray-200 hover:bg-[#2a3136] rounded transition-colors"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={() => void saveRename()}
+                        className="flex-1 px-2 py-1 text-xs bg-blue-600 hover:bg-blue-500 text-white rounded transition-colors font-medium"
+                      >
+                        Rename
+                      </button>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <>
+                <div className="py-1">
+                {IMAGE_WIDTH_PRESETS.map((preset) => {
+                  const Icon = preset.icon;
+                  return (
+                    <button
+                    key={preset.label}
+                    onClick={() =>
+                      applyImageWidth(imageMenu.blockId, preset.px)
+                    }
+                    className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
+                    >
+                    <Icon size={13} />
+                    <span>{preset.label}</span>
+                    </button>
+                  );
+                })}
+                </div>
+
+                <div className="border-t border-[#2a3136] mt-1 pt-1 px-2 pb-1 flex items-center gap-1">
+                <button
+                onClick={() =>
+                  applyImageAlignment(imageMenu.blockId, "left")
+                }
+                className={alignBtnClass(
+                  imageMenu.textAlignment === "left"
+                )}
+                title="Align left"
+                >
+                <AlignLeft size={13} />
+                </button>
+                <button
+                onClick={() =>
+                  applyImageAlignment(imageMenu.blockId, "center")
+                }
+                className={alignBtnClass(
+                  imageMenu.textAlignment === "center"
+                )}
+                title="Align center"
+                >
+                <AlignCenter size={13} />
+                </button>
+                <button
+                onClick={() =>
+                  applyImageAlignment(imageMenu.blockId, "right")
+                }
+                className={alignBtnClass(
+                  imageMenu.textAlignment === "right"
+                )}
+                title="Align right"
+                >
+                <AlignRight size={13} />
+                </button>
+                </div>
+
+                  <div className="border-t border-[#2a3136] mt-1 pt-1">
+                    <button
+                      onClick={enterCaptionMode}
+                      className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
+                    >
+                      <Pencil size={13} />
+                      <span>
+                        {imageMenu.caption ? "Edit caption" : "Add caption"}
+                      </span>
+                    </button>
+                    <button
+                      onClick={togglePreview}
+                      className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
+                      title={
+                        previewOn
+                          ? "Switch back to full width"
+                          : `Shrink to ${PREVIEW_WIDTH_PX}px preview (same as BlockNote's default)`
+                      }
+                    >
+                      {previewOn ? <EyeOff size={13} /> : <Eye size={13} />}
+                      <span>Toggle preview</span>
+                    </button>
+                    {imageIsLocal && (
+                      <button
+                        onClick={enterRenameMode}
+                        className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
+                      >
+                        <FileText size={13} />
+                        <span>Rename image…</span>
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="border-t border-[#2a3136] mt-1 pt-1">
+                    <button
+                      onClick={() => replaceImage(imageMenu.blockId)}
+                      className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
+                    >
+                      <Replace size={13} />
+                      <span>Replace image…</span>
+                    </button>
+                  </div>
+
+                  <div className="border-t border-[#2a3136] mt-1 pt-1">
+                    <button
+                      onClick={() => downloadImage(imageMenu.url)}
+                      className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
+                    >
+                      <Download size={13} />
+                      <span>Download image</span>
+                    </button>
+                    <button
+                      onClick={() => openImageExternal(imageMenu.url)}
+                      className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
+                    >
+                      <ExternalLink size={13} />
+                      <span>Open in system viewer</span>
+                    </button>
+                    <button
+                      onClick={() => copyImageUrl(imageMenu.url)}
+                      className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
+                    >
+                      <Copy size={13} />
+                      <span>Copy image URL</span>
+                    </button>
+                  </div>
+
+                  <div className="border-t border-[#2a3136] mt-1 pt-1">
+                    <button
+                      onClick={() => removeImageBlock(imageMenu.blockId)}
+                      className="w-full text-left px-3 py-1.5 text-sm text-red-400 hover:bg-[#2a3136] flex items-center gap-2"
+                    >
+                      <Trash2 size={13} />
+                      <span>Delete image</span>
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
 
           {pasteMenu && (
             <div

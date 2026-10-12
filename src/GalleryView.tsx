@@ -1,8 +1,7 @@
 // src/GalleryView.tsx
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  readTextFile, writeTextFile, mkdir, copyFile, exists,
-  rename as fsRename, remove,
+  readTextFile, mkdir, copyFile, exists,
 } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
@@ -19,6 +18,7 @@ import EmojiPicker, { Theme, EmojiStyle } from "emoji-picker-react";
 import { useModal } from "./Modal";
 import { useNoteMode } from "./useNoteMode";
 import { moveToTrash } from "./trash";
+import { writeFileAtomic } from "./safeWrite";
 
 interface GalleryLink {
   id: string;
@@ -227,11 +227,6 @@ function isValidYmd(y: number, mo: number, d: number): boolean {
   return test.getFullYear() === y && test.getMonth() === mo - 1 && test.getDate() === d;
 }
 
-/**
- * ISO yyyy-mm-dd → MM/DD/YYYY for display. Also handles full ISO timestamps
- * (2026-06-18T00:00:00Z) by matching the leading date portion and ignoring
- * the time suffix.
- */
 function isoToDisplay(iso: string): string {
   if (!iso) return "";
   const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})/);
@@ -436,23 +431,6 @@ async function itemAssetsDir(sectionDir: string, itemId: string): Promise<string
   const dir = await join(sectionDir, "assets", itemId);
   await mkdir(dir, { recursive: true });
   return dir;
-}
-
-/**
- * Write a text file atomically: write to a `.tmp` sibling, then rename into
- * place. Prevents the file from being left in a truncated state if the app
- * is killed mid-write — which, for `gallery.meta.json`, would silently reset
- * the section cover/icon on next launch.
- */
-async function writeFileAtomic(path: string, contents: string): Promise<void> {
-  const tmp = `${path}.tmp`;
-  await writeTextFile(tmp, contents);
-  try {
-    await fsRename(tmp, path);
-  } catch (e) {
-    try { await remove(tmp); } catch {}
-    throw e;
-  }
 }
 
 // ─── Backstory markdown renderer (inline images only) ───────────────────────
@@ -851,7 +829,6 @@ export default function GalleryView({ sectionDir, sectionName }: GalleryViewProp
   // ── Meta persistence ────────────────────────────────────────────────────
   const metaPath = async () => join(sectionDir, "gallery.meta.json");
 
-  // Coalesce rapid `saveMeta` calls (sliders fire on every input event).
   const metaWriteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const metaPendingRef = useRef<Partial<SectionMeta> | null>(null);
 
@@ -866,10 +843,8 @@ export default function GalleryView({ sectionDir, sectionName }: GalleryViewProp
   };
 
   const saveMeta = (patch: Partial<SectionMeta>) => {
-    // Optimistic UI update.
     setMeta((prev) => ({ ...prev, ...patch }));
 
-    // Batch the write. If a timer is already pending, merge into it.
     metaPendingRef.current = { ...(metaPendingRef.current || {}), ...patch };
     if (metaWriteTimerRef.current) clearTimeout(metaWriteTimerRef.current);
     metaWriteTimerRef.current = setTimeout(async () => {
@@ -878,7 +853,6 @@ export default function GalleryView({ sectionDir, sectionName }: GalleryViewProp
       metaPendingRef.current = null;
       if (!pending) return;
       try {
-        // Re-read to merge with any concurrent edits (e.g. another window).
         let current: SectionMeta = { ...DEFAULT_META };
         try {
           const raw = await readTextFile(await metaPath());
@@ -895,7 +869,6 @@ export default function GalleryView({ sectionDir, sectionName }: GalleryViewProp
     }, 200);
   };
 
-  // Flush any pending meta write on unmount so we don't lose the last edit.
   useEffect(() => {
     return () => {
       if (metaWriteTimerRef.current) {
@@ -904,7 +877,6 @@ export default function GalleryView({ sectionDir, sectionName }: GalleryViewProp
         const pending = metaPendingRef.current;
         metaPendingRef.current = null;
         if (pending) {
-          // Fire-and-forget; the component is going away.
           void (async () => {
             try {
               let current: SectionMeta = { ...DEFAULT_META };
@@ -1437,9 +1409,6 @@ export default function GalleryView({ sectionDir, sectionName }: GalleryViewProp
     const ta = backstoryRef.current;
     const current = item.backstory || "";
 
-    // If the textarea has never been focused, selectionStart is 0 rather
-    // than null. We only want to insert at the cursor when the user is
-    // actively editing; otherwise append to the end.
     const hasFocus = document.activeElement === ta;
     const start = (hasFocus && ta) ? (ta.selectionStart ?? current.length) : current.length;
     const end = (hasFocus && ta) ? (ta.selectionEnd ?? current.length) : current.length;
@@ -1536,9 +1505,6 @@ export default function GalleryView({ sectionDir, sectionName }: GalleryViewProp
   };
 
   const addVersion = async (item: GalleryItem) => {
-    // Pick the image first, then ask for a label. If the user cancels the
-    // picker, no prompt is wasted; if they cancel the prompt, we clean up
-    // the just-copied file.
     const picked = await open({
       multiple: false,
       filters: [{ name: "Image", extensions: ["png", "jpg", "jpeg", "gif", "webp", "avif", "bmp"] }],
@@ -1557,7 +1523,6 @@ export default function GalleryView({ sectionDir, sectionName }: GalleryViewProp
 
     const label = await promptAsync("Version label (e.g. 'Rough sketch', 'v1'):");
     if (label === null) {
-      // User cancelled the label — clean up the orphaned file.
       try {
         const full = await scopedAssetPath(sectionDir, item.id, destName);
         await moveToTrash(full);
@@ -2448,823 +2413,820 @@ export default function GalleryView({ sectionDir, sectionName }: GalleryViewProp
     const isSingleMain = selected.mainImages.length === 1;
 
     const backstoryImages = parseBackstory(selected.backstory)
-      .filter((p): p is { kind: "img"; alt: string; file: string } => p.kind === "img")
-      .map((p) => p.file);
+    .filter((p): p is { kind: "img"; alt: string; file: string } => p.kind === "img")
+    .map((p) => p.file);
 
     return (
       <div className="w-full h-full flex flex-col bg-[#0f1315] overflow-hidden">
-        {/* ── Top bar ─────────────────────────────────────────────── */}
-        <div className="flex-shrink-0 flex items-center justify-between px-6 py-2.5 border-b border-[#2a3136] bg-[#0f1315] gap-2">
-          <button
-            type="button"
-            onClick={() => setSelectedId(null)}
-            className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-100 transition-colors"
-          >
-            <ChevronLeft size={14} />
-            <span>All Art</span>
-          </button>
+      <div className="flex-shrink-0 flex items-center justify-between px-6 py-2.5 border-b border-[#2a3136] bg-[#0f1315] gap-2">
+      <button
+      type="button"
+      onClick={() => setSelectedId(null)}
+      className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-100 transition-colors"
+      >
+      <ChevronLeft size={14} />
+      <span>All Art</span>
+      </button>
 
-          <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2">
+      {isEdit && (
+        <button
+        type="button"
+        onClick={() => deleteItem(selected)}
+        className="text-gray-500 hover:text-red-400 p-1.5 rounded transition-colors"
+        title="Delete this piece"
+        >
+        <Trash2 size={14} />
+        </button>
+      )}
+      <span className="text-[10px] uppercase tracking-wider text-gray-500">
+      {mode === "edit" ? "Editing" : "Reading"}
+      </span>
+      <button
+      type="button"
+      onClick={toggle}
+      className="flex items-center justify-center w-7 h-7 rounded text-gray-400 hover:text-gray-100 hover:bg-[#1e2327] transition-colors cursor-pointer"
+      title={mode === "edit" ? "Switch to read mode (Ctrl+E)" : "Switch to edit mode (Ctrl+E)"}
+      >
+      {mode === "edit" ? <BookOpen size={15} /> : <Pencil size={15} />}
+      </button>
+      </div>
+      </div>
+
+      <div className="flex-1 min-h-0 overflow-y-auto">
+      <div className="max-w-6xl mx-auto px-6 py-4">
+      <input
+      type="text"
+      value={selected.title}
+      onChange={(e) => updateItem(selected.id, { title: e.target.value })}
+      readOnly={!isEdit}
+      placeholder="Untitled piece"
+      className={`w-full bg-transparent border-none outline-none text-2xl font-bold tracking-tight px-2 rounded text-center placeholder-gray-700 ${
+        isEdit ? "text-gray-100 focus:bg-white/5" : "text-gray-100 cursor-default"
+      }`}
+      />
+
+      <div className="flex items-center justify-center gap-3 text-xs text-gray-500 mt-1.5 mb-3 flex-wrap">
+      {isEdit ? (
+        <span className="flex items-center gap-1.5">
+        <DateField
+        value={selected.dateMade}
+        onChange={(v) => updateItem(selected.id, { dateMade: v })}
+        className="text-xs text-gray-400 focus-within:text-gray-200"
+        placeholder="MM/DD/YYYY"
+        />
+        </span>
+      ) : selected.dateMade ? (
+        <span className="flex items-center gap-1.5">
+        <Calendar size={11} className="text-gray-500" />
+        <span>{isoToDisplay(selected.dateMade)}</span>
+        </span>
+      ) : null}
+
+      {isEdit ? (
+        <>
+        <span>•</span>
+        <span className="flex items-center gap-1.5 flex-1 max-w-md">
+        <Clock size={11} className="text-gray-500 flex-shrink-0" />
+        <input
+        type="text"
+        value={selected.time}
+        onChange={(e) => updateItem(selected.id, { time: e.target.value })}
+        placeholder="e.g. 3pm – 5pm, evening, around 8"
+        className="flex-1 min-w-[12rem] bg-transparent border-none outline-none text-xs text-gray-300 placeholder-gray-600 focus:text-gray-100 text-center"
+        />
+        </span>
+        </>
+      ) : timeTrim ? (
+        <>
+        {selected.dateMade && <span>•</span>}
+        <span className="flex items-center gap-1.5">
+        <Clock size={11} className="text-gray-500" />
+        <span>{timeTrim}</span>
+        </span>
+        </>
+      ) : null}
+      </div>
+
+      <div className={`grid grid-cols-1 ${showRightColumn ? "lg:grid-cols-3" : ""} gap-5 items-start`}>
+      <div className={showRightColumn ? "lg:col-span-2 space-y-4" : "space-y-4"}>
+      <section>
+      {isEdit && (
+        <div className="flex justify-end mb-2">
+        <button
+        type="button"
+        onClick={() => addMainImages(selected)}
+        className="flex items-center gap-1.5 text-xs px-2 py-1 bg-[#2a3136] hover:bg-[#30363d] border border-[#30363d] rounded text-gray-200"
+        >
+        <Upload size={11} /> Add images
+        </button>
+        </div>
+      )}
+
+      {selected.mainImages.length > 0 ? (
+        isSingleMain ? (
+          <div className="flex justify-center">
+          <div
+          className="relative group rounded-sm overflow-hidden cursor-zoom-in inline-block"
+          onClick={() => openLightbox(selected, 0)}
+          >
+          <FramedPhoto
+          sectionDir={sectionDir}
+          itemId={selected.id}
+          filename={selected.mainImages[0]}
+          className="max-h-[min(62vh,calc(100vh_-_400px))] max-w-full w-auto h-auto block border-[4px] border-white rounded-sm"
+          />
+          <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            openLightbox(selected, 0);
+          }}
+          className="p-1.5 rounded bg-black/70 text-white hover:bg-black/90 transition-colors"
+          title="View full size"
+          >
+          <Maximize2 size={13} />
+          </button>
+          {isEdit && (
+            <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              removeMainImage(selected, selected.mainImages[0]);
+            }}
+            className="p-1.5 rounded bg-black/70 text-white hover:bg-red-600 transition-colors"
+            title="Remove this image"
+            >
+            <X size={13} />
+            </button>
+          )}
+          </div>
+          </div>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-3 items-start">
+          {selected.mainImages.map((img, idx) => (
+            <div
+            key={img}
+            className="relative group rounded-lg overflow-hidden border border-[#2a3136] bg-[#0f1315] cursor-zoom-in flex items-center justify-center"
+            onClick={() => openLightbox(selected, idx)}
+            >
+            <FramedPhoto
+            sectionDir={sectionDir}
+            itemId={selected.id}
+            filename={img}
+            className="max-h-[min(38vh,calc(100vh_-_520px))] max-w-full w-auto h-auto block border-[4px] border-white rounded-sm"
+            />
+            <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+            <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              openLightbox(selected, idx);
+            }}
+            className="p-1.5 rounded bg-black/70 text-white hover:bg-black/90 transition-colors"
+            title="View full size"
+            >
+            <Maximize2 size={12} />
+            </button>
             {isEdit && (
               <button
-                type="button"
-                onClick={() => deleteItem(selected)}
-                className="text-gray-500 hover:text-red-400 p-1.5 rounded transition-colors"
-                title="Delete this piece"
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                removeMainImage(selected, img);
+              }}
+              className="p-1.5 rounded bg-black/70 text-white hover:bg-red-600 transition-colors"
+              title="Remove this image"
               >
-                <Trash2 size={14} />
+              <X size={12} />
               </button>
             )}
-            <span className="text-[10px] uppercase tracking-wider text-gray-500">
-              {mode === "edit" ? "Editing" : "Reading"}
-            </span>
-            <button
-              type="button"
-              onClick={toggle}
-              className="flex items-center justify-center w-7 h-7 rounded text-gray-400 hover:text-gray-100 hover:bg-[#1e2327] transition-colors cursor-pointer"
-              title={mode === "edit" ? "Switch to read mode (Ctrl+E)" : "Switch to edit mode (Ctrl+E)"}
-            >
-              {mode === "edit" ? <BookOpen size={15} /> : <Pencil size={15} />}
-            </button>
+            </div>
+            </div>
+          ))}
           </div>
+        )
+      ) : isEdit ? (
+        <button
+        type="button"
+        onClick={() => addMainImages(selected)}
+        className="w-full h-40 rounded-lg border border-dashed border-[#30363d] hover:border-[#3a4147] text-gray-500 hover:text-gray-300 flex flex-col items-center justify-center gap-2 transition-colors"
+        >
+        <Upload size={20} />
+        <span className="text-xs">Add images</span>
+        </button>
+      ) : null}
+      </section>
+
+      {showProgressPanel && (
+        <section className="rounded-lg border border-[#2a3136] bg-[#161a1d] p-4">
+        <div className="flex items-center justify-between mb-3">
+        <div className="text-[10px] uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
+        <ListChecks size={10} /> Progress
+        {hasProgress && (
+          <span className="text-gray-600">· {selected.progress.length}</span>
+        )}
+        </div>
         </div>
 
-        {/* ── Middle: scrollable content ──────────────────────────── */}
-        <div className="flex-1 min-h-0 overflow-y-auto">
-          <div className="max-w-6xl mx-auto px-6 py-4">
-            <input
-              type="text"
-              value={selected.title}
-              onChange={(e) => updateItem(selected.id, { title: e.target.value })}
-              readOnly={!isEdit}
-              placeholder="Untitled piece"
-              className={`w-full bg-transparent border-none outline-none text-2xl font-bold tracking-tight px-2 rounded text-center placeholder-gray-700 ${
-                isEdit ? "text-gray-100 focus:bg-white/5" : "text-gray-100 cursor-default"
-              }`}
-            />
-
-            <div className="flex items-center justify-center gap-3 text-xs text-gray-500 mt-1.5 mb-3 flex-wrap">
-              {isEdit ? (
-                <span className="flex items-center gap-1.5">
-                  <DateField
-                    value={selected.dateMade}
-                    onChange={(v) => updateItem(selected.id, { dateMade: v })}
-                    className="text-xs text-gray-400 focus-within:text-gray-200"
-                    placeholder="MM/DD/YYYY"
-                  />
-                </span>
-              ) : selected.dateMade ? (
-                <span className="flex items-center gap-1.5">
-                  <Calendar size={11} className="text-gray-500" />
-                  <span>{isoToDisplay(selected.dateMade)}</span>
-                </span>
-              ) : null}
-
-              {isEdit ? (
-                <>
-                  <span>•</span>
-                  <span className="flex items-center gap-1.5 flex-1 max-w-md">
-                    <Clock size={11} className="text-gray-500 flex-shrink-0" />
-                    <input
-                      type="text"
-                      value={selected.time}
-                      onChange={(e) => updateItem(selected.id, { time: e.target.value })}
-                      placeholder="e.g. 3pm – 5pm, evening, around 8"
-                      className="flex-1 min-w-[12rem] bg-transparent border-none outline-none text-xs text-gray-300 placeholder-gray-600 focus:text-gray-100 text-center"
-                    />
-                  </span>
-                </>
-              ) : timeTrim ? (
-                <>
-                  {selected.dateMade && <span>•</span>}
-                  <span className="flex items-center gap-1.5">
-                    <Clock size={11} className="text-gray-500" />
-                    <span>{timeTrim}</span>
-                  </span>
-                </>
-              ) : null}
-            </div>
-
-            <div className={`grid grid-cols-1 ${showRightColumn ? "lg:grid-cols-3" : ""} gap-5 items-start`}>
-              <div className={showRightColumn ? "lg:col-span-2 space-y-4" : "space-y-4"}>
-                <section>
-                  {isEdit && (
-                    <div className="flex justify-end mb-2">
-                      <button
-                        type="button"
-                        onClick={() => addMainImages(selected)}
-                        className="flex items-center gap-1.5 text-xs px-2 py-1 bg-[#2a3136] hover:bg-[#30363d] border border-[#30363d] rounded text-gray-200"
-                      >
-                        <Upload size={11} /> Add images
-                      </button>
-                    </div>
-                  )}
-
-                  {selected.mainImages.length > 0 ? (
-                    isSingleMain ? (
-                      <div className="flex justify-center">
-                        <div
-                          className="relative group rounded-sm overflow-hidden cursor-zoom-in inline-block"
-                          onClick={() => openLightbox(selected, 0)}
-                        >
-                          <FramedPhoto
-                            sectionDir={sectionDir}
-                            itemId={selected.id}
-                            filename={selected.mainImages[0]}
-                            className="max-h-[min(62vh,calc(100vh_-_400px))] max-w-full w-auto h-auto block border-[4px] border-white rounded-sm"
-                          />
-                          <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                openLightbox(selected, 0);
-                              }}
-                              className="p-1.5 rounded bg-black/70 text-white hover:bg-black/90 transition-colors"
-                              title="View full size"
-                            >
-                              <Maximize2 size={13} />
-                            </button>
-                            {isEdit && (
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  removeMainImage(selected, selected.mainImages[0]);
-                                }}
-                                className="p-1.5 rounded bg-black/70 text-white hover:bg-red-600 transition-colors"
-                                title="Remove this image"
-                              >
-                                <X size={13} />
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="grid grid-cols-2 gap-3 items-start">
-                        {selected.mainImages.map((img, idx) => (
-                          <div
-                            key={img}
-                            className="relative group rounded-lg overflow-hidden border border-[#2a3136] bg-[#0f1315] cursor-zoom-in flex items-center justify-center"
-                            onClick={() => openLightbox(selected, idx)}
-                          >
-                            <FramedPhoto
-                              sectionDir={sectionDir}
-                              itemId={selected.id}
-                              filename={img}
-                              className="max-h-[min(38vh,calc(100vh_-_520px))] max-w-full w-auto h-auto block border-[4px] border-white rounded-sm"
-                            />
-                            <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  openLightbox(selected, idx);
-                                }}
-                                className="p-1.5 rounded bg-black/70 text-white hover:bg-black/90 transition-colors"
-                                title="View full size"
-                              >
-                                <Maximize2 size={12} />
-                              </button>
-                              {isEdit && (
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    removeMainImage(selected, img);
-                                  }}
-                                  className="p-1.5 rounded bg-black/70 text-white hover:bg-red-600 transition-colors"
-                                  title="Remove this image"
-                                >
-                                  <X size={12} />
-                                </button>
-                              )}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )
-                  ) : isEdit ? (
-                    <button
-                      type="button"
-                      onClick={() => addMainImages(selected)}
-                      className="w-full h-40 rounded-lg border border-dashed border-[#30363d] hover:border-[#3a4147] text-gray-500 hover:text-gray-300 flex flex-col items-center justify-center gap-2 transition-colors"
-                    >
-                      <Upload size={20} />
-                      <span className="text-xs">Add images</span>
-                    </button>
-                  ) : null}
-                </section>
-
-                {showProgressPanel && (
-                  <section className="rounded-lg border border-[#2a3136] bg-[#161a1d] p-4">
-                    <div className="flex items-center justify-between mb-3">
-                      <div className="text-[10px] uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
-                        <ListChecks size={10} /> Progress
-                        {hasProgress && (
-                          <span className="text-gray-600">· {selected.progress.length}</span>
-                        )}
-                      </div>
-                    </div>
-
-                    {isEdit && (
-                      <div className="flex gap-1.5 mb-3">
-                        <input
-                          type="text"
-                          value={progressNoteDraft}
-                          onChange={(e) => setProgressNoteDraft(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") addProgress(selected);
-                          }}
-                          placeholder="What did you do? e.g. 'Finished the trees'"
-                          className="flex-1 min-w-0 bg-[#0f1315] border border-[#30363d] rounded px-2 py-1 text-xs text-gray-200 outline-none focus:ring-1 focus:ring-blue-500"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => addProgress(selected)}
-                          disabled={!progressNoteDraft.trim()}
-                          className="flex items-center gap-1 px-2 py-1 text-xs bg-[#2a3136] hover:bg-[#30363d] disabled:opacity-40 border border-[#30363d] rounded text-gray-200 flex-shrink-0"
-                        >
-                          <Plus size={11} /> Add
-                        </button>
-                      </div>
-                    )}
-
-                    {hasProgress ? (
-                      <div className="space-y-2">
-                        {[...selected.progress].reverse().map((p) => (
-                          <div
-                            key={p.id}
-                            className="group rounded-md border border-[#2a3136] bg-[#0f1315] p-3"
-                          >
-                            <div className="flex items-start gap-3">
-                              <div className="flex-1 min-w-0">
-                                <div className="text-[10px] text-gray-500 mb-1">
-                                  {fmtDateTime(p.date)}
-                                </div>
-                                <div className="text-xs text-gray-200 leading-relaxed whitespace-pre-wrap break-words">
-                                  {p.note}
-                                </div>
-                                {p.image && (
-                                  <div
-                                    className="mt-2 rounded-md overflow-hidden border border-[#2a3136] bg-black/40 cursor-zoom-in max-w-[240px]"
-                                    onClick={() =>
-                                      openLightboxFiles(selected, [p.image!], 0)
-                                    }
-                                  >
-                                    <AssetImage
-                                      sectionDir={sectionDir}
-                                      itemId={selected.id}
-                                      filename={p.image}
-                                      className="w-full h-auto block"
-                                    />
-                                  </div>
-                                )}
-                              </div>
-                              {isEdit && (
-                                <div className="flex items-center gap-1 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                                  {!p.image && (
-                                    <button
-                                      type="button"
-                                      onClick={() => addProgressImage(selected, p.id)}
-                                      className="p-1 rounded text-gray-500 hover:text-gray-100 hover:bg-[#2a3136]"
-                                      title="Attach photo"
-                                    >
-                                      <ImageIcon size={12} />
-                                    </button>
-                                  )}
-                                  {p.image && (
-                                    <button
-                                      type="button"
-                                      onClick={() => removeProgressImage(selected, p.id)}
-                                      className="p-1 rounded text-gray-500 hover:text-gray-100 hover:bg-[#2a3136]"
-                                      title="Remove photo"
-                                    >
-                                      <X size={12} />
-                                    </button>
-                                  )}
-                                  <button
-                                    type="button"
-                                    onClick={() => removeProgress(selected, p.id)}
-                                    className="p-1 rounded text-gray-500 hover:text-red-400 hover:bg-[#2a3136]"
-                                    title="Delete entry"
-                                  >
-                                    <Trash2 size={12} />
-                                  </button>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <p className="text-xs text-gray-500 italic">
-                        Track your work as it develops.
-                      </p>
-                    )}
-                  </section>
-                )}
-
-                {showReferencesPanel && (
-                  <section className="rounded-lg border border-[#2a3136] bg-[#161a1d] p-4">
-                    <div className="flex items-center justify-between mb-3">
-                      <div className="text-[10px] uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
-                        <ImageIcon size={10} /> Reference photos
-                      </div>
-                      {isEdit && (
-                        <button
-                          type="button"
-                          onClick={() => addReferenceImages(selected)}
-                          className="flex items-center gap-1.5 text-xs px-2 py-1 bg-[#2a3136] hover:bg-[#30363d] border border-[#30363d] rounded text-gray-200"
-                        >
-                          <Upload size={11} /> Add
-                        </button>
-                      )}
-                    </div>
-                    {hasReferences ? (
-                      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                        {selected.referenceImages.map((img, idx) => (
-                          <div
-                            key={img}
-                            className="relative group rounded-lg overflow-hidden border border-[#2a3136] bg-[#0f1315] cursor-zoom-in flex items-center justify-center"
-                            style={{ height: "8rem" }}
-                            onClick={() =>
-                              openLightbox(selected, selected.mainImages.length + idx)
-                            }
-                          >
-                            <FramedPhoto
-                              sectionDir={sectionDir}
-                              itemId={selected.id}
-                              filename={img}
-                              className="max-w-full max-h-full w-auto h-auto object-contain block border-[2px] border-white rounded-sm"
-                            />
-                            <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  openLightbox(selected, selected.mainImages.length + idx);
-                                }}
-                                className="p-1 rounded bg-black/70 text-white hover:bg-black/90"
-                                title="View full size"
-                              >
-                                <Maximize2 size={11} />
-                              </button>
-                              {isEdit && (
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    removeReferenceImage(selected, img);
-                                  }}
-                                  className="p-1 rounded bg-black/70 text-white hover:bg-red-600"
-                                  title="Remove"
-                                >
-                                  <X size={11} />
-                                </button>
-                              )}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <p className="text-xs text-gray-500 italic">
-                        No reference photos yet.
-                      </p>
-                    )}
-                  </section>
-                )}
-
-                {showLinksPanel && (
-                  <section className="rounded-lg border border-[#2a3136] bg-[#161a1d] p-4">
-                    <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-3 flex items-center gap-1.5">
-                      <LinkIcon size={10} /> Reference links
-                    </div>
-
-                    {hasLinks ? (
-                      <div className="space-y-1.5 mb-3">
-                        {selected.links.map((l) => (
-                          <div
-                            key={l.id}
-                            className="flex items-center gap-2 px-2 py-1.5 rounded bg-[#0f1315] border border-[#2a3136] group/link"
-                          >
-                            <LinkIcon size={11} className="text-blue-400 flex-shrink-0" />
-                            <button
-                              type="button"
-                              onClick={() => openLink(l.url)}
-                              className="text-xs text-gray-300 hover:text-blue-300 truncate flex-1 text-left"
-                              title={l.url}
-                            >
-                              {l.title || l.url}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => openLink(l.url)}
-                              className="text-gray-500 hover:text-gray-200 p-0.5 flex-shrink-0"
-                              title="Open in browser"
-                            >
-                              <ExternalLink size={11} />
-                            </button>
-                            {isEdit && (
-                              <button
-                                type="button"
-                                onClick={() => removeLink(selected, l.id)}
-                                className="text-gray-500 hover:text-red-400 p-0.5 opacity-0 group-hover/link:opacity-100 transition-opacity flex-shrink-0"
-                                title="Remove link"
-                              >
-                                <X size={11} />
-                              </button>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <p className="text-xs text-gray-500 italic mb-3">
-                        No reference links yet.
-                      </p>
-                    )}
-
-                    {isEdit && (
-                      <div className="flex gap-1.5">
-                        <input
-                          type="text"
-                          value={linkDraft}
-                          onChange={(e) => setLinkDraft(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") addLink(selected);
-                          }}
-                          placeholder="Paste a reference URL…"
-                          className="flex-1 min-w-0 bg-[#0f1315] border border-[#30363d] rounded px-2 py-1 text-xs text-gray-200 outline-none focus:ring-1 focus:ring-blue-500"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => addLink(selected)}
-                          disabled={!linkDraft.trim() || savingLink}
-                          className="flex items-center gap-1 px-2 py-1 text-xs bg-[#2a3136] hover:bg-[#30363d] disabled:opacity-40 border border-[#30363d] rounded text-gray-200 flex-shrink-0"
-                        >
-                          {savingLink ? <Loader2 size={11} className="animate-spin" /> : <Plus size={11} />}
-                        </button>
-                      </div>
-                    )}
-                  </section>
-                )}
-              </div>
-
-              {showRightColumn && (
-                <div className="lg:col-span-1 space-y-3">
-                  {showTagsPanel && (
-                    <section className="rounded-lg border border-[#2a3136] bg-[#161a1d] p-3">
-                      <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-2 flex items-center gap-1.5">
-                        <Tag size={10} /> Tags
-                      </div>
-
-                      {hasTags ? (
-                        <div className="flex flex-wrap gap-1.5 mb-2">
-                          {selected.tags.map((tag) => (
-                            <span
-                              key={tag}
-                              className="group/tag flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-[#1e2327] border border-[#2a3136] text-gray-300"
-                            >
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setSelectedId(null);
-                                  setActiveTag(tag);
-                                }}
-                                className="hover:text-blue-300"
-                                title={`Filter by "${tag}"`}
-                              >
-                                {tag}
-                              </button>
-                              {isEdit && (
-                                <button
-                                  type="button"
-                                  onClick={() => removeTagFromItem(selected, tag)}
-                                  className="text-gray-500 hover:text-red-400"
-                                  title="Remove tag"
-                                >
-                                  <X size={10} />
-                                </button>
-                              )}
-                            </span>
-                          ))}
-                        </div>
-                      ) : null}
-
-                      {isEdit && (
-                        <TagInput
-                          existing={allTags.map(([t]) => t)}
-                          onSubmit={(raw) => addTagToItem(selected, raw)}
-                        />
-                      )}
-                    </section>
-                  )}
-
-                  {showBackstoryPanel && (
-                    <section className="rounded-lg border border-[#2a3136] bg-[#161a1d] p-3">
-                      <div className="flex items-center justify-between mb-2">
-                        <div className="text-[10px] uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
-                          <BookMarked size={10} /> Back story
-                        </div>
-                        {isEdit && (
-                          <button
-                            type="button"
-                            onClick={() => insertBackstoryImage(selected)}
-                            className="flex items-center gap-1 text-[11px] px-2 py-0.5 rounded text-gray-300 hover:text-gray-100 hover:bg-[#2a3136] transition-colors"
-                            title="Upload a photo and insert it at the cursor"
-                          >
-                            <ImageIcon size={11} /> Insert image
-                          </button>
-                        )}
-                      </div>
-                      {isEdit ? (
-                        <textarea
-                          ref={backstoryRef}
-                          value={selected.backstory}
-                          onChange={(e) => updateItem(selected.id, { backstory: e.target.value })}
-                          placeholder="Where the idea came from, what you were thinking, how it evolved… Use 'Insert image' to add photos."
-                          className="w-full bg-transparent border-none outline-none text-sm text-gray-200 leading-relaxed resize-none placeholder-gray-600 focus:outline-none overflow-hidden"
-                          style={{ minHeight: "4rem" }}
-                        />
-                      ) : (
-                        <BackstoryRenderer
-                          text={selected.backstory}
-                          sectionDir={sectionDir}
-                          itemId={selected.id}
-                          onImageClick={(file) => {
-                            const idx = backstoryImages.indexOf(file);
-                            openLightboxFiles(
-                              selected,
-                              backstoryImages,
-                              idx >= 0 ? idx : 0
-                            );
-                          }}
-                        />
-                      )}
-
-                      {isEdit && backstoryImages.length > 0 && (
-                        <div className="mt-3 pt-3 border-t border-[#2a3136]">
-                          <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-2">
-                            Photos in this backstory
-                          </div>
-                          <div className="grid grid-cols-3 gap-2">
-                            {backstoryImages.map((f) => (
-                              <div
-                                key={f}
-                                className="relative group rounded-md overflow-hidden border border-[#2a3136] bg-[#0f1315] aspect-square"
-                              >
-                                <AssetImage
-                                  sectionDir={sectionDir}
-                                  itemId={selected.id}
-                                  filename={f}
-                                  className="w-full h-full object-cover"
-                                />
-                                <button
-                                  type="button"
-                                  onClick={() => removeBackstoryImage(selected, f)}
-                                  className="absolute top-1 right-1 p-1 rounded bg-black/70 text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600"
-                                  title="Remove photo and its reference from the text"
-                                >
-                                  <Trash2 size={10} />
-                                </button>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </section>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* ── Bottom: pinned timeline ─────────────────────────────── */}
-        {showVersionsPanel && (
-          <div className="flex-shrink-0 border-t border-[#2a3136] bg-[#161a1d]">
-            <div className="max-w-6xl mx-auto px-6 py-3">
-              <div className="flex items-center justify-between mb-2">
-                <div className="text-[10px] uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
-                  <GitBranch size={10} /> Timeline
-                  {hasVersions && (
-                    <span className="text-gray-600">· {selected.versions.length}</span>
-                  )}
-                </div>
-                {isEdit && hasVersions && (
-                  <button
-                    type="button"
-                    onClick={() => addVersion(selected)}
-                    className="flex items-center gap-1.5 text-xs px-2 py-1 bg-[#2a3136] hover:bg-[#30363d] border border-[#30363d] rounded text-gray-200"
-                  >
-                    <Plus size={11} /> Save version
-                  </button>
-                )}
-              </div>
-
-              {hasVersions || isEdit ? (
-                <div
-                  className="flex gap-2 overflow-x-auto pb-1 snap-x"
-                  style={{ scrollbarWidth: "thin" }}
-                >
-                  {selected.versions.map((v, idx) => (
-                    <div
-                      key={v.id}
-                      className="group flex-shrink-0 w-28 snap-start"
-                    >
-                      <div className="relative rounded-md overflow-hidden border border-[#2a3136] bg-[#0f1315]">
-                        <div
-                          className="w-full aspect-square cursor-zoom-in bg-black/40 flex items-center justify-center"
-                          onClick={() =>
-                            openLightboxFiles(
-                              selected,
-                              selected.versions.map((x) => x.image),
-                              idx
-                            )
-                          }
-                        >
-                          <AssetImage
-                            sectionDir={sectionDir}
-                            itemId={selected.id}
-                            filename={v.image}
-                            className="w-full h-full object-contain"
-                          />
-                        </div>
-                        <div className="absolute top-1 left-1 px-1.5 py-0.5 rounded bg-black/70 text-[9px] text-white/80 font-medium tabular-nums backdrop-blur-sm pointer-events-none">
-                          {idx + 1}
-                        </div>
-                        {isEdit && (
-                          <button
-                            type="button"
-                            onClick={() => removeVersion(selected, v.id)}
-                            className="absolute top-1 right-1 p-1 rounded bg-black/70 text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600"
-                            title="Remove version"
-                          >
-                            <X size={10} />
-                          </button>
-                        )}
-                      </div>
-                      <div className="mt-1 min-w-0">
-                        {isEdit ? (
-                          <input
-                            type="text"
-                            value={v.label}
-                            onChange={(e) =>
-                              updateVersionLabel(selected, v.id, e.target.value)
-                            }
-                            placeholder="Label…"
-                            className="w-full bg-transparent border-none outline-none text-[11px] text-gray-200 placeholder-gray-600 truncate"
-                          />
-                        ) : (
-                          <div className="text-[11px] text-gray-200 truncate" title={v.label}>
-                            {v.label || "Untitled version"}
-                          </div>
-                        )}
-                        <div className="text-[9px] text-gray-500 mt-0.5 truncate">
-                          {fmtDateTime(v.date)}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-
-                  {isEdit && (
-                    <button
-                      type="button"
-                      onClick={() => addVersion(selected)}
-                      className="flex-shrink-0 w-28 aspect-square rounded-md border-2 border-dashed border-[#30363d] hover:border-[#3a4147] text-gray-500 hover:text-gray-300 flex flex-col items-center justify-center gap-1 transition-colors snap-start"
-                      title="Save a new version"
-                    >
-                      <Plus size={16} />
-                      <span className="text-[10px]">Save version</span>
-                    </button>
-                  )}
-                </div>
-              ) : (
-                <p className="text-xs text-gray-500 italic">
-                  No versions yet. Save snapshots as the piece evolves.
-                </p>
-              )}
-            </div>
+        {isEdit && (
+          <div className="flex gap-1.5 mb-3">
+          <input
+          type="text"
+          value={progressNoteDraft}
+          onChange={(e) => setProgressNoteDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") addProgress(selected);
+          }}
+          placeholder="What did you do? e.g. 'Finished the trees'"
+          className="flex-1 min-w-0 bg-[#0f1315] border border-[#30363d] rounded px-2 py-1 text-xs text-gray-200 outline-none focus:ring-1 focus:ring-blue-500"
+          />
+          <button
+          type="button"
+          onClick={() => addProgress(selected)}
+          disabled={!progressNoteDraft.trim()}
+          className="flex items-center gap-1 px-2 py-1 text-xs bg-[#2a3136] hover:bg-[#30363d] disabled:opacity-40 border border-[#30363d] rounded text-gray-200 flex-shrink-0"
+          >
+          <Plus size={11} /> Add
+          </button>
           </div>
         )}
+
+        {hasProgress ? (
+          <div className="space-y-2">
+          {[...selected.progress].reverse().map((p) => (
+            <div
+            key={p.id}
+            className="group rounded-md border border-[#2a3136] bg-[#0f1315] p-3"
+            >
+            <div className="flex items-start gap-3">
+            <div className="flex-1 min-w-0">
+            <div className="text-[10px] text-gray-500 mb-1">
+            {fmtDateTime(p.date)}
+            </div>
+            <div className="text-xs text-gray-200 leading-relaxed whitespace-pre-wrap break-words">
+            {p.note}
+            </div>
+            {p.image && (
+              <div
+              className="mt-2 rounded-md overflow-hidden border border-[#2a3136] bg-black/40 cursor-zoom-in max-w-[240px]"
+              onClick={() =>
+                openLightboxFiles(selected, [p.image!], 0)
+              }
+              >
+              <AssetImage
+              sectionDir={sectionDir}
+              itemId={selected.id}
+              filename={p.image}
+              className="w-full h-auto block"
+              />
+              </div>
+            )}
+            </div>
+            {isEdit && (
+              <div className="flex items-center gap-1 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+              {!p.image && (
+                <button
+                type="button"
+                onClick={() => addProgressImage(selected, p.id)}
+                className="p-1 rounded text-gray-500 hover:text-gray-100 hover:bg-[#2a3136]"
+                title="Attach photo"
+                >
+                <ImageIcon size={12} />
+                </button>
+              )}
+              {p.image && (
+                <button
+                type="button"
+                onClick={() => removeProgressImage(selected, p.id)}
+                className="p-1 rounded text-gray-500 hover:text-gray-100 hover:bg-[#2a3136]"
+                title="Remove photo"
+                >
+                <X size={12} />
+                </button>
+              )}
+              <button
+              type="button"
+              onClick={() => removeProgress(selected, p.id)}
+              className="p-1 rounded text-gray-500 hover:text-red-400 hover:bg-[#2a3136]"
+              title="Delete entry"
+              >
+              <Trash2 size={12} />
+              </button>
+              </div>
+            )}
+            </div>
+            </div>
+          ))}
+          </div>
+        ) : (
+          <p className="text-xs text-gray-500 italic">
+          Track your work as it develops.
+          </p>
+        )}
+        </section>
+      )}
+
+      {showReferencesPanel && (
+        <section className="rounded-lg border border-[#2a3136] bg-[#161a1d] p-4">
+        <div className="flex items-center justify-between mb-3">
+        <div className="text-[10px] uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
+        <ImageIcon size={10} /> Reference photos
+        </div>
+        {isEdit && (
+          <button
+          type="button"
+          onClick={() => addReferenceImages(selected)}
+          className="flex items-center gap-1.5 text-xs px-2 py-1 bg-[#2a3136] hover:bg-[#30363d] border border-[#30363d] rounded text-gray-200"
+          >
+          <Upload size={11} /> Add
+          </button>
+        )}
+        </div>
+        {hasReferences ? (
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+          {selected.referenceImages.map((img, idx) => (
+            <div
+            key={img}
+            className="relative group rounded-lg overflow-hidden border border-[#2a3136] bg-[#0f1315] cursor-zoom-in flex items-center justify-center"
+            style={{ height: "8rem" }}
+            onClick={() =>
+              openLightbox(selected, selected.mainImages.length + idx)
+            }
+            >
+            <FramedPhoto
+            sectionDir={sectionDir}
+            itemId={selected.id}
+            filename={img}
+            className="max-w-full max-h-full w-auto h-auto object-contain block border-[2px] border-white rounded-sm"
+            />
+            <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+            <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              openLightbox(selected, selected.mainImages.length + idx);
+            }}
+            className="p-1 rounded bg-black/70 text-white hover:bg-black/90"
+            title="View full size"
+            >
+            <Maximize2 size={11} />
+            </button>
+            {isEdit && (
+              <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                removeReferenceImage(selected, img);
+              }}
+              className="p-1 rounded bg-black/70 text-white hover:bg-red-600"
+              title="Remove"
+              >
+              <X size={11} />
+              </button>
+            )}
+            </div>
+            </div>
+          ))}
+          </div>
+        ) : (
+          <p className="text-xs text-gray-500 italic">
+          No reference photos yet.
+          </p>
+        )}
+        </section>
+      )}
+
+      {showLinksPanel && (
+        <section className="rounded-lg border border-[#2a3136] bg-[#161a1d] p-4">
+        <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-3 flex items-center gap-1.5">
+        <LinkIcon size={10} /> Reference links
+        </div>
+
+        {hasLinks ? (
+          <div className="space-y-1.5 mb-3">
+          {selected.links.map((l) => (
+            <div
+            key={l.id}
+            className="flex items-center gap-2 px-2 py-1.5 rounded bg-[#0f1315] border border-[#2a3136] group/link"
+            >
+            <LinkIcon size={11} className="text-blue-400 flex-shrink-0" />
+            <button
+            type="button"
+            onClick={() => openLink(l.url)}
+            className="text-xs text-gray-300 hover:text-blue-300 truncate flex-1 text-left"
+            title={l.url}
+            >
+            {l.title || l.url}
+            </button>
+            <button
+            type="button"
+            onClick={() => openLink(l.url)}
+            className="text-gray-500 hover:text-gray-200 p-0.5 flex-shrink-0"
+            title="Open in browser"
+            >
+            <ExternalLink size={11} />
+            </button>
+            {isEdit && (
+              <button
+              type="button"
+              onClick={() => removeLink(selected, l.id)}
+              className="text-gray-500 hover:text-red-400 p-0.5 opacity-0 group-hover/link:opacity-100 transition-opacity flex-shrink-0"
+              title="Remove link"
+              >
+              <X size={11} />
+              </button>
+            )}
+            </div>
+          ))}
+          </div>
+        ) : (
+          <p className="text-xs text-gray-500 italic mb-3">
+          No reference links yet.
+          </p>
+        )}
+
+        {isEdit && (
+          <div className="flex gap-1.5">
+          <input
+          type="text"
+          value={linkDraft}
+          onChange={(e) => setLinkDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") addLink(selected);
+          }}
+          placeholder="Paste a reference URL…"
+          className="flex-1 min-w-0 bg-[#0f1315] border border-[#30363d] rounded px-2 py-1 text-xs text-gray-200 outline-none focus:ring-1 focus:ring-blue-500"
+          />
+          <button
+          type="button"
+          onClick={() => addLink(selected)}
+          disabled={!linkDraft.trim() || savingLink}
+          className="flex items-center gap-1 px-2 py-1 text-xs bg-[#2a3136] hover:bg-[#30363d] disabled:opacity-40 border border-[#30363d] rounded text-gray-200 flex-shrink-0"
+          >
+          {savingLink ? <Loader2 size={11} className="animate-spin" /> : <Plus size={11} />}
+          </button>
+          </div>
+        )}
+        </section>
+      )}
+      </div>
+
+      {showRightColumn && (
+        <div className="lg:col-span-1 space-y-3">
+        {showTagsPanel && (
+          <section className="rounded-lg border border-[#2a3136] bg-[#161a1d] p-3">
+          <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-2 flex items-center gap-1.5">
+          <Tag size={10} /> Tags
+          </div>
+
+          {hasTags ? (
+            <div className="flex flex-wrap gap-1.5 mb-2">
+            {selected.tags.map((tag) => (
+              <span
+              key={tag}
+              className="group/tag flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-[#1e2327] border border-[#2a3136] text-gray-300"
+              >
+              <button
+              type="button"
+              onClick={() => {
+                setSelectedId(null);
+                setActiveTag(tag);
+              }}
+              className="hover:text-blue-300"
+              title={`Filter by "${tag}"`}
+              >
+              {tag}
+              </button>
+              {isEdit && (
+                <button
+                type="button"
+                onClick={() => removeTagFromItem(selected, tag)}
+                className="text-gray-500 hover:text-red-400"
+                title="Remove tag"
+                >
+                <X size={10} />
+                </button>
+              )}
+              </span>
+            ))}
+            </div>
+          ) : null}
+
+          {isEdit && (
+            <TagInput
+            existing={allTags.map(([t]) => t)}
+            onSubmit={(raw) => addTagToItem(selected, raw)}
+            />
+          )}
+          </section>
+        )}
+
+        {showBackstoryPanel && (
+          <section className="rounded-lg border border-[#2a3136] bg-[#161a1d] p-3">
+          <div className="flex items-center justify-between mb-2">
+          <div className="text-[10px] uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
+          <BookMarked size={10} /> Back story
+          </div>
+          {isEdit && (
+            <button
+            type="button"
+            onClick={() => insertBackstoryImage(selected)}
+            className="flex items-center gap-1 text-[11px] px-2 py-0.5 rounded text-gray-300 hover:text-gray-100 hover:bg-[#2a3136] transition-colors"
+            title="Upload a photo and insert it at the cursor"
+            >
+            <ImageIcon size={11} /> Insert image
+            </button>
+          )}
+          </div>
+          {isEdit ? (
+            <textarea
+            ref={backstoryRef}
+            value={selected.backstory}
+            onChange={(e) => updateItem(selected.id, { backstory: e.target.value })}
+            placeholder="Where the idea came from, what you were thinking, how it evolved… Use 'Insert image' to add photos."
+            className="w-full bg-transparent border-none outline-none text-sm text-gray-200 leading-relaxed resize-none placeholder-gray-600 focus:outline-none overflow-hidden"
+            style={{ minHeight: "4rem" }}
+            />
+          ) : (
+            <BackstoryRenderer
+            text={selected.backstory}
+            sectionDir={sectionDir}
+            itemId={selected.id}
+            onImageClick={(file) => {
+              const idx = backstoryImages.indexOf(file);
+              openLightboxFiles(
+                selected,
+                backstoryImages,
+                idx >= 0 ? idx : 0
+              );
+            }}
+            />
+          )}
+
+          {isEdit && backstoryImages.length > 0 && (
+            <div className="mt-3 pt-3 border-t border-[#2a3136]">
+            <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-2">
+            Photos in this backstory
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+            {backstoryImages.map((f) => (
+              <div
+              key={f}
+              className="relative group rounded-md overflow-hidden border border-[#2a3136] bg-[#0f1315] aspect-square"
+              >
+              <AssetImage
+              sectionDir={sectionDir}
+              itemId={selected.id}
+              filename={f}
+              className="w-full h-full object-cover"
+              />
+              <button
+              type="button"
+              onClick={() => removeBackstoryImage(selected, f)}
+              className="absolute top-1 right-1 p-1 rounded bg-black/70 text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600"
+              title="Remove photo and its reference from the text"
+              >
+              <Trash2 size={10} />
+              </button>
+              </div>
+            ))}
+            </div>
+            </div>
+          )}
+          </section>
+        )}
+        </div>
+      )}
+      </div>
+      </div>
+      </div>
+
+      {showVersionsPanel && (
+        <div className="flex-shrink-0 border-t border-[#2a3136] bg-[#161a1d]">
+        <div className="max-w-6xl mx-auto px-6 py-3">
+        <div className="flex items-center justify-between mb-2">
+        <div className="text-[10px] uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
+        <GitBranch size={10} /> Timeline
+        {hasVersions && (
+          <span className="text-gray-600">· {selected.versions.length}</span>
+        )}
+        </div>
+        {isEdit && hasVersions && (
+          <button
+          type="button"
+          onClick={() => addVersion(selected)}
+          className="flex items-center gap-1.5 text-xs px-2 py-1 bg-[#2a3136] hover:bg-[#30363d] border border-[#30363d] rounded text-gray-200"
+          >
+          <Plus size={11} /> Save version
+          </button>
+        )}
+        </div>
+
+        {hasVersions || isEdit ? (
+          <div
+          className="flex gap-2 overflow-x-auto pb-1 snap-x"
+          style={{ scrollbarWidth: "thin" }}
+          >
+          {selected.versions.map((v, idx) => (
+            <div
+            key={v.id}
+            className="group flex-shrink-0 w-28 snap-start"
+            >
+            <div className="relative rounded-md overflow-hidden border border-[#2a3136] bg-[#0f1315]">
+            <div
+            className="w-full aspect-square cursor-zoom-in bg-black/40 flex items-center justify-center"
+            onClick={() =>
+              openLightboxFiles(
+                selected,
+                selected.versions.map((x) => x.image),
+                                idx
+              )
+            }
+            >
+            <AssetImage
+            sectionDir={sectionDir}
+            itemId={selected.id}
+            filename={v.image}
+            className="w-full h-full object-contain"
+            />
+            </div>
+            <div className="absolute top-1 left-1 px-1.5 py-0.5 rounded bg-black/70 text-[9px] text-white/80 font-medium tabular-nums backdrop-blur-sm pointer-events-none">
+            {idx + 1}
+            </div>
+            {isEdit && (
+              <button
+              type="button"
+              onClick={() => removeVersion(selected, v.id)}
+              className="absolute top-1 right-1 p-1 rounded bg-black/70 text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600"
+              title="Remove version"
+              >
+              <X size={10} />
+              </button>
+            )}
+            </div>
+            <div className="mt-1 min-w-0">
+            {isEdit ? (
+              <input
+              type="text"
+              value={v.label}
+              onChange={(e) =>
+                updateVersionLabel(selected, v.id, e.target.value)
+              }
+              placeholder="Label…"
+              className="w-full bg-transparent border-none outline-none text-[11px] text-gray-200 placeholder-gray-600 truncate"
+              />
+            ) : (
+              <div className="text-[11px] text-gray-200 truncate" title={v.label}>
+              {v.label || "Untitled version"}
+              </div>
+            )}
+            <div className="text-[9px] text-gray-500 mt-0.5 truncate">
+            {fmtDateTime(v.date)}
+            </div>
+            </div>
+            </div>
+          ))}
+
+          {isEdit && (
+            <button
+            type="button"
+            onClick={() => addVersion(selected)}
+            className="flex-shrink-0 w-28 aspect-square rounded-md border-2 border-dashed border-[#30363d] hover:border-[#3a4147] text-gray-500 hover:text-gray-300 flex flex-col items-center justify-center gap-1 transition-colors snap-start"
+            title="Save a new version"
+            >
+            <Plus size={16} />
+            <span className="text-[10px]">Save version</span>
+            </button>
+          )}
+          </div>
+        ) : (
+          <p className="text-xs text-gray-500 italic">
+          No versions yet. Save snapshots as the piece evolves.
+          </p>
+        )}
+        </div>
+        </div>
+      )}
       </div>
     );
   })();
 
   return (
     <>
-      {modal}
-      {lightbox && (
-        <Lightbox
-          srcs={lightbox.srcs}
-          index={lightbox.index}
-          onClose={() => setLightbox(null)}
-          onIndexChange={(i) =>
-            setLightbox((prev) => (prev ? { ...prev, index: i } : null))
-          }
-        />
-      )}
+    {modal}
+    {lightbox && (
+      <Lightbox
+      srcs={lightbox.srcs}
+      index={lightbox.index}
+      onClose={() => setLightbox(null)}
+      onIndexChange={(i) =>
+        setLightbox((prev) => (prev ? { ...prev, index: i } : null))
+      }
+      />
+    )}
 
-      {newItemOpen && (
-        <div
-          className="fixed inset-0 z-[300] bg-black/70 flex items-center justify-center p-6"
-          onClick={cancelNewItem}
-        >
-          <div
-            className="bg-[#1e2327] border border-[#2a3136] rounded-lg shadow-2xl w-[460px] max-w-[92vw] overflow-hidden"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center gap-2 px-4 py-3 border-b border-[#2a3136] bg-[#1a1e21]">
-              <ImageIcon size={14} className="text-blue-400" />
-              <span className="text-sm font-medium text-gray-100">New Piece</span>
-              <button
-                type="button"
-                onClick={cancelNewItem}
-                disabled={creatingItem}
-                className="ml-auto text-gray-500 hover:text-gray-300 p-0.5 disabled:opacity-40"
-                title="Close"
-              >
-                <X size={14} />
-              </button>
-            </div>
+    {newItemOpen && (
+      <div
+      className="fixed inset-0 z-[300] bg-black/70 flex items-center justify-center p-6"
+      onClick={cancelNewItem}
+      >
+      <div
+      className="bg-[#1e2327] border border-[#2a3136] rounded-lg shadow-2xl w-[460px] max-w-[92vw] overflow-hidden"
+      onClick={(e) => e.stopPropagation()}
+      >
+      <div className="flex items-center gap-2 px-4 py-3 border-b border-[#2a3136] bg-[#1a1e21]">
+      <ImageIcon size={14} className="text-blue-400" />
+      <span className="text-sm font-medium text-gray-100">New Piece</span>
+      <button
+      type="button"
+      onClick={cancelNewItem}
+      disabled={creatingItem}
+      className="ml-auto text-gray-500 hover:text-gray-300 p-0.5 disabled:opacity-40"
+      title="Close"
+      >
+      <X size={14} />
+      </button>
+      </div>
 
-            <div className="p-4 space-y-3">
-              <div>
-                <label className="text-[10px] uppercase tracking-wider text-gray-500 mb-1.5 flex items-center gap-1.5">
-                  <ImageIcon size={10} /> Title
-                </label>
-                <input
-                  autoFocus
-                  type="text"
-                  value={newItemTitle}
-                  onChange={(e) => setNewItemTitle(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Escape") cancelNewItem();
-                  }}
-                  placeholder="Untitled"
-                  className="w-full bg-[#0f1315] border border-[#30363d] rounded px-3 py-2 text-sm text-gray-100 outline-none focus:ring-1 focus:ring-blue-500"
-                />
-              </div>
+      <div className="p-4 space-y-3">
+      <div>
+      <label className="text-[10px] uppercase tracking-wider text-gray-500 mb-1.5 flex items-center gap-1.5">
+      <ImageIcon size={10} /> Title
+      </label>
+      <input
+      autoFocus
+      type="text"
+      value={newItemTitle}
+      onChange={(e) => setNewItemTitle(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") cancelNewItem();
+      }}
+      placeholder="Untitled"
+      className="w-full bg-[#0f1315] border border-[#30363d] rounded px-3 py-2 text-sm text-gray-100 outline-none focus:ring-1 focus:ring-blue-500"
+      />
+      </div>
 
-              <div>
-                <label className="text-[10px] uppercase tracking-wider text-gray-500 mb-1.5 flex items-center gap-1.5">
-                  <Calendar size={10} /> Date
-                </label>
-                <div className="w-full bg-[#0f1315] border border-[#30363d] rounded px-3 py-2 focus-within:ring-1 focus-within:ring-blue-500 flex items-center gap-2">
-                  <DateField
-                    value={newItemDate}
-                    onChange={setNewItemDate}
-                    className="flex-1 text-sm text-gray-100"
-                    placeholder="MM/DD/YYYY"
-                  />
-                </div>
-                <p className="text-[10px] text-gray-500 mt-1.5">
-                  {newItemDate
-                    ? `Will be saved as ${isoToDisplay(newItemDate)}`
-                    : "Type a date or click the calendar to pick."}
-                </p>
-                <p className="text-[10px] text-gray-700 mt-0.5">
-                  Accepts: 09/04/2026 · 9/4/26 · September 4, 2026 · Sep 4 · 2026-09-04 · today · yesterday · tomorrow
-                </p>
-              </div>
-
-              <div className="text-[11px] text-gray-500 pt-1">
-                {newItemPaths.length} image
-                {newItemPaths.length === 1 ? "" : "s"} selected
-              </div>
-
-              <div className="flex justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={cancelNewItem}
-                  disabled={creatingItem}
-                  className="px-3 py-1.5 text-xs text-gray-400 hover:text-gray-200 hover:bg-[#2a3136] rounded transition-colors disabled:opacity-40"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={confirmNewItem}
-                  disabled={creatingItem}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded transition-colors font-medium"
-                >
-                  {creatingItem ? (
-                    <>
-                      <Loader2 size={12} className="animate-spin" />
-                      <span>Creating…</span>
-                    </>
-                  ) : (
-                    <span>Create Piece</span>
-                  )}
-                </button>
-              </div>
-            </div>
-          </div>
+      <div>
+      <label className="text-[10px] uppercase tracking-wider text-gray-500 mb-1.5 flex items-center gap-1.5">
+      <Calendar size={10} /> Date
+      </label>
+      <div className="w-full bg-[#0f1315] border border-[#30363d] rounded px-3 py-2 focus-within:ring-1 focus-within:ring-blue-500 flex items-center gap-2">
+      <DateField
+      value={newItemDate}
+      onChange={setNewItemDate}
+      className="flex-1 text-sm text-gray-100"
+      placeholder="MM/DD/YYYY"
+      />
+      </div>
+      <p className="text-[10px] text-gray-500 mt-1.5">
+      {newItemDate
+        ? `Will be saved as ${isoToDisplay(newItemDate)}`
+        : "Type a date or click the calendar to pick."}
+        </p>
+        <p className="text-[10px] text-gray-700 mt-0.5">
+        Accepts: 09/04/2026 · 9/4/26 · September 4, 2026 · Sep 4 · 2026-09-04 · today · yesterday · tomorrow
+        </p>
         </div>
-      )}
 
-      {selected ? detailView : gridView}
+        <div className="text-[11px] text-gray-500 pt-1">
+        {newItemPaths.length} image
+        {newItemPaths.length === 1 ? "" : "s"} selected
+        </div>
+
+        <div className="flex justify-end gap-2 pt-2">
+        <button
+        type="button"
+        onClick={cancelNewItem}
+        disabled={creatingItem}
+        className="px-3 py-1.5 text-xs text-gray-400 hover:text-gray-200 hover:bg-[#2a3136] rounded transition-colors disabled:opacity-40"
+        >
+        Cancel
+        </button>
+        <button
+        type="button"
+        onClick={confirmNewItem}
+        disabled={creatingItem}
+        className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded transition-colors font-medium"
+        >
+        {creatingItem ? (
+          <>
+          <Loader2 size={12} className="animate-spin" />
+          <span>Creating…</span>
+          </>
+        ) : (
+          <span>Create Piece</span>
+        )}
+        </button>
+        </div>
+        </div>
+        </div>
+        </div>
+    )}
+
+    {selected ? detailView : gridView}
     </>
   );
 }
@@ -3294,52 +3256,52 @@ function TagInput({
 
   return (
     <div className="relative">
-      <div className="flex gap-1.5">
-        <input
-          type="text"
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          onFocus={() => setFocused(true)}
-          onBlur={() => { setTimeout(() => setFocused(false), 120); }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              commit(value);
-            } else if (e.key === "Escape") {
-              setValue("");
-              (e.currentTarget as HTMLInputElement).blur();
-            }
-          }}
-          placeholder="Add a tag…"
-          className="flex-1 min-w-0 bg-[#0f1315] border border-[#30363d] rounded px-2 py-1 text-xs text-gray-200 outline-none focus:ring-1 focus:ring-blue-500"
-        />
-        <button
-          type="button"
-          onClick={() => commit(value)}
-          disabled={!value.trim()}
-          className="flex items-center gap-1 px-2 py-1 text-xs bg-[#2a3136] hover:bg-[#30363d] disabled:opacity-40 border border-[#30363d] rounded text-gray-200 flex-shrink-0"
-        >
-          <Plus size={11} />
-        </button>
-      </div>
+    <div className="flex gap-1.5">
+    <input
+    type="text"
+    value={value}
+    onChange={(e) => setValue(e.target.value)}
+    onFocus={() => setFocused(true)}
+    onBlur={() => { setTimeout(() => setFocused(false), 120); }}
+    onKeyDown={(e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        commit(value);
+      } else if (e.key === "Escape") {
+        setValue("");
+        (e.currentTarget as HTMLInputElement).blur();
+      }
+    }}
+    placeholder="Add a tag…"
+    className="flex-1 min-w-0 bg-[#0f1315] border border-[#30363d] rounded px-2 py-1 text-xs text-gray-200 outline-none focus:ring-1 focus:ring-blue-500"
+    />
+    <button
+    type="button"
+    onClick={() => commit(value)}
+    disabled={!value.trim()}
+    className="flex items-center gap-1 px-2 py-1 text-xs bg-[#2a3136] hover:bg-[#30363d] disabled:opacity-40 border border-[#30363d] rounded text-gray-200 flex-shrink-0"
+    >
+    <Plus size={11} />
+    </button>
+    </div>
 
-      {focused && suggestions.length > 0 && (
-        <div className="absolute top-full left-0 right-0 mt-1 z-20 bg-[#1e2327] border border-[#2a3136] rounded-md shadow-xl py-1 max-h-40 overflow-y-auto">
-          {suggestions.map((s) => (
-            <button
-              key={s}
-              type="button"
-              onMouseDown={(e) => {
-                e.preventDefault();
-                commit(s);
-              }}
-              className="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-[#2a3136]"
-            >
-              {s}
-            </button>
-          ))}
-        </div>
-      )}
+    {focused && suggestions.length > 0 && (
+      <div className="absolute top-full left-0 right-0 mt-1 z-20 bg-[#1e2327] border border-[#2a3136] rounded-md shadow-xl py-1 max-h-40 overflow-y-auto">
+      {suggestions.map((s) => (
+        <button
+        key={s}
+        type="button"
+        onMouseDown={(e) => {
+          e.preventDefault();
+          commit(s);
+        }}
+        className="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-[#2a3136]"
+        >
+        {s}
+        </button>
+      ))}
+      </div>
+    )}
     </div>
   );
 }

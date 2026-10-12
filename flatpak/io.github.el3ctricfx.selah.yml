@@ -7,7 +7,7 @@ command: selah
 
 finish-args:
   - --share=ipc
-  - --socket=fallback-x11
+  - --socket=x11
   - --socket=wayland
   - --socket=pulseaudio
   - --device=dri
@@ -16,6 +16,7 @@ finish-args:
   - --share=network
   - --env=WEBKIT_DISABLE_DMABUF_RENDERER=1
   - --env=WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1
+  - --env=GDK_BACKEND=x11
 
 add-extensions:
   org.freedesktop.Platform.ffmpeg-full:

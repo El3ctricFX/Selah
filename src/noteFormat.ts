@@ -135,7 +135,14 @@ export function serializeNoteFile(fm: Frontmatter, body: string): string {
     }
   }
   const fmBlock = lines.length ? `---\n${lines.join("\n")}\n---\n\n` : "";
-  return `${fmBlock}${body.trimEnd()}\n`;
+
+  // Normalize ONLY the trailing newlines: collapse a run of them to a
+  // single newline. Everything else — leading whitespace, trailing spaces
+  // on the last line, blank lines mid-file — is preserved verbatim. The
+  // old code called `trimEnd()`, which silently deleted trailing blank
+  // lines and spaces on every save.
+  const normalizedBody = body.replace(/\n+$/, "");
+  return normalizedBody ? `${fmBlock}${normalizedBody}\n` : fmBlock;
 }
 
 interface ColumnSpec {
@@ -164,6 +171,7 @@ interface Segment {
   scripture?: {
     reference: string;
     text: string;
+    collapsed: boolean;
   };
   dmarchive?: {
     platform: string;
@@ -348,6 +356,7 @@ function splitNoteBody(body: string): Segment[] {
         scripture: {
           reference: unescapeAttr(attrs.reference || ""),
           text: unescapeAttr(attrs.text || ""),
+          collapsed: attrs.collapsed === "true",
         },
       });
       continue;
@@ -602,6 +611,33 @@ function decodeColorsInBlocks(blocks: any[]): any[] {
   return blocks.map(decodeColorsInBlock);
 }
 
+// ── Image width encoding ────────────────────────────────────────────────────
+const IMG_WIDTH_RE = /[?&]w=(\d+)$/;
+
+function extractImageWidths(blocks: any[]): any[] {
+  return blocks.map((b) => {
+    let next = b;
+    if (b?.type === "image" && typeof b.props?.url === "string") {
+      const m = b.props.url.match(IMG_WIDTH_RE);
+      if (m) {
+        const cleanUrl = b.props.url.slice(0, -m[0].length);
+        next = {
+          ...b,
+          props: {
+            ...b.props,
+            url: cleanUrl,
+            previewWidth: Number(m[1]),
+          },
+        };
+      }
+    }
+    if (Array.isArray(next.children) && next.children.length > 0) {
+      next = { ...next, children: extractImageWidths(next.children) };
+    }
+    return next;
+  });
+}
+
 async function parseBodyToBlocks(
   editor: BlockNoteEditor<any, any, any>,
   body: string
@@ -613,7 +649,8 @@ async function parseBodyToBlocks(
     if (seg.kind === "md") {
       if (!seg.text?.trim()) continue;
       const parsed = await editor.tryParseMarkdownToBlocks(seg.text);
-      blocks.push(...decodeColorsInBlocks(parsed));
+      const decoded = decodeColorsInBlocks(parsed);
+      blocks.push(...extractImageWidths(decoded));
     } else if (seg.kind === "columns") {
       const columnChildren = await Promise.all(
         (seg.columns || []).map(async (col) => {
@@ -675,6 +712,7 @@ async function parseBodyToBlocks(
         props: {
           reference: s.reference,
           text: s.text,
+          collapsed: s.collapsed,
         },
       });
     } else if (seg.kind === "dmarchive") {
@@ -702,6 +740,10 @@ export async function noteBodyToBlocks(
   body: string
 ): Promise<any[]> {
   return parseBodyToBlocks(editor, body);
+}
+
+function escapeMarkdownAlt(s: string): string {
+  return String(s).replace(/([\\\[\]])/g, "\\$1");
 }
 
 async function serializeBlockList(
@@ -763,7 +805,7 @@ async function serializeBlockList(
       chunks.push(
         `::: scripture reference="${escAttr(p.reference)}" text="${escAttr(
           p.text
-        )}"`
+        )}" collapsed="${p.collapsed ? "true" : "false"}"`
       );
     } else if (block.type === "dmarchive") {
       await flush();
@@ -779,6 +821,20 @@ async function serializeBlockList(
           p.srcs
         )}"`
       );
+    } else if (block.type === "image") {
+      const p = block.props || {};
+      const pw = typeof p.previewWidth === "number" && p.previewWidth > 0
+        ? Math.round(p.previewWidth)
+        : null;
+      if (!pw) {
+        pending.push(block);
+      } else {
+        await flush();
+        const url = String(p.url || "");
+        const caption = escapeMarkdownAlt(String(p.caption || ""));
+        const sep = url.includes("?") ? "&" : "?";
+        chunks.push(`![${caption}](${url}${sep}w=${pw})`);
+      }
     } else {
       pending.push(block);
     }
@@ -821,7 +877,6 @@ export function flattenToObsidianMarkdown(raw: string): string {
       out.push(`> **${s.reference}** (KJV)\n>\n> ${s.text}`);
     } else if (seg.kind === "dmarchive") {
       const d = seg.dmarchive!;
-      // If a link is set, prefer making the header line itself a link.
       const headerParts = [d.platform, d.who || "Conversation", d.date].filter(
         Boolean
       );
@@ -861,5 +916,5 @@ export function flattenToObsidianMarkdown(raw: string): string {
     docWidth: _dw,
     ...exportFm
   } = frontmatter;
-  return serializeNoteFile(exportFm, out.join("\n\n"));
+  return serializeNoteFile(exportFm, out.join("\n"));
 }
