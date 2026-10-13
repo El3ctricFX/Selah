@@ -4,8 +4,8 @@ import { readDir, readTextFile } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
-  Search, CalendarDays, BookOpen, Church,
-  Image as ImageIcon, NotebookText, ArrowRight, Link as LinkIcon,
+  Search, CalendarDays, BookOpen,
+  NotebookText, ArrowRight, Link as LinkIcon,
 } from "lucide-react";
 import { parseNoteFile } from "./noteFormat";
 import {

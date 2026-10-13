@@ -19,7 +19,6 @@ import { useModal } from "./Modal";
 import { useNoteMode } from "./useNoteMode";
 import { moveToTrash } from "./trash";
 import { writeFileAtomic } from "./safeWrite";
-import { coverValueToRelative } from "./imageAssets";
 
 interface GalleryLink {
   id: string;

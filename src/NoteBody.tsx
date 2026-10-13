@@ -809,7 +809,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
               const inserted = editor.insertBlocks(
                 blocksToInsert,
                 firstColumn.id,
-                "nested"
+                "nested" as any
               );
               return inserted || [];
             }
@@ -818,7 +818,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
             const inserted = editor.insertBlocks(
               blocksToInsert,
               refBlock.id,
-              "nested"
+              "nested" as any
             );
             return inserted || [];
           }
@@ -1537,7 +1537,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
             "data-gallery-edge-side"
           ) as "top" | "bottom" | "left" | "right" | null;
           const srcBlock = editor.getBlock(blockId);
-          const imgSrc = (srcBlock?.props?.url as string) || "";
+          const imgSrc = ((srcBlock?.props as any)?.url as string) || "";
           if (edgeBlockId && edgeSide && imgSrc) {
             // Suppress the delete-prompt BEFORE the removal fires.
             // Otherwise handleContentChange runs while the flag is false
@@ -1594,7 +1594,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
           const gRow = Number(galleryCellEl.getAttribute("data-gallery-row"));
           const gCol = Number(galleryCellEl.getAttribute("data-gallery-col"));
           const srcBlock = editor.getBlock(blockId);
-          const imgSrc = (srcBlock?.props?.url as string) || "";
+          const imgSrc = ((srcBlock?.props as any)?.url as string) || "";
           if (
             galleryBlockId &&
             Number.isFinite(gRow) &&

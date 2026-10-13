@@ -588,7 +588,7 @@ function AppearanceTab({
         <button
           type="button"
           onClick={() =>
-            onChange({
+            patch({
               ...DEFAULT_HOME_SETTINGS,
               shortcuts: settings.shortcuts,
             })
