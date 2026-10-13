@@ -1,5 +1,11 @@
-// src/NoteBody.tsx
+// // src/NoteBody.tsx
 import { BlockNoteSchema, combineByGroup, filterSuggestionItems } from "@blocknote/core";
+import {
+  createImageGallery,
+  GALLERY_MOVE_EVENT,
+  GALLERY_EDGE_DROP_EVENT,
+  GALLERY_EDGE_HOVER_EVENT,
+} from "./ImageGallery";
 import { insertOrUpdateBlockForSlashMenu } from "@blocknote/core/extensions";
 import {
   useCreateBlockNote,
@@ -33,6 +39,7 @@ import {
 } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl, openPath } from "@tauri-apps/plugin-opener";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
@@ -88,6 +95,8 @@ import {
   assetUrlToAbsolutePath,
   isInsideNoteAssets,
   deleteImageFromNoteAssets,
+  imageGalleryToAssetUrls,
+  imageGalleryToRelativePaths,
 } from "./imageAssets";
 import { writeFileAtomic } from "./safeWrite";
 import { registerFlusher } from "./flushRegistry";
@@ -214,6 +223,109 @@ function guessImageFileName(url: string): string {
   }
 }
 
+/**
+ * Parse a `text/uri-list` payload (what Linux file managers put on the
+ * clipboard when you copy a file) into a list of absolute filesystem paths.
+ *
+ * Format is one URI per line, CRLF-separated, with `#` for comments.
+ * We handle both file:///home/user/x.png and file:///C:/Users/x.png.
+ */
+function parseUriList(text: string): string[] {
+  if (!text) return [];
+  const paths: string[] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+
+    if (/^file:\/\//i.test(line)) {
+      try {
+        const url = new URL(line);
+        let p = decodeURIComponent(url.pathname);
+        // Windows: /C:/Users/... → C:/Users/...
+        if (/^\/[a-zA-Z]:/.test(p)) p = p.slice(1);
+        paths.push(p);
+      } catch {
+        let p = line.slice(7);
+        try { p = decodeURIComponent(p); } catch {}
+        paths.push(p);
+      }
+      continue;
+    }
+
+    // Some file managers (notably Nemo on this system) put a plain
+    // absolute path on the clipboard instead of a file:// URI. Accept
+    // both Unix (/home/…) and Windows (C:\… or C:/…) shapes.
+    if (/^\//.test(line) || /^[a-zA-Z]:[\\/]/.test(line)) {
+      let p = line;
+      try { p = decodeURIComponent(line); } catch {}
+      paths.push(p);
+    }
+  }
+  return paths;
+}
+
+type DropTarget =
+| {
+  kind: "insert";
+  refId: string;
+  placement: "before" | "after" | "nested";
+}
+| { kind: "gallery"; blockId: string; row: number; col: number }
+| null;
+
+/**
+ * Turn a viewport coordinate into a description of where a dropped file
+ * should land:
+ *
+ *   - Over a gallery cell → target that cell (one image per cell).
+ *   - Over an empty column → nest inside that column.
+ *   - Over any other block → insert before/after it based on which half
+ *     of the block the cursor is in.
+ *
+ * Returns null if nothing sensible is under the cursor — the caller then
+ * falls back to the default (insert after the cursor / at end of doc).
+ */
+function resolveDropTarget(
+  clientX: number,
+  clientY: number,
+  editorRoot: HTMLElement
+): DropTarget {
+  const el = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
+  if (!el) return null;
+  if (!editorRoot.contains(el)) return null;
+
+  // ── Gallery cell ───────────────────────────────────────────────
+  const cellEl = el.closest("[data-gallery-block-id]") as HTMLElement | null;
+  if (cellEl) {
+    const blockId = cellEl.getAttribute("data-gallery-block-id");
+    const row = Number(cellEl.getAttribute("data-gallery-row"));
+    const col = Number(cellEl.getAttribute("data-gallery-col"));
+    if (blockId && Number.isFinite(row) && Number.isFinite(col)) {
+      return { kind: "gallery", blockId, row, col };
+    }
+  }
+
+  // ── Nearest [data-id] block ancestor ───────────────────────────
+  const blockEl = el.closest("[data-id]") as HTMLElement | null;
+  if (!blockEl || !editorRoot.contains(blockEl)) return null;
+  const refId = blockEl.getAttribute("data-id");
+  if (!refId) return null;
+
+  // Empty column: nest inside rather than dropping at root level.
+  if (blockEl.matches(".bn-block-column, [data-node-type='column']")) {
+    return { kind: "insert", refId, placement: "nested" };
+  }
+
+  const rect = blockEl.getBoundingClientRect();
+  const placement: "before" | "after" =
+  clientY < rect.top + rect.height / 2 ? "before" : "after";
+  return { kind: "insert", refId, placement };
+}
+
+
+const IMAGE_EXT_RE = /\.(png|jpe?g|webp|gif|avif|bmp|svg)$/i;
+const VIDEO_EXT_RE = /\.(mp4|webm|mov|mkv|m4v|avi|ogv)$/i;
+
 const URL_RE = /^https?:\/\/\S+$/i;
 const DEBOUNCE_MS = 150;
 const MAX_DEBOUNCE_MS = 2000;
@@ -221,6 +333,15 @@ const MAX_DEBOUNCE_MS = 2000;
 const NOTE_LINK_KEY = new PluginKey("note-links");
 
 function buildNoteLinkDecorations(doc: any): DecorationSet {
+  try {
+    return buildNoteLinkDecorationsUnsafe(doc);
+  } catch (e) {
+    console.error("[note-links] decoration build failed:", e);
+    return DecorationSet.empty;
+  }
+}
+
+function buildNoteLinkDecorationsUnsafe(doc: any): DecorationSet {
   const decos: Decoration[] = [];
   doc.descendants((node: any, pos: number) => {
     if (!node.isText) return;
@@ -254,16 +375,17 @@ function buildNoteLinkDecorations(doc: any): DecorationSet {
 
 const noteLinkPlugin = new Plugin({
   key: NOTE_LINK_KEY,
-  state: {
-    init: (_: any, state: any) => buildNoteLinkDecorations(state.doc),
-    apply: (tr: any, _old: any) => {
-      if (tr.docChanged) return buildNoteLinkDecorations(tr.doc);
-      return _old;
-    },
-  },
+  // Rebuild decorations fresh from whichever state is being rendered.
+  // Storing them in plugin state is what caused the
+  // "Position 35 outside of fragment" crash: after a rapid run of
+  // transactions (undo spam, column resize, etc.) the stale set from a
+  // longer document could still be attached to a shorter one, and
+  // ProseMirror threw when it tried to paint an inline decoration past
+  // the end of the doc. Rebuilding on every render makes that impossible
+  // — the positions always match the doc being rendered.
   props: {
     decorations(state: any) {
-      return NOTE_LINK_KEY.getState(state);
+      return buildNoteLinkDecorations(state.doc);
     },
   },
 });
@@ -337,6 +459,12 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
     const renameInputRef = useRef<HTMLInputElement>(null);
 
     const [captionDraft, setCaptionDraft] = useState("");
+        const [dragOverlay, setDragOverlay] = useState<{
+      x: number;
+      y: number;
+      target: DropTarget;
+      indicator?: { left: number; top: number; width: number; height?: number };
+    } | null>(null);
     const [renameDraft, setRenameDraft] = useState("");
     const [renameError, setRenameError] = useState<string | null>(null);
 
@@ -354,7 +482,25 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
     const prevImageUrlsRef = useRef<Set<string>>(new Set());
     const handlingDeleteRef = useRef(false);
 
+    // Set to true for a short window when the user presses Ctrl+Z /
+    // Ctrl+Shift+Z / Ctrl+Y. BlockNote's `onChange` fires after the undo
+    // transaction lands, so without this flag we'd compare the pre-undo
+    // image set against the post-undo image set and wrongly conclude the
+    // user deleted a photo. Undo is not a deletion.
+    // The JSON fingerprint of the document as it looked right after the
+    // initial load finished. BlockNote's `replaceBlocks` on load
+    // pushes an "[empty] → [content]" entry onto the undo stack, so
+    // pressing Ctrl+Z at the loaded state would empty the editor.
+    // We detect that exact situation in the keydown handler below and
+    // stop the keystroke before ProseMirror sees it. Any edit the user
+    // makes changes the fingerprint, so undo works normally after that.
+    const undoRedoRef = useRef(false);
+    const undoRedoClearRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const loadedDocFingerprintRef = useRef<string | null>(null);
+
     const { mode } = useNoteMode();
+
+
 
     const editor = useCreateBlockNote({
       schema: withMultiColumn(
@@ -365,6 +511,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
             video: createVideo(),
             scripture: createScripture(),
             dmarchive: createDmArchive(),
+            imagegallery: createImageGallery(),
           },
         })
       ),
@@ -381,6 +528,164 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         return true;
       },
     });
+
+    // Watch for undo/redo keypresses at the document level, in the
+    // capture phase so we see them before ProseMirror's own keymap runs.
+    // The flag stays true long enough for any debounced onChange to fire
+    // and be processed; if the user keeps spamming Ctrl+Z, the timer is
+    // refreshed on each press.
+    useEffect(() => {
+      // Find the nearest scrollable ancestor of the editor DOM and
+      // pin its scrollTop to where it is right now. ProseMirror's undo
+      // command ends with `scrollIntoView()`, which yanks the viewport
+      // to wherever the restored cursor sits — annoying when you're
+      // spamming Ctrl+Z to walk back through a dozen edits. We capture
+      // the position before the undo runs and restore it two animation
+      // frames later, after ProseMirror's scroll and any layout
+      // corrections have landed.
+      // Pin every scrollable ancestor of the editor for two frames so
+      // ProseMirror's `scrollRectIntoView` (which writes scrollTop
+      // directly on each scrolling ancestor during an undo) cannot
+      // move the viewport. We override the instance-level scrollTop
+      // accessor with a getter that returns the current value and a
+      // setter that swallows writes. Two rAFs later we delete the
+      // overrides, restoring the native accessor.
+      const preserveScroll = () => {
+        const tiptap: any = (editor as any)?._tiptapEditor;
+        const dom: HTMLElement | null = tiptap?.view?.dom ?? null;
+        if (!dom) return;
+
+        // Collect every scrollable ancestor (usually just one).
+        const targets: { el: HTMLElement; saved: number }[] = [];
+        let node: HTMLElement | null = dom.parentElement;
+        while (node) {
+          const style = window.getComputedStyle(node);
+          const scrollable =
+            (style.overflowY === "auto" || style.overflowY === "scroll") &&
+            node.scrollHeight > node.clientHeight;
+          if (scrollable) {
+            targets.push({ el: node, saved: node.scrollTop });
+          }
+          node = node.parentElement;
+        }
+        if (targets.length === 0) return;
+
+        // Also catch the window itself in case the app scrolls there.
+        const winX = window.scrollX;
+        const winY = window.scrollY;
+
+        for (const { el, saved } of targets) {
+          try {
+            Object.defineProperty(el, "scrollTop", {
+              configurable: true,
+              get() {
+                return saved;
+              },
+              set() {
+                /* swallow ProseMirror's scroll */
+              },
+            });
+          } catch {
+            /* already non-configurable — fall back to rAF restore */
+          }
+        }
+
+        let restored = false;
+        const restore = () => {
+          if (restored) return;
+          restored = true;
+          for (const { el, saved } of targets) {
+            try {
+              delete (el as any).scrollTop;
+            } catch {}
+            // Now that the native setter is back, make sure we're still
+            // where we started (in case something else moved it).
+            try {
+              if (el.scrollTop !== saved) el.scrollTop = saved;
+            } catch {}
+          }
+          try {
+            if (window.scrollX !== winX || window.scrollY !== winY) {
+              window.scrollTo(winX, winY);
+            }
+          } catch {}
+        };
+
+        // Two rAFs is the safest: first one fires after the current
+        // input event has been fully processed (ProseMirror's scroll
+        // attempt already swallowed), second one after the next layout
+        // pass, in case the undo changed any element heights.
+        requestAnimationFrame(() => {
+          requestAnimationFrame(restore);
+        });
+
+        // Failsafe in case rAF is throttled (backgrounded tab, etc.).
+        setTimeout(restore, 120);
+      };
+
+      const onKeyDown = (e: KeyboardEvent) => {
+        const ctrl = e.ctrlKey || e.metaKey;
+        if (!ctrl) return;
+        const k = e.key.toLowerCase();
+        if (k !== "z" && k !== "y") return;
+
+        // Redo and Ctrl+Y always pass through — they can't empty the doc.
+        const isRedo = e.shiftKey || k === "y";
+        if (isRedo) {
+          preserveScroll();
+          undoRedoRef.current = true;
+          if (undoRedoClearRef.current) clearTimeout(undoRedoClearRef.current);
+          undoRedoClearRef.current = setTimeout(() => {
+            undoRedoRef.current = false;
+            undoRedoClearRef.current = null;
+          }, 400);
+          return;
+        }
+
+        // Plain Ctrl+Z. If the document currently matches the loaded
+        // fingerprint, the next undo would unwind the initial load
+        // transaction and leave an empty editor. Swallow the keystroke.
+        if (loadedDocFingerprintRef.current !== null) {
+          try {
+            const current = JSON.stringify(
+              editor.document.map((b: any) => ({
+                type: b.type,
+                props: b.props || {},
+                content: b.content || [],
+                children: b.children || [],
+              }))
+            );
+            if (current === loadedDocFingerprintRef.current) {
+              e.preventDefault();
+              e.stopPropagation();
+              e.stopImmediatePropagation();
+              return;
+            }
+          } catch {
+            /* fingerprint failed — let the undo through */
+          }
+        }
+
+        // Normal undo — keep the viewport pinned, then mark the flag
+        // so the image-delete detector doesn't misread the resulting
+        // change as a user deletion.
+        preserveScroll();
+        undoRedoRef.current = true;
+        if (undoRedoClearRef.current) clearTimeout(undoRedoClearRef.current);
+        undoRedoClearRef.current = setTimeout(() => {
+          undoRedoRef.current = false;
+          undoRedoClearRef.current = null;
+        }, 400);
+      };
+      document.addEventListener("keydown", onKeyDown, true);
+      return () => {
+        document.removeEventListener("keydown", onKeyDown, true);
+        if (undoRedoClearRef.current) {
+          clearTimeout(undoRedoClearRef.current);
+          undoRedoClearRef.current = null;
+        }
+      };
+    }, [editor]);
 
     // Hide BlockNote's floating toolbar while a file block (image/video/...) is
     // selected. We toggle a body class and let CSS do the hiding, because the
@@ -408,14 +713,117 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
     }, [editor]);
 
     const insertBlocksSmart = useCallback(
-      (blocksToInsert: any[]): any[] => {
+      (
+        blocksToInsert: any[],
+        explicitRefId?: string | null,
+        explicitPlacement?: "before" | "after" | "nested"
+      ): any[] => {
         if (!editor || blocksToInsert.length === 0) return [];
         try {
-          const cursor = editor.getTextCursorPosition?.();
-          const refBlock =
-            cursor?.block || editor.document[editor.document.length - 1];
+          // Prefer the caller-supplied reference block. It's captured
+          // synchronously before any `await` (file pickers, etc.), so it
+          // can't go stale the way `getTextCursorPosition()` can.
+          let refBlock: any = null;
+          if (explicitRefId) {
+            try { refBlock = editor.getBlock(explicitRefId); } catch {}
+          }
+          if (!refBlock) {
+            try {
+              const cursor = editor.getTextCursorPosition?.();
+              refBlock =
+              cursor?.block || editor.document[editor.document.length - 1];
+            } catch {
+              refBlock = editor.document[editor.document.length - 1];
+            }
+          }
           if (!refBlock) return [];
 
+          // Caller supplied an explicit placement — honor it verbatim. This
+          // is what drag-and-drop uses to land the file exactly where the
+          // cursor was released, whether that's at root level or inside a
+          // column.
+          if (explicitRefId && explicitPlacement) {
+            try {
+              const inserted = editor.insertBlocks(
+                blocksToInsert,
+                refBlock.id,
+                explicitPlacement as any
+              );
+              return inserted || [];
+            } catch (e) {
+              console.warn(
+                "[insert] explicit placement failed, falling back:",
+                e
+              );
+            }
+          }
+
+          // ── Detect the enclosing column ──────────────────────────────
+          // BlockNote doesn't expose parent pointers, so we look up the
+          // block's DOM node and walk up to find the nearest column
+          // ancestor. This is what lets us nest into the column the user
+          // is actually looking at, even when a sibling column is empty.
+          let enclosingColumnId: string | null = null;
+          if (refBlock.type !== "column" && refBlock.type !== "columnList") {
+            try {
+              const blockEl = document.querySelector(
+                `[data-id="${refBlock.id}"]`
+              ) as HTMLElement | null;
+              const colEl = blockEl?.closest(
+                ".bn-block-column, [data-node-type='column']"
+              ) as HTMLElement | null;
+              if (colEl) {
+                const cid = colEl.getAttribute("data-id");
+                if (cid && cid !== refBlock.id) enclosingColumnId = cid;
+              }
+            } catch {}
+          }
+
+          // ── Inside a column ──────────────────────────────────────────
+          // Do NOT use replaceBlocks on a block inside a column. Even a
+          // successful replace makes BlockNote's multi-column extension
+          // re-evaluate the whole column list; any sibling column whose
+          // only content is an empty paragraph gets stripped, the now
+          // single-column list is un-wrapped, and the image ends up at
+          // the root — which is what the user saw as "the columns
+          // disappeared and it became one big photo".
+          //
+          // Inserting the new blocks *alongside* the reference block
+          // leaves every existing column (and its placeholder paragraph)
+          // completely untouched, so the collapse pass never runs.
+          if (enclosingColumnId) {
+            const inserted = editor.insertBlocks(
+              blocksToInsert,
+              refBlock.id,
+              "before"
+            );
+            return inserted || [];
+          }
+
+          // ── Structural refs (columnList / column as the cursor) ──────
+          // Same reasoning as above: never replace a column or a
+          // columnList. Nest into a column instead.
+          if (refBlock.type === "columnList") {
+            const firstColumn = refBlock.children?.[0];
+            if (firstColumn) {
+              const inserted = editor.insertBlocks(
+                blocksToInsert,
+                firstColumn.id,
+                "nested"
+              );
+              return inserted || [];
+            }
+          }
+          if (refBlock.type === "column") {
+            const inserted = editor.insertBlocks(
+              blocksToInsert,
+              refBlock.id,
+              "nested"
+            );
+            return inserted || [];
+          }
+
+          // ── Non-structural refs: existing behavior ───────────────────
           if (isEmptyParagraph(refBlock)) {
             try {
               const replaced = editor.replaceBlocks(
@@ -455,11 +863,13 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       } catch (e) {
         console.warn("[note-links] registerPlugin failed:", e);
       }
-      return () => {
-        try {
-          tiptap.unregisterPlugin(NOTE_LINK_KEY);
-        } catch {}
-      };
+      // Deliberately no unregister on cleanup. Tiptap's unregister /
+      // re-register cycle rebuilds the whole EditorState, which
+      // re-initializes the undo history with whatever doc happens to be
+      // current at that moment — that's what let Ctrl+Z walk past the
+      // initial load and unload the note. The editor instance is thrown
+      // away when this component unmounts anyway, so there's nothing to
+      // clean up.
     }, [editor]);
 
     // ── Force deselect of an image when clicking anywhere else ──────────
@@ -788,15 +1198,43 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         imgEl: HTMLImageElement;
       } | null = null;
       let ghostEl: HTMLDivElement | null = null;
+      let indicatorEl: HTMLDivElement | null = null;
+      let customDragActive = false;
+      let hoveredEdge: { blockId: string; side: string } | null = null;
 
       const clearHighlights = () => {
         document
-          .querySelectorAll<HTMLElement>("[data-drop-highlight]")
-          .forEach((n) => {
-            n.removeAttribute("data-drop-highlight");
-            n.style.outline = "";
-            n.style.outlineOffset = "";
-          });
+        .querySelectorAll<HTMLElement>("[data-drop-highlight]")
+        .forEach((n) => {
+          n.removeAttribute("data-drop-highlight");
+          n.style.outline = "";
+          n.style.outlineOffset = "";
+        });
+      };
+
+      const hideIndicator = () => {
+        if (indicatorEl) {
+          indicatorEl.remove();
+          indicatorEl = null;
+        }
+      };
+
+      const showIndicator = (rect: DOMRect, side: "before" | "after") => {
+        if (!indicatorEl) {
+          indicatorEl = document.createElement("div");
+          indicatorEl.style.position = "fixed";
+          indicatorEl.style.height = "2px";
+          indicatorEl.style.background = "#3b82f6";
+          indicatorEl.style.zIndex = "9998";
+          indicatorEl.style.pointerEvents = "none";
+          indicatorEl.style.borderRadius = "1px";
+          indicatorEl.style.boxShadow = "0 0 6px rgba(59,130,246,0.8)";
+          document.body.appendChild(indicatorEl);
+        }
+        indicatorEl.style.left = `${rect.left}px`;
+        indicatorEl.style.width = `${rect.width}px`;
+        indicatorEl.style.top =
+        side === "before" ? `${rect.top - 1}px` : `${rect.bottom - 1}px`;
       };
 
       const cleanup = () => {
@@ -804,14 +1242,65 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
           ghostEl.remove();
           ghostEl = null;
         }
+        hideIndicator();
         document.body.style.cursor = "";
         clearHighlights();
+        customDragActive = false;
+        if (hoveredEdge) {
+          window.dispatchEvent(
+            new CustomEvent(GALLERY_EDGE_HOVER_EVENT, {
+              detail: { active: false },
+            })
+          );
+          hoveredEdge = null;
+        }
       };
 
       const blockIdFromImg = (img: HTMLImageElement): string | null => {
         const blockEl = img.closest("[data-id]") as HTMLElement | null;
         return blockEl?.getAttribute("data-id") || null;
       };
+
+      const editorRootOf = (): HTMLElement | null =>
+      (el.querySelector(".bn-editor") as HTMLElement | null) ||
+      (el.querySelector(".ProseMirror") as HTMLElement | null);
+
+      // Walk up from `start` looking for the nearest [data-id] block-outer,
+      // skipping our own block and the column's own block-outer.
+      //
+      // When `boundary` is set (we're inside a column), the walk stops as
+      // soon as it reaches that element — so a stray hover over the
+      // column's padding can't accidentally resolve to the column-list
+      // wrapper above it.
+      const findBlockEl = (
+        start: HTMLElement | null,
+        editorRoot: HTMLElement,
+        skipId: string,
+        boundary: HTMLElement | null,
+        excludeId: string | null
+      ): HTMLElement | null => {
+        let probe: HTMLElement | null = start;
+        while (probe && editorRoot.contains(probe)) {
+          if (boundary && probe === boundary) return null;
+          const pid =
+          probe.getAttribute && probe.getAttribute("data-id");
+          if (pid && pid !== skipId && pid !== excludeId) return probe;
+          probe = probe.parentElement;
+        }
+        return null;
+      };
+
+      const readColumnId = (col: HTMLElement): string | null =>
+      col.getAttribute("data-id") ||
+      (
+        col.querySelector(":scope > [data-id]") as HTMLElement | null
+      )?.getAttribute("data-id") ||
+      (
+        col.querySelector(
+          '[data-node-type="blockOuter"][data-id]'
+        ) as HTMLElement | null
+      )?.getAttribute("data-id") ||
+      null;
 
       const onContextMenu = (e: MouseEvent) => {
         const target = e.target as HTMLElement;
@@ -834,8 +1323,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
           if (block) {
             const bp = block.props as Record<string, unknown>;
             caption = (bp?.caption as string) || "";
-            textAlignment =
-            (bp?.textAlignment as string) || "left";
+            textAlignment = (bp?.textAlignment as string) || "left";
             const pw = bp?.previewWidth as number | undefined;
             if (typeof pw === "number" && pw > 0) previewWidth = pw;
           }
@@ -845,13 +1333,13 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         const H = 460;
         setImageMenu({
           x: Math.min(e.clientX, window.innerWidth - W - 8),
-          y: Math.min(e.clientY, window.innerHeight - H - 8),
-          blockId,
-          url: img.src,
-          caption,
-          textAlignment,
-          previewWidth,
-          mode: "main",
+                     y: Math.min(e.clientY, window.innerHeight - H - 8),
+                     blockId,
+                     url: img.src,
+                     caption,
+                     textAlignment,
+                     previewWidth,
+                     mode: "main",
         });
       };
 
@@ -882,6 +1370,8 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
           const dy = e.clientY - pending.startY;
           if (Math.abs(dx) + Math.abs(dy) < 8) return;
 
+          customDragActive = true;
+
           ghostEl = document.createElement("div");
           ghostEl.style.position = "fixed";
           ghostEl.style.width = "96px";
@@ -907,13 +1397,93 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
           e.clientY
         ) as HTMLElement | null;
         clearHighlights();
-        const col = under?.closest(
+        hideIndicator();
+
+        const editorRoot = editorRootOf();
+        if (!editorRoot || !under || !editorRoot.contains(under)) return;
+
+        // Edge-zone detection: if the cursor is over a gallery edge "+"
+        // strip, tell that gallery to highlight it and skip the usual
+        // before/after insertion indicator — the drop will grow the grid.
+        const edgeEl = under.closest(
+          "[data-gallery-edge-side]"
+        ) as HTMLElement | null;
+        if (edgeEl) {
+          const edgeBlockId = edgeEl.getAttribute("data-gallery-block-id");
+          const edgeSide = edgeEl.getAttribute("data-gallery-edge-side");
+          if (edgeBlockId && edgeSide) {
+            if (
+              !hoveredEdge ||
+              hoveredEdge.blockId !== edgeBlockId ||
+              hoveredEdge.side !== edgeSide
+            ) {
+              if (hoveredEdge) {
+                window.dispatchEvent(
+                  new CustomEvent(GALLERY_EDGE_HOVER_EVENT, {
+                    detail: { active: false },
+                  })
+                );
+              }
+              window.dispatchEvent(
+                new CustomEvent(GALLERY_EDGE_HOVER_EVENT, {
+                  detail: {
+                    active: true,
+                    blockId: edgeBlockId,
+                    side: edgeSide,
+                  },
+                })
+              );
+              hoveredEdge = { blockId: edgeBlockId, side: edgeSide };
+            }
+            edgeEl.setAttribute("data-drop-highlight", "1");
+            edgeEl.style.outline = "2px solid #3b82f6";
+            edgeEl.style.outlineOffset = "-2px";
+            return;
+          }
+        } else if (hoveredEdge) {
+          window.dispatchEvent(
+            new CustomEvent(GALLERY_EDGE_HOVER_EVENT, {
+              detail: { active: false },
+            })
+          );
+          hoveredEdge = null;
+        }
+
+        const colEl = under.closest(
           ".bn-block-column, [data-node-type='column']"
         ) as HTMLElement | null;
-        if (col) {
-          col.setAttribute("data-drop-highlight", "1");
-          col.style.outline = "2px solid #3b82f6";
-          col.style.outlineOffset = "-2px";
+        if (colEl) {
+          colEl.setAttribute("data-drop-highlight", "1");
+          colEl.style.outline = "2px solid #3b82f6";
+          colEl.style.outlineOffset = "-2px";
+        }
+
+        const colId = colEl ? readColumnId(colEl) : null;
+        const targetBlockEl = findBlockEl(
+          under,
+          editorRoot,
+          pending.blockId,
+          colEl,
+          colId
+        );
+
+        if (targetBlockEl) {
+          const rect = targetBlockEl.getBoundingClientRect();
+          const midY = rect.top + rect.height / 2;
+          showIndicator(rect, e.clientY < midY ? "before" : "after");
+        } else if (colEl) {
+          // Empty area inside a column — hint that the image will land
+          // at the end of that column's content.
+          showIndicator(colEl.getBoundingClientRect(), "after");
+        } else {
+          // Empty area below the last top-level block.
+          const last = editor.document[editor.document.length - 1];
+          if (last && last.id !== pending.blockId) {
+            const lastEl = document.querySelector(
+              `[data-id="${last.id}"]`
+            ) as HTMLElement | null;
+            if (lastEl) showIndicator(lastEl.getBoundingClientRect(), "after");
+          }
         }
       };
 
@@ -926,55 +1496,268 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
 
         if (!wasDragging) return;
 
+        // Resolve what we're over and grab the editor root FIRST — every
+        // case below needs both of these.
         const under = document.elementFromPoint(
           e.clientX,
           e.clientY
         ) as HTMLElement | null;
-        const col = under?.closest(
+        const editorRoot = editorRootOf();
+
+        const clearSelection = () => {
+          try {
+            const tiptap: any = (editor as any)._tiptapEditor;
+            const sel = tiptap?.state?.selection;
+            if (sel?.node) {
+              const docSize = tiptap.state.doc.content.size;
+              const target = Math.min(docSize, Math.max(0, sel.to + 1));
+              tiptap.commands.setTextSelection(target);
+            }
+          } catch {}
+        };
+
+        if (!editorRoot || !under || !editorRoot.contains(under)) {
+          clearSelection();
+          return;
+        }
+
+        // ── Case 0a: dropped onto a gallery edge "+" zone ──────────
+        // The note-body drag is a synthetic mouse drag, so it can't be
+        // received as a real `drop` on the zone. Instead we detect the
+        // edge zone under the cursor, hand the src off via a custom
+        // event, and let the gallery grow the grid to receive it.
+        const galleryEdgeEl = under.closest(
+          "[data-gallery-edge-side]"
+        ) as HTMLElement | null;
+        if (galleryEdgeEl) {
+          const edgeBlockId = galleryEdgeEl.getAttribute(
+            "data-gallery-block-id"
+          );
+          const edgeSide = galleryEdgeEl.getAttribute(
+            "data-gallery-edge-side"
+          ) as "top" | "bottom" | "left" | "right" | null;
+          const srcBlock = editor.getBlock(blockId);
+          const imgSrc = (srcBlock?.props?.url as string) || "";
+          if (edgeBlockId && edgeSide && imgSrc) {
+            // Suppress the delete-prompt BEFORE the removal fires.
+            // Otherwise handleContentChange runs while the flag is false
+            // and treats the vanishing image block as a real deletion.
+            handlingDeleteRef.current = true;
+
+            window.dispatchEvent(
+              new CustomEvent(GALLERY_EDGE_DROP_EVENT, {
+                detail: {
+                  blockId: edgeBlockId,
+                  side: edgeSide,
+                  src: imgSrc,
+                  fromBlockId: "",
+                  fromRow: -1,
+                  fromCol: -1,
+                },
+              })
+            );
+
+            try {
+              editor.removeBlocks([blockId]);
+            } catch (err) {
+              console.error(
+                "[drag] removeBlocks after edge-fill failed:",
+                err
+              );
+            }
+
+            requestAnimationFrame(() => {
+              try {
+                prevImageUrlsRef.current = new Set(
+                  collectImageUrls(editor.document)
+                );
+              } catch {}
+              handlingDeleteRef.current = false;
+            });
+            clearSelection();
+            return;
+          }
+        }
+
+
+        // ── Case 0: dropped onto a gallery cell ─────────────────────
+        // Hand the image over to the gallery via the shared move event,
+        // then delete the original block. The gallery block listens for
+        // this event and fills the target cell.
+        const galleryCellEl = under.closest(
+          "[data-gallery-block-id]"
+        ) as HTMLElement | null;
+        if (galleryCellEl) {
+          const galleryBlockId = galleryCellEl.getAttribute(
+            "data-gallery-block-id"
+          );
+          const gRow = Number(galleryCellEl.getAttribute("data-gallery-row"));
+          const gCol = Number(galleryCellEl.getAttribute("data-gallery-col"));
+          const srcBlock = editor.getBlock(blockId);
+          const imgSrc = (srcBlock?.props?.url as string) || "";
+          if (
+            galleryBlockId &&
+            Number.isFinite(gRow) &&
+            Number.isFinite(gCol) &&
+            imgSrc
+          ) {
+            window.dispatchEvent(
+              new CustomEvent(GALLERY_MOVE_EVENT, {
+                detail: {
+                  fromBlockId: "",
+                  fromRow: -1,
+                  fromCol: -1,
+                  toBlockId: galleryBlockId,
+                  toRow: gRow,
+                  toCol: gCol,
+                  src: imgSrc,
+                },
+              })
+            );
+            // Suppress the "delete this photo?" prompt during the handoff.
+            // The image block is about to vanish, but the URL now lives
+            // inside the gallery's grid — so we shouldn't treat the
+            // removal as a deletion. Re-snapshot prevImageUrls on the
+            // next frame, after BlockNote has committed the gallery
+            // update, then re-enable detection.
+            handlingDeleteRef.current = true;
+            try {
+              editor.removeBlocks([blockId]);
+            } catch (err) {
+              console.error(
+                "[drag] removeBlocks after gallery-fill failed:",
+                err
+              );
+            }
+            requestAnimationFrame(() => {
+              try {
+                prevImageUrlsRef.current = new Set(
+                  collectImageUrls(editor.document)
+                );
+              } catch {}
+              handlingDeleteRef.current = false;
+            });
+            clearSelection();
+            return;
+          }
+        }
+
+        const block = editor.getBlock(blockId);
+        if (!block) return;
+
+        const snapshot = {
+          type: block.type,
+          props: { ...(block.props as any) },
+        };
+
+        // Single helper for every placement. Insert first; only touch
+        // the original if the insert succeeded; roll the insert back if
+        // the removal fails so we never leave a duplicate behind.
+        const moveTo = (
+          refBlockOrId: any,
+          placement: "before" | "after" | "nested"
+        ): boolean => {
+          let inserted: any[] | null = null;
+          try {
+            inserted = editor.insertBlocks(
+              [snapshot as any],
+              refBlockOrId,
+              placement as any
+            );
+          } catch (err) {
+            console.error("[drag] insertBlocks failed:", err);
+            return false;
+          }
+          if (!inserted || inserted.length === 0) return false;
+          try {
+            editor.removeBlocks([blockId]);
+          } catch (err) {
+            console.error("[drag] removeBlocks failed, undoing insert:", err);
+            try {
+              editor.removeBlocks(inserted.map((b: any) => b.id));
+            } catch {}
+            return false;
+          }
+          return true;
+        };
+
+        const colEl = under.closest(
           ".bn-block-column, [data-node-type='column']"
         ) as HTMLElement | null;
-        if (!col) return;
+        const colId = colEl ? readColumnId(colEl) : null;
 
-        const colId = col.getAttribute("data-id");
-        if (!colId) return;
-
-        const srcEl = document.querySelector(
-          `[data-id="${blockId}"]`
-        ) as HTMLElement | null;
-        if (
-          srcEl?.closest(".bn-block-column, [data-node-type='column']") === col
-        )
-          return;
-
-        try {
-          const block = editor.getBlock(blockId);
-          if (!block) return;
-          editor.insertBlocks(
-            [
-              {
-                type: block.type,
-                props: { ...(block.props as any) },
-              } as any,
-            ],
-            colId,
-            "nested" as any
-          );
-          editor.removeBlocks([blockId]);
-        } catch (err) {
-          console.error("[drag] move into column failed:", err);
+        // ── Case 1: a sibling block is under the cursor ─────────────
+        // Handles reorder-in-place AND cross-column moves uniformly:
+        // BlockNote places the new block as a sibling of `targetBlock`
+        // regardless of which column that target lives in.
+        const targetBlockEl = findBlockEl(
+          under,
+          editorRoot,
+          blockId,
+          colEl,
+          colId
+        );
+        if (targetBlockEl) {
+          const targetId = targetBlockEl.getAttribute("data-id");
+          const targetBlock = targetId ? editor.getBlock(targetId) : null;
+          if (targetBlock) {
+            const rect = targetBlockEl.getBoundingClientRect();
+            const midY = rect.top + rect.height / 2;
+            const side: "before" | "after" =
+            e.clientY < midY ? "before" : "after";
+            if (moveTo(targetBlock, side)) return;
+          }
         }
+
+        // ── Case 2: empty area inside a column ──────────────────────
+        // Append to that column — unless we're already in it, in which
+        // case there's nothing meaningful to reorder to.
+        if (colEl) {
+          const srcEl = document.querySelector(
+            `[data-id="${blockId}"]`
+          ) as HTMLElement | null;
+          const srcCol = srcEl?.closest(
+            ".bn-block-column, [data-node-type='column']"
+          );
+          if (colId && srcCol !== colEl) {
+            if (moveTo(colId, "nested")) return;
+          }
+          clearSelection();
+          return;
+        }
+
+        // ── Case 3: empty area below the last block ─────────────────
+        const last = editor.document[editor.document.length - 1];
+        if (last && last.id !== blockId) {
+          if (moveTo(last, "after")) return;
+        }
+
+        clearSelection();
       };
 
       const onDragStart = (e: DragEvent) => {
         const target = e.target as HTMLElement;
-        if (target.tagName === "IMG" && el.contains(target)) {
+        if (target.tagName !== "IMG") return;
+        if (!el.contains(target)) return;
+        // Let gallery cells start their own native drags.
+        if (target.closest("[data-gallery-block-id]")) return;
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+      };
+
+      const onDrop = (e: DragEvent) => {
+        if (customDragActive) {
           e.preventDefault();
+          e.stopPropagation();
+          e.stopImmediatePropagation();
         }
       };
 
       el.addEventListener("contextmenu", onContextMenu);
       el.addEventListener("mousedown", onMouseDown);
       el.addEventListener("dragstart", onDragStart, true);
+      el.addEventListener("drop", onDrop, true);
       document.addEventListener("mousemove", onMouseMove);
       document.addEventListener("mouseup", onMouseUp);
 
@@ -982,6 +1765,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         el.removeEventListener("contextmenu", onContextMenu);
         el.removeEventListener("mousedown", onMouseDown);
         el.removeEventListener("dragstart", onDragStart, true);
+        el.removeEventListener("drop", onDrop, true);
         document.removeEventListener("mousemove", onMouseMove);
         document.removeEventListener("mouseup", onMouseUp);
         cleanup();
@@ -1009,7 +1793,8 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         const rawBody = await blocksToNoteBody(editor, editor.document);
         const withImgs = markdownImagesToRelativePaths(rawBody, noteDirOf(path));
         const withVideos = videoSrcsToRelativePaths(withImgs, noteDirOf(path));
-        const body = dmarchiveSrcsToRelativePaths(withVideos, noteDirOf(path));
+        const withDm = dmarchiveSrcsToRelativePaths(withVideos, noteDirOf(path));
+        const body = imageGalleryToRelativePaths(withDm, noteDirOf(path));
         const wordCount = countWords(body);
         onWordCountChange?.(wordCount);
 
@@ -1080,13 +1865,19 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
     };
 
     const insertImageBlocks = useCallback(
-      (urls: string[]) => {
+      (
+        urls: string[],
+        refId?: string | null,
+        placement?: "before" | "after" | "nested"
+      ) => {
         if (!editor || urls.length === 0) return;
         insertBlocksSmart(
           urls.map((url) => ({
             type: "image",
             props: { url, caption: "" },
-          }))
+          })),
+          refId,
+          placement
         );
       },
       [editor, insertBlocksSmart]
@@ -1147,6 +1938,178 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       [path, insertBlocksSmart]
     );
 
+    const saveAndInsertFilePaths = useCallback(
+      async (paths: string[], target?: DropTarget | null) => {
+        // ── Images ────────────────────────────────────────────────
+        const imageUrls: string[] = [];
+        for (const p of paths) {
+          if (!IMAGE_EXT_RE.test(p)) continue;
+          try {
+            const dest = await saveImageToNoteAssets(path, p);
+            imageUrls.push(convertFileSrc(dest));
+          } catch (e) {
+            console.error("[paste] save image from path failed:", p, e);
+          }
+        }
+
+        if (imageUrls.length > 0) {
+          if (target?.kind === "gallery" && imageUrls[0]) {
+            // Gallery cells hold one image each. Fill the cell under the
+            // cursor with the first image; any extra images fall through
+            // to the default insert path so nothing is silently dropped.
+            window.dispatchEvent(
+              new CustomEvent(GALLERY_MOVE_EVENT, {
+                detail: {
+                  fromBlockId: "",
+                  fromRow: -1,
+                  fromCol: -1,
+                  toBlockId: target.blockId,
+                  toRow: target.row,
+                  toCol: target.col,
+                  src: imageUrls[0],
+                },
+              })
+            );
+            if (imageUrls.length > 1) {
+              insertImageBlocks(imageUrls.slice(1), null);
+            }
+          } else if (target?.kind === "insert") {
+            insertImageBlocks(imageUrls, target.refId, target.placement);
+          } else {
+            insertImageBlocks(imageUrls, null);
+          }
+        }
+
+        // ── Videos ────────────────────────────────────────────────
+        for (const p of paths) {
+          if (!VIDEO_EXT_RE.test(p)) continue;
+          try {
+            const dest = await saveFileToNoteAssets(path, p);
+            const url = convertFileSrc(dest);
+            const fileName = dest.split(/[/\\]/).pop() || "video";
+            insertBlocksSmart(
+              [{ type: "video", props: { src: url, caption: "", fileName } }],
+              target?.kind === "insert" ? target.refId : null,
+              target?.kind === "insert" ? target.placement : undefined
+            );
+          } catch (e) {
+            console.error("[paste] save video from path failed:", p, e);
+          }
+        }
+      },
+      [path, insertImageBlocks, insertBlocksSmart]
+    );
+
+    // ── OS file drag-and-drop ────────────────────────────────────────
+    // Tauri delivers OS-level drops (Nemo, Nautilus, Dolphin, Thunar,
+    // Windows Explorer, Finder) via `onDragDropEvent`, bypassing the
+    // webview's blocked native drop. We resolve the drop point to a
+    // specific editor position so images land where the cursor was,
+    // not always at the end of the document.
+    useEffect(() => {
+      if (isLoading) return;
+      let unlisten: (() => void) | null = null;
+      let cancelled = false;
+
+      const editorRoot = () =>
+      (wrapperRef.current?.querySelector(".bn-editor") as HTMLElement | null) ||
+      (wrapperRef.current?.querySelector(".ProseMirror") as HTMLElement | null);
+
+      const clientCoordsOf = (payload: any) => {
+        const pos = payload?.position;
+        if (!pos) return null;
+        const dpr = window.devicePixelRatio || 1;
+        return { x: pos.x / dpr, y: pos.y / dpr };
+      };
+
+      (async () => {
+        try {
+          const win = getCurrentWindow();
+          const un = await win.onDragDropEvent((event) => {
+            const payload: any = event.payload;
+            const t = payload?.type;
+
+            if (t === "leave" || t === "drop") {
+              setDragOverlay(null);
+            }
+
+            if (t === "enter" || t === "over") {
+              const c = clientCoordsOf(payload);
+              if (!c) return;
+              const root = editorRoot();
+              const target = root ? resolveDropTarget(c.x, c.y, root) : null;
+
+              // Compute the on-screen indicator.
+              let indicator:
+              | { left: number; top: number; width: number; height?: number }
+              | undefined;
+
+              if (target?.kind === "insert") {
+                const el = root?.querySelector(
+                  `[data-id="${target.refId}"]`
+                ) as HTMLElement | null;
+                if (el) {
+                  const r = el.getBoundingClientRect();
+                  indicator = {
+                    left: r.left,
+                    top:
+                    target.placement === "nested"
+                    ? r.top
+                    : target.placement === "before"
+                    ? r.top - 1
+                    : r.bottom - 1,
+                    width: r.width,
+                    height: target.placement === "nested" ? r.height : 2,
+                  };
+                }
+              } else if (target?.kind === "gallery") {
+                const el = root?.querySelector(
+                  `[data-gallery-block-id="${target.blockId}"][data-gallery-row="${target.row}"][data-gallery-col="${target.col}"]`
+                ) as HTMLElement | null;
+                if (el) {
+                  const r = el.getBoundingClientRect();
+                  indicator = {
+                    left: r.left,
+                    top: r.top,
+                    width: r.width,
+                    height: r.height,
+                  };
+                }
+              }
+
+              setDragOverlay({ x: c.x, y: c.y, target, indicator });
+              return;
+            }
+
+            if (t === "drop") {
+              const c = clientCoordsOf(payload);
+              const root = editorRoot();
+              const target =
+              c && root ? resolveDropTarget(c.x, c.y, root) : null;
+              const paths: string[] = Array.isArray(payload?.paths)
+              ? payload.paths
+              : [];
+              if (paths.length === 0) return;
+
+              void saveAndInsertFilePaths(paths, target);
+              return;
+            }
+          });
+          if (cancelled) un();
+          else unlisten = un;
+        } catch (e) {
+          console.warn("[dragdrop] could not register listener:", e);
+        }
+      })();
+
+      return () => {
+        cancelled = true;
+        if (unlisten) unlisten();
+        setDragOverlay(null);
+      };
+    }, [isLoading, saveAndInsertFilePaths]);
+
+
     useEffect(() => {
       if (isLoading) return;
 
@@ -1160,7 +2123,6 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
 
         const cd = e.clipboardData;
         if (!cd) {
-          console.log("[paste] no clipboardData on event");
           return;
         }
 
@@ -1169,7 +2131,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         if (cd.items && cd.items.length > 0) {
           for (let i = 0; i < cd.items.length; i++) {
             const item = cd.items[i];
-            console.log(`[paste] item[${i}] kind=${item.kind} type=${item.type}`);
+
             if (item.kind !== "file") continue;
             if (!/^image\/|^video\//i.test(item.type)) continue;
             const f = item.getAsFile();
@@ -1179,18 +2141,12 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         if (collected.length === 0 && cd.files && cd.files.length > 0) {
           for (let i = 0; i < cd.files.length; i++) {
             const f = cd.files[i];
-            console.log(
-              `[paste] file[${i}] name=${f.name} type=${f.type} size=${f.size}`
-            );
+
             if (/^image\/|^video\//i.test(f.type)) collected.push(f);
           }
         }
 
-        console.log(
-          "[paste] collected:",
-          collected.length,
-          collected.map((f) => `${f.name || "<clipboard>"} (${f.type}, ${f.size}b)`)
-        );
+
 
         if (collected.length > 0) {
           e.preventDefault();
@@ -1202,52 +2158,144 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
           return;
         }
 
+        // ── File-manager + screenshot-tool + URL paste ────────────────
+        // Three cases handled here, in priority order:
+        //
+        //   1. Linux file managers (Nemo, Nautilus, Dolphin, Thunar)
+        //      copy files as a `text/uri-list` payload.
+        //   2. Screenshot tools (Flameshot, Spectacle, GNOME Screenshot)
+        //      put raw PNG bytes on the clipboard.
+        //   3. Plain-text URLs on the clipboard → show the bookmark /
+        //      embed popup.
+        //
+        // WebKitGTK advertises the MIME types but refuses to hand the
+        // page the data, so we fall back to Rust for the actual read.
+
+        const uriListSync = cd.getData("text/uri-list");
+        const plainSync = cd.getData("text/plain")?.trim() || "";
+
+        const tryFromRaw = (raw: string): boolean => {
+          const filePaths = parseUriList(raw);
+          if (filePaths.length === 0) return false;
+          e.preventDefault();
+          e.stopPropagation();
+          void saveAndInsertFilePaths(filePaths);
+          return true;
+        };
+
+        // Sync path — works on WebKit/macOS/Windows. On WebKitGTK both
+        // calls return "" so we fall through to the async chain.
+        if (uriListSync && tryFromRaw(uriListSync)) return;
+        if (/^file:\/\//i.test(plainSync) && tryFromRaw(plainSync)) return;
+
+          // Does the paste event advertise a URI list? WebKitGTK always
+          // does for a Nemo-style copy, even though it returns "".
+          const hasUriListItem = !!(cd.items && Array.from(cd.items).some(
+            (it) => it.kind === "string" && it.type === "text/uri-list"
+          ));
+
+        // ── URL → bookmark / embed popup ──────────────────────────────
+        // Runs synchronously so the coordinate lookup uses the current
+        // selection. Skip it if the paste is a file-manager copy.
+        if (!hasUriListItem && URL_RE.test(plainSync)) {
+          const tiptap: any = (editor as any)._tiptapEditor;
+          if (tiptap) {
+            const sel = tiptap.state.selection;
+            if (sel && sel.empty) {
+              e.preventDefault();
+              e.stopPropagation();
+              const { from } = sel;
+              let coords: { left: number; bottom: number } = { left: 40, bottom: 40 };
+              try {
+                const c = tiptap.view.coordsAtPos(from);
+                coords = { left: c.left, bottom: c.bottom };
+              } catch {}
+              setPasteMenu({
+                url: plainSync,
+                x: Math.min(Math.max(8, coords.left), window.innerWidth - 260),
+                           y: Math.min(coords.bottom + 6, window.innerHeight - 160),
+              });
+              return;
+            }
+          }
+        }
+
+        // ── Async chain ──────────────────────────────────────────────
+        // File-manager copy (uri-list present) or a binary paste with
+        // no text (screenshot tool). Try each strategy in order; the
+        // first that finds something wins.
+        const likelyBinaryOrFile = hasUriListItem || plainSync.length === 0;
+        if (likelyBinaryOrFile) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+
         void (async () => {
+          // Strategy 1: item.getAsString() per string item. Works on
+          // some WebKitGTK builds; harmless where it doesn't.
+          const stringItems: DataTransferItem[] = [];
+          if (cd.items && cd.items.length > 0) {
+            for (let i = 0; i < cd.items.length; i++) {
+              const item = cd.items[i];
+              if (item.kind !== "string") continue;
+              if (item.type === "text/uri-list" || item.type === "text/plain") {
+                stringItems.push(item);
+              }
+            }
+          }
+          stringItems.sort((a, b) =>
+          a.type === "text/uri-list" ? -1 : b.type === "text/uri-list" ? 1 : 0
+          );
+          for (const item of stringItems) {
+            const raw = await new Promise<string>((resolve) => {
+              try {
+                item.getAsString((s) => resolve(s || ""));
+              } catch {
+                resolve("");
+              }
+            });
+            const filePaths = parseUriList(raw);
+            if (filePaths.length > 0) {
+              await saveAndInsertFilePaths(filePaths);
+              return;
+            }
+          }
+
+          // Strategy 2: Rust URI-list read. The one that works on
+          // WebKitGTK for Nemo-style copies.
+          try {
+            const raw = await invoke<string>("read_clipboard_uri_list");
+            const filePaths = parseUriList(raw);
+            if (filePaths.length > 0) {
+              await saveAndInsertFilePaths(filePaths);
+              return;
+            }
+          } catch (err) {
+            console.warn("[paste] rust URI-list fallback failed:", err);
+          }
+
+          // Strategy 3: Rust image-bytes read. Screenshot tools put
+          // raw pixels on the clipboard, not a file path.
           try {
             const pngBytes = await invoke<number[] | null>(
               "read_clipboard_image_png"
             );
             if (!pngBytes || pngBytes.length === 0) return;
-            e.preventDefault();
-            e.stopPropagation();
             const uint8 = new Uint8Array(pngBytes);
             const name = `pasted-${Date.now()}.png`;
             const dest = await writeImageBytesToNoteAssets(path, uint8, name);
             const url = convertFileSrc(dest);
             insertImageBlocks([url]);
           } catch (err) {
-            console.error("[paste] Rust clipboard fallback failed:", err);
+            console.warn("[paste] rust image fallback failed:", err);
           }
         })();
-
-        const text = cd.getData("text/plain")?.trim() || "";
-        if (!URL_RE.test(text)) return;
-
-        const tiptap: any = (editor as any)._tiptapEditor;
-        if (!tiptap) return;
-        const sel = tiptap.state.selection;
-        if (!sel || !sel.empty) return;
-
-        e.preventDefault();
-        e.stopPropagation();
-
-        const { from } = sel;
-        let coords: { left: number; bottom: number } = { left: 40, bottom: 40 };
-        try {
-          const c = tiptap.view.coordsAtPos(from);
-          coords = { left: c.left, bottom: c.bottom };
-        } catch {}
-
-        setPasteMenu({
-          url: text,
-          x: Math.min(Math.max(8, coords.left), window.innerWidth - 260),
-          y: Math.min(coords.bottom + 6, window.innerHeight - 160),
-        });
       };
 
       document.addEventListener("paste", handler, true);
       return () => document.removeEventListener("paste", handler, true);
-    }, [isLoading, saveAndInsertImageFiles, saveAndInsertVideoFiles, editor]);
+    }, [isLoading, saveAndInsertImageFiles, saveAndInsertVideoFiles,
+        saveAndInsertFilePaths, editor]);
 
     useEffect(() => {
       if (!pasteMenu) return;
@@ -1308,6 +2356,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
                 icon: meta.favicon || "",
                 image: meta.image || "",
                 mode: linkMode,
+                meta: (meta as any).meta || "",
               },
             });
           }
@@ -1343,19 +2392,90 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
 
           const withImgs = markdownImagesToAssetUrls(body, noteDirOf(path));
           const withVideos = videoSrcsToAssetUrls(withImgs, noteDirOf(path));
-          const withDmArchives = dmarchiveSrcsToAssetUrls(
+                    const withDmArchives = dmarchiveSrcsToAssetUrls(
             withVideos,
             noteDirOf(path)
           );
-          const blocks = await noteBodyToBlocks(editor, withDmArchives);
+          const withGalleries = imageGalleryToAssetUrls(
+            withDmArchives,
+            noteDirOf(path)
+          );
+          const blocks = await noteBodyToBlocks(editor, withGalleries);
           if (isMounted && editor) {
             editor.replaceBlocks(
               editor.document,
               blocks.length ? blocks : [{ type: "paragraph" }]
             );
+            // Nuke the undo/redo stack that the initial `replaceBlocks`
+            // populated. Without this, Ctrl+Z eventually unwinds past the
+            // load transaction and lands on an empty doc, which looks
+            // like the note "deleted itself."
+            try {
+              const tiptap: any = (editor as any)._tiptapEditor;
+              tiptap?.commands?.clearHistory?.();
+            } catch {}
+            // BlockNote auto-selects the first block after replaceBlocks.
+            // If that block is a void block like our gallery, it stays
+            // NodeSelected — and blur() only removes focus, it doesn't
+            // clear the selection. We have to move the *selection* into
+            // a real text block.
+            try {
+              const tiptap: any = (editor as any)._tiptapEditor;
+              const state = tiptap?.state;
+              if (state?.selection?.node) {
+                const findTextblockId = (bs: any[]): string | null => {
+                  for (const b of bs) {
+                    if (b.type === "paragraph" || b.type === "heading") {
+                      return b.id;
+                    }
+                    if (Array.isArray(b.children)) {
+                      const found = findTextblockId(b.children);
+                      if (found) return found;
+                    }
+                  }
+                  return null;
+                };
+                let textblockId = findTextblockId(editor.document);
+                if (!textblockId) {
+                  // All-void doc (e.g. just a gallery). Insert a trailing
+                  // empty paragraph purely in memory — it won't survive
+                  // serialization since empty paragraphs are stripped —
+                  // but it gives us a valid cursor position and clears
+                  // the NodeSelection.
+                  const last = editor.document[editor.document.length - 1];
+                  if (last) {
+                    try {
+                      const inserted = editor.insertBlocks(
+                        [{ type: "paragraph" }],
+                        last.id,
+                        "after"
+                      );
+                      textblockId = inserted?.[0]?.id ?? null;
+                    } catch {}
+                  }
+                }
+                if (textblockId) {
+                  try {
+                    editor.setTextCursorPosition(textblockId, "start");
+                  } catch {}
+                }
+              }
+            } catch {}
             prevImageUrlsRef.current = new Set(
               collectImageUrls(editor.document)
             );
+            try {
+              loadedDocFingerprintRef.current = JSON.stringify(
+                editor.document.map((b: any) => ({
+                  type: b.type,
+                  props: b.props || {},
+                  content: b.content || [],
+                  children: b.children || [],
+                }))
+              );
+            } catch {
+              loadedDocFingerprintRef.current = null;
+            }
             onLoaded?.();
           }
         } catch (e) {
@@ -1504,9 +2624,20 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
     const handleContentChange = () => {
       if (isLoading) return;
 
+      const currentUrls = collectImageUrls(editor.document);
+      const currentSet = new Set(currentUrls);
+
+      // Undo/redo rewrites the document. Even if an image block came back
+      // or went away in the process, that's history navigation, not a
+      // user-initiated delete. Just resync our snapshot and move on —
+      // no prompt.
+      if (undoRedoRef.current) {
+        prevImageUrlsRef.current = currentSet;
+        scheduleSave();
+        return;
+      }
+
       if (!handlingDeleteRef.current) {
-        const currentUrls = collectImageUrls(editor.document);
-        const currentSet = new Set(currentUrls);
         const missing: string[] = [];
         for (const url of prevImageUrlsRef.current) {
           if (!currentSet.has(url)) missing.push(url);
@@ -1624,6 +2755,15 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         title: "Upload image",
         subtext: "Insert an image from your computer",
         onItemClick: async () => {
+          // Capture the block the user was on *before* the file picker opens.
+          // The picker steals focus, and by the time it returns BlockNote's
+          // `getTextCursorPosition()` may be stale — which is why images
+          // were landing at the root instead of inside the current column.
+          let refId: string | null = null;
+          try {
+            refId = editor.getTextCursorPosition?.().block?.id ?? null;
+          } catch {}
+
           try {
             const picked = await open({
               multiple: true,
@@ -1646,7 +2786,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
                 console.error("[image] save failed:", e);
               }
             }
-            if (urls.length > 0) insertImageBlocks(urls);
+            if (urls.length > 0) insertImageBlocks(urls, refId);
           } catch (e) {
             console.error("[image] picker failed:", e);
           }
@@ -1655,7 +2795,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         group: "Basic blocks",
         icon: <span className="text-base">🖼️</span>,
       }),
-      [path, insertImageBlocks]
+      [editor, path, insertImageBlocks]
     );
 
     const insertVideoMenuItem = useCallback(
@@ -1663,6 +2803,11 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         title: "Upload video",
         subtext: "Insert a video from your computer",
         onItemClick: async () => {
+          let refId: string | null = null;
+          try {
+            refId = editor.getTextCursorPosition?.().block?.id ?? null;
+          } catch {}
+
           try {
             const picked = await open({
               multiple: false,
@@ -1677,12 +2822,15 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
             const dest = await saveFileToNoteAssets(path, picked);
             const url = convertFileSrc(dest);
             const fileName = dest.split(/[/\\]/).pop() || "video";
-            insertBlocksSmart([
-              {
-                type: "video",
-                props: { src: url, caption: "", fileName },
-              },
-            ]);
+            insertBlocksSmart(
+              [
+                {
+                  type: "video",
+                  props: { src: url, caption: "", fileName },
+                },
+              ],
+              refId
+            );
           } catch (e) {
             console.error("[video] picker failed:", e);
           }
@@ -1691,7 +2839,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         group: "Basic blocks",
         icon: <span className="text-base">🎬</span>,
       }),
-      [path, insertBlocksSmart]
+      [editor, path, insertBlocksSmart]
     );
 
     const insertScriptureMenuItem = useCallback(
@@ -1699,15 +2847,20 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         title: "Bible verse",
         subtext: "Look up a KJV verse",
         onItemClick: () => {
-          insertBlocksSmart([
-            { type: "scripture", props: { reference: "", text: "" } },
-          ]);
+          let refId: string | null = null;
+          try {
+            refId = editor.getTextCursorPosition?.().block?.id ?? null;
+          } catch {}
+          insertBlocksSmart(
+            [{ type: "scripture", props: { reference: "", text: "" } }],
+            refId
+          );
         },
         aliases: ["scripture", "bible", "verse", "kjv"],
         group: "Basic blocks",
         icon: <span className="text-base">📖</span>,
       }),
-      [insertBlocksSmart]
+      [editor, insertBlocksSmart]
     );
 
     const insertDmArchiveMenuItem = useCallback(
@@ -1716,20 +2869,27 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         subtext: "Collapsible archive of chat screenshots",
         onItemClick: () => {
           try {
+            let refId: string | null = null;
+            try {
+              refId = editor.getTextCursorPosition?.().block?.id ?? null;
+            } catch {}
             const today = new Date().toISOString().slice(0, 10);
-            const inserted = insertBlocksSmart([
-              {
-                type: "dmarchive",
-                props: {
-                  platform: "discord",
-                  who: "",
-                  date: today,
-                  caption: "",
-                  collapsed: true,
-                  srcs: "",
-                },
-              } as any,
-            ]);
+            const inserted = insertBlocksSmart(
+              [
+                {
+                  type: "dmarchive",
+                  props: {
+                    platform: "discord",
+                    who: "",
+                    date: today,
+                    caption: "",
+                    collapsed: true,
+                    srcs: "",
+                  },
+                } as any,
+              ],
+              refId
+            );
             if (inserted?.[0]?.id) {
               try {
                 editor.setTextCursorPosition(inserted[0].id, "end");
@@ -1750,6 +2910,38 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       [editor, insertBlocksSmart]
     );
 
+    const insertImageGalleryMenuItem = useCallback(
+      () => ({
+        title: "Photo gallery",
+        subtext: "Grid of photos with drop-in slots",
+        onItemClick: () => {
+          let refId: string | null = null;
+          try {
+            refId = editor.getTextCursorPosition?.().block?.id ?? null;
+          } catch {}
+          insertBlocksSmart(
+            [
+              {
+                type: "imagegallery",
+                props: {
+                  grid: JSON.stringify([[null]]),
+                  gap: 8,
+                },
+              } as any,
+            ],
+            refId
+          );
+        },
+        aliases: [
+          "gallery", "imagegallery", "photo", "grid", "album",
+          "photos", "pictures", "collage",
+        ],
+        group: "Basic blocks",
+        icon: <span className="text-base">🖼️</span>,
+      }),
+      [editor, insertBlocksSmart]
+    );
+
     const getSlashMenuItems = useMemo(() => {
       return async (query: string) => {
         const defaultItems = getDefaultReactSlashMenuItems(editor);
@@ -1763,6 +2955,8 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
           insertImageMenuItem(),
           insertVideoMenuItem(),
           insertScriptureMenuItem(),
+          insertImageGalleryMenuItem(),
+
         ];
         if (lastBasicBlockIndex !== -1) {
           defaultItems.splice(lastBasicBlockIndex + 1, 0, ...extra);
@@ -1775,7 +2969,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         );
       };
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [editor, openLinkPicker, insertImageMenuItem, insertVideoMenuItem, insertScriptureMenuItem, insertDmArchiveMenuItem]);
+    }, [editor, openLinkPicker, insertImageMenuItem, insertVideoMenuItem, insertScriptureMenuItem, insertDmArchiveMenuItem, insertImageGalleryMenuItem]);
 
     useEffect(() => {
       if (!editor) return;
@@ -1945,6 +3139,44 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
               getItems={getSlashMenuItems}
             />
           </BlockNoteView>
+
+          {dragOverlay && (
+            <>
+            {/* Position indicator: a blue line for insert targets, a
+              highlighted border for gallery cells. */}
+              {dragOverlay.indicator && (
+                <div
+                className={
+                  dragOverlay.target?.kind === "gallery"
+                  ? "fixed z-[450] pointer-events-none rounded-md ring-2 ring-blue-400 bg-blue-500/15 transition-[top,left,width,height] duration-75"
+                  : dragOverlay.target?.kind === "insert" &&
+                  dragOverlay.target.placement === "nested"
+                  ? "fixed z-[450] pointer-events-none rounded-md ring-2 ring-blue-400/70 transition-[top,left,width,height] duration-75"
+                  : "fixed z-[450] pointer-events-none bg-blue-400 shadow-[0_0_8px_rgba(96,165,250,0.9)] rounded-sm transition-[top,left,width] duration-75"
+                }
+                style={{
+                  left: dragOverlay.indicator.left,
+                  top: dragOverlay.indicator.top,
+                  width: dragOverlay.indicator.width,
+                  height: dragOverlay.indicator.height,
+                }}
+                />
+              )}
+
+              {/* Floating badge that follows the cursor. */}
+              <div
+              className="fixed z-[451] pointer-events-none px-2.5 py-1 rounded-md bg-[#1e2327] border border-blue-500/60 text-[11px] text-blue-100 shadow-2xl whitespace-nowrap"
+              style={{
+                left: dragOverlay.x + 14,
+                top: dragOverlay.y + 14,
+              }}
+              >
+              Drop to add
+              </div>
+              </>
+          )}
+
+
 
           {imageMenu && (
             <div

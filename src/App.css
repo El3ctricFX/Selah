@@ -171,3 +171,21 @@ body.bn-hide-file-toolbar .bn-formatting-toolbar,
 body.bn-hide-file-toolbar .bn-toolbar {
   display: none !important;
 }
+
+/* The image gallery block should always fill its container, whether
+ *  or not BlockNote has it in a NodeSelection. Without this, selection
+ *  styling can apply padding that makes the gallery appear narrower. */
+.bn-block-content[data-content-type="imagegallery"] {
+  width: 100%;
+}
+
+html, body, #root {
+  background-color: #0f1315 !important;
+  color: #d1d5db !important;
+  margin: 0;
+  padding: 0;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  color-scheme: dark;   /* ← add this one line */
+}

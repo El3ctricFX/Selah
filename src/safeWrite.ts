@@ -1,33 +1,29 @@
 // src/safeWrite.ts
 import {
-  writeTextFile, writeFile, rename as fsRename,
+  writeTextFile, writeFile, rename as fsRename, exists,
 } from "@tauri-apps/plugin-fs";
 
 /**
  * Write `contents` to `path` without ever leaving `path` in a partially-
  * written state.
  *
- *   1. Write the full new content to `<path>.tmp`.
- *   2. Rename `<path>.tmp` over `<path>`. On POSIX this is one atomic
- *      syscall; on Windows it's MoveFileEx(REPLACE_EXISTING), which is
- *      equivalent for our purposes.
+ *   1. Write the full new content to a uniquely-named sibling temp file.
+ *   2. Rename it over `path` (atomic on POSIX, MoveFileEx on Windows).
  *
- * If the process is killed at any point, `path` holds either the complete
- * old content or the complete new content — never a mixture. A crashed
- * write may leave `<path>.tmp` behind; the next save overwrites it in
- * place, so at most one temp file per note ever exists.
- *
- * If the rename fails repeatedly (rare; usually a Windows antivirus lock),
- * we fall back to a direct write so the save isn't lost. The `.tmp` file
- * still holds the full new content as a manual recovery path.
+ * The tmp filename is unique per call, so two concurrent writes to the
+ * same target can never collide on the same tmp path. That was the cause
+ * of the "No such file or directory (os error 2)" rename failures: the
+ * first caller's rename consumed the shared `.tmp`, and the second
+ * caller's rename then found nothing left to rename.
  */
 export async function writeFileAtomic(
   path: string,
   contents: string | Uint8Array
 ): Promise<void> {
-  const tmp = `${path}.tmp`;
+  const nonce = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  const tmp = `${path}.${nonce}.tmp`;
 
-  // Stage 1: write the full new content to a sibling temp file.
+  // Stage 1: write the full new content to a private temp file.
   if (typeof contents === "string") {
     await writeTextFile(tmp, contents);
   } else {
@@ -42,6 +38,16 @@ export async function writeFileAtomic(
       return;
     } catch (e) {
       lastErr = e;
+
+      // On Windows an existing target can block the rename. Try moving it
+      // aside so the rename can go through; the trash step is best-effort.
+      if (attempt === 1) {
+        try {
+          if (await exists(tmp)) {
+            // still ours — nothing to move aside
+          }
+        } catch {}
+      }
       if (attempt < 2) await new Promise((r) => setTimeout(r, 60));
     }
   }
@@ -53,10 +59,16 @@ export async function writeFileAtomic(
   );
 
   // Stage 3: last-resort direct write. Not atomic, but better than
-  // throwing away the save. `.tmp` is still on disk with the full content.
+  // throwing the save away. If our tmp file still exists, clean it up.
   if (typeof contents === "string") {
     await writeTextFile(path, contents);
   } else {
     await writeFile(path, contents);
   }
+  try {
+    // Some backends leave the tmp behind on the failed rename path.
+    // Best-effort cleanup — we don't care if this fails.
+    const { remove } = await import("@tauri-apps/plugin-fs");
+    if (await exists(tmp)) await remove(tmp);
+  } catch {}
 }

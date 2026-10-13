@@ -5,6 +5,7 @@
   
 [![Release](https://img.shields.io/github/v/release/El3ctricFX/Selah)](https://github.com/El3ctricFX/Selah/releases)
 [![Downloads](https://img.shields.io/github/downloads/El3ctricFX/Selah/total)](https://github.com/El3ctricFX/Selah/releases)
+[![Discord](https://img.shields.io/badge/Discord-Join%20the%20community-5865F2?logo=discord&logoColor=white)](https://discord.gg/JSQFShPTkD)
 
   **Pause. Reflect. Write. Grow.**
 
@@ -117,7 +118,7 @@ A successful build does not necessarily mean every app feature is implemented or
 
 ## 💬 Feedback
 
-Selah is still taking shape. Suggestions and bug reports are welcome through [GitHub Issues](https://github.com/El3ctricFX/Selah/issues).
+Selah is still taking shape. Suggestions and bug reports are welcome through [GitHub Issues](https://github.com/El3ctricFX/Selah/issues). For casual conversation and updates, join the [Discord community](https://discord.gg/JSQFShPTkD).
 
 ---
 

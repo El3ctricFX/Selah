@@ -9,10 +9,13 @@ import JournalView from "./JournalView";
 import GalleryView from "./GalleryView";
 import AbbaView from "./AbbaView";
 import NotesView from "./NotesView";
+import HomeView from "./HomeView";
+import SettingsModal from "./SettingsModal";
 import "./App.css";
 import VaultWelcome from "./VaultWelcome";
 import { useRecentVaults } from "./useRecentVaults";
 import { flushAll } from "./flushRegistry";
+import { migrateVaultPaths } from "./vaultMigration";
 
 type JournalFocus = { year: number; month: number; day: number };
 
@@ -51,6 +54,7 @@ export default function App() {
   const [journalNonce, setJournalNonce] = useState(0);
   const [focusMode, setFocusMode] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const {
     vaults: recentVaults,
@@ -81,22 +85,42 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // Intercept window close. Ask every mounted editor to save before we
-  // actually shut down, so the last few seconds of typing are never lost.
+
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     let cancelled = false;
+    let closing = false;
+
     (async () => {
       try {
         const win = getCurrentWindow();
         const un = await win.onCloseRequested(async (event) => {
           event.preventDefault();
+
+          if (closing) {
+            try {
+              await win.destroy();
+            } catch (e) {
+              console.error("[app] forced destroy failed:", e);
+            }
+            return;
+          }
+          closing = true;
+
           try {
-            await flushAll();
+            await Promise.race([
+              flushAll(),
+              new Promise<void>((resolve) => setTimeout(resolve, 2500)),
+            ]);
           } catch (e) {
             console.error("[app] flush on close failed:", e);
           }
-          await win.destroy();
+
+          try {
+            await win.destroy();
+          } catch (e) {
+            console.error("[app] destroy failed:", e);
+          }
         });
         if (cancelled) un();
         else unlisten = un;
@@ -104,11 +128,19 @@ export default function App() {
         console.warn("[app] close handler not registered:", e);
       }
     })();
+
     return () => {
       cancelled = true;
       if (unlisten) unlisten();
     };
   }, []);
+
+  useEffect(() => {
+    if (!vaultPath) return;
+    migrateVaultPaths(vaultPath).catch((e) =>
+    console.warn("[app] migration failed:", e)
+    );
+  }, [vaultPath]);
 
   const handleSelectVault = async () => {
     const selected = await open({
@@ -176,6 +208,27 @@ export default function App() {
     }
 
     setActiveView({ kind: "note", path, name });
+  };
+
+  // Shared handler so both the sidebar and the homepage quick-action cards
+  // route to the right view.
+  const openCategoryView = (cat: Category) => {
+    setActiveCategoryId(cat.id);
+    if (cat.mode === "abba") {
+      setActiveView({ kind: "abba", dir: dirOf(cat), name: cat.name, icon: cat.icon });
+    } else if (cat.mode === "gallery") {
+      setActiveView({ kind: "gallery", dir: dirOf(cat), name: cat.name });
+    } else if (cat.mode === "notes") {
+      setActiveView({
+        kind: "notes",
+        dir: dirOf(cat),
+        name: cat.name,
+        icon: cat.icon,
+        categoryId: cat.id,
+      });
+    } else {
+      setActiveView(null);
+    }
   };
 
   return (
@@ -271,6 +324,8 @@ export default function App() {
               });
             }}
             onSwitchVault={handleSelectVault}
+            onOpenSettings={() => setSettingsOpen(true)}
+            onGoHome={() => setActiveView(null)}
             onCollapse={() => setSidebarCollapsed(true)}
           />
         )}
@@ -288,9 +343,16 @@ export default function App() {
         )}
 
         {!activeView ? (
-          <div className="flex flex-col items-center justify-center h-full text-gray-500">
-            <h2 className="text-xl">Pick something from the sidebar</h2>
-          </div>
+          <HomeView
+            vaultPath={vaultPath}
+            onOpenNoteByPath={openNoteByPath}
+            onOpenCategory={openCategoryView}
+            onOpenJournalToday={(cat) => {
+              setActiveCategoryId(cat.id);
+              setJournalNonce((n) => n + 1);
+              setActiveView({ kind: "journal", dir: dirOf(cat) });
+            }}
+          />
         ) : activeView.kind === "note" ? (
           <Editor
             activeNote={activeView}
@@ -333,6 +395,12 @@ export default function App() {
           />
         )}
       </div>
+
+      <SettingsModal
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        vaultPath={vaultPath}
+      />
     </div>
   );
 }

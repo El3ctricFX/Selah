@@ -1,13 +1,18 @@
 // src/Bookmark.tsx
 import { createReactBlockSpec } from "@blocknote/react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Bookmark as BookmarkIcon,
   ExternalLink,
   Play as PlayIcon,
+  Trash2,
+  Copy,
 } from "lucide-react";
 import { getEmbedInfo } from "./embeds";
+import { useNoteMode } from "./useNoteMode";
+import { useModal } from "./Modal";
 
 export const createBookmark = createReactBlockSpec(
   {
@@ -19,6 +24,7 @@ export const createBookmark = createReactBlockSpec(
       icon: { default: "" },
       image: { default: "" },
       mode: { default: "bookmark" },
+      meta: { default: "" },
     },
     content: "none",
   },
@@ -30,12 +36,77 @@ export const createBookmark = createReactBlockSpec(
       const description = (live.props.description as string) || "";
       const icon = (live.props.icon as string) || "";
       const image = (live.props.image as string) || "";
+      const meta = (live.props.meta as string) || "";
       const mode = ((live.props.mode as string) || "bookmark") as
         | "bookmark"
         | "embed";
 
       const [iconError, setIconError] = useState(false);
       const [imageError, setImageError] = useState(false);
+
+
+      const { mode: noteMode } = useNoteMode();
+      const isEdit = noteMode === "edit";
+      const { modal, confirmAsync } = useModal();
+
+      const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
+      const ctxMenuRef = useRef<HTMLDivElement>(null);
+
+      useEffect(() => {
+        if (!ctxMenu) return;
+        const onDown = (e: MouseEvent) => {
+          if (ctxMenuRef.current?.contains(e.target as Node)) return;
+          setCtxMenu(null);
+        };
+        const onKey = (e: KeyboardEvent) => {
+          if (e.key === "Escape") setCtxMenu(null);
+        };
+        document.addEventListener("mousedown", onDown);
+        document.addEventListener("keydown", onKey);
+        return () => {
+          document.removeEventListener("mousedown", onDown);
+          document.removeEventListener("keydown", onKey);
+        };
+      }, [ctxMenu]);
+
+      const handleContextMenu = (e: React.MouseEvent) => {
+        if (!isEdit) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const W = 240;
+        const H = 180;
+        setCtxMenu({
+          x: Math.min(e.clientX, window.innerWidth - W - 8),
+                   y: Math.min(e.clientY, window.innerHeight - H - 8),
+        });
+      };
+
+      const openInBrowser = () => {
+        setCtxMenu(null);
+        if (url) openUrl(url).catch(console.error);
+      };
+
+      const copyBookmarkUrl = async () => {
+        setCtxMenu(null);
+        try {
+          await navigator.clipboard.writeText(url);
+        } catch (err) {
+          console.error("[bookmark] copy failed:", err);
+        }
+      };
+
+      const deleteBlock = async () => {
+        setCtxMenu(null);
+        const ok = await confirmAsync(
+          `Delete "${title || hostname || url || "this bookmark"}"?`
+        );
+        if (!ok) return;
+        try {
+          props.editor.removeBlocks([props.block.id]);
+        } catch (err) {
+          console.error("[bookmark] removeBlocks failed:", err);
+        }
+      };
 
       const embed = getEmbedInfo(url);
       const canReliablyEmbed = !!embed && embed.reliable;
@@ -57,6 +128,61 @@ export const createBookmark = createReactBlockSpec(
         }
       };
 
+
+      const ctxMenuPortal = ctxMenu
+      ? createPortal(
+        <div
+        ref={ctxMenuRef}
+        className="fixed z-[600] bg-[#1e2327] border border-[#2a3136] rounded-md shadow-2xl py-1 w-56"
+        style={{ top: ctxMenu.y, left: ctxMenu.x }}
+        onMouseDown={(e) => e.stopPropagation()}
+        onContextMenu={(e) => e.preventDefault()}
+        >
+        <div
+        className="px-3 pt-1.5 pb-1 text-[10px] uppercase tracking-wider text-gray-500 truncate"
+        title={url}
+        >
+        {title || hostname || "Bookmark"}
+        </div>
+        <button
+        type="button"
+        onClick={openInBrowser}
+        className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
+        >
+        <ExternalLink size={13} /> <span>Open in browser</span>
+        </button>
+        <button
+        type="button"
+        onClick={copyBookmarkUrl}
+        className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
+        >
+        <Copy size={13} /> <span>Copy URL</span>
+        </button>
+        {canReliablyEmbed && (
+          <button
+          type="button"
+          onClick={() => {
+            setCtxMenu(null);
+            setMode(showingEmbed ? "bookmark" : "embed");
+          }}
+          className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2 border-t border-[#2a3136]"
+          >
+          <PlayIcon size={13} />
+          <span>{showingEmbed ? "Show as bookmark" : "Embed"}</span>
+          </button>
+        )}
+        <button
+        type="button"
+        onClick={deleteBlock}
+        className="w-full text-left px-3 py-1.5 text-sm text-red-400 hover:bg-[#2a3136] flex items-center gap-2 border-t border-[#2a3136]"
+        >
+        <Trash2 size={13} /> <span>Delete bookmark</span>
+        </button>
+        </div>,
+        document.body
+      )
+      : null;
+
       const openExternal = (e: React.MouseEvent) => {
         e.preventDefault();
         e.stopPropagation();
@@ -70,10 +196,12 @@ export const createBookmark = createReactBlockSpec(
           : { aspectRatio: `${embed.aspectRatio}` };
 
         return (
+          <>
           <div
             className="my-2 w-full"
             contentEditable={false}
             onMouseDown={(e) => e.stopPropagation()}
+            onContextMenu={handleContextMenu}
           >
             <div className="rounded-md overflow-hidden border border-[#2a3136] bg-[#0f1315] group">
               <div className="flex items-center gap-2 px-2.5 py-1.5 bg-[#161a1d] border-b border-[#2a3136]">
@@ -123,15 +251,20 @@ export const createBookmark = createReactBlockSpec(
               </div>
             </div>
           </div>
+          {ctxMenuPortal}
+          {modal}
+          </>
         );
       }
 
       // ---------- BOOKMARK MODE ----------
       return (
+        <>
         <div
           className="my-2 w-full flex group"
           contentEditable={false}
           onMouseDown={(e) => e.stopPropagation()}
+          onContextMenu={handleContextMenu}
         >
           <div
             onClick={openExternal}
@@ -142,6 +275,11 @@ export const createBookmark = createReactBlockSpec(
               <div className="text-sm text-gray-100 font-medium truncate">
                 {title || url || "Untitled link"}
               </div>
+              {meta && (
+                <div className="text-[11px] text-gray-500 mt-0.5 tabular-nums">
+                  {meta}
+                </div>
+              )}
               {description && (
                 <div className="text-xs text-gray-400 mt-1 leading-relaxed line-clamp-3">
                   {description}
@@ -187,6 +325,9 @@ export const createBookmark = createReactBlockSpec(
             </button>
           )}
         </div>
+        {ctxMenuPortal}
+        {modal}
+        </>
       );
     },
   }

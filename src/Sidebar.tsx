@@ -9,6 +9,7 @@ import {
   ChevronRight, ChevronDown, Settings, Plus, Pencil, Smile, Trash2,
   CalendarDays, Image as ImageIcon, NotebookText, Check, FileText, FolderPlus, X,
   Tag, PanelLeftClose, Church, Sparkles, Folder, FolderOpen,
+  Sliders, LogOut, Home,
 } from 'lucide-react';
 import EmojiPicker, { Theme, EmojiStyle } from 'emoji-picker-react';
 import { useModal } from './Modal';
@@ -48,6 +49,8 @@ interface SidebarProps {
   onOpenAbba: (cat: Category) => void;
   onOpenNotes: (cat: Category) => void;
   onSwitchVault: () => void;
+  onOpenSettings: () => void;
+  onGoHome: () => void;
   onCollapse?: () => void;
 }
 
@@ -136,7 +139,8 @@ export default function Sidebar(props: SidebarProps) {
   const {
     vaultPath, activeCategoryId, activeView,
     onSelectCategory, onOpenJournalDay, onOpenJournalMonth, onOpenJournalToday,
-    onOpenNote, onOpenGallery, onOpenAbba, onOpenNotes, onSwitchVault, onCollapse,
+    onOpenNote, onOpenGallery, onOpenAbba, onOpenNotes, onSwitchVault,
+    onOpenSettings, onGoHome, onCollapse,
   } = props;
 
   const [categories, setCategories] = useState<Category[]>([]);
@@ -144,11 +148,13 @@ export default function Sidebar(props: SidebarProps) {
   const [folderMeta, setFolderMeta] = useState<FolderMetaMap>({});
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [cleanupOpen, setCleanupOpen] = useState(false);
+  const [settingsMenuOpen, setSettingsMenuOpen] = useState(false);
   const [showExtensions, setShowExtensions] = useState<boolean>(() => {
     try { return localStorage.getItem(SHOW_EXT_KEY) === 'true'; } catch { return false; }
   });
   const { modal, promptAsync, confirmAsync } = useModal();
   const switcherRef = useRef<HTMLDivElement>(null);
+  const settingsMenuRef = useRef<HTMLDivElement>(null);
 
   const [categoryIconPicker, setCategoryIconPicker] = useState<{
     categoryId: string;
@@ -158,13 +164,19 @@ export default function Sidebar(props: SidebarProps) {
   } | null>(null);
   const categoryIconPickerRef = useRef<HTMLDivElement>(null);
 
-  const toggleShowExtensions = () => {
-    setShowExtensions((prev) => {
-      const next = !prev;
-      try { localStorage.setItem(SHOW_EXT_KEY, String(next)); } catch {}
-      return next;
-    });
-  };
+  // Settings writes the extensions preference to localStorage and fires
+  // this event. We stay subscribed so the sidebar tree updates live
+  // without needing a reload.
+  useEffect(() => {
+    const handler = () => {
+      try {
+        setShowExtensions(localStorage.getItem(SHOW_EXT_KEY) === 'true');
+      } catch {}
+    };
+    window.addEventListener('sidebar-show-extensions-changed', handler);
+    return () =>
+      window.removeEventListener('sidebar-show-extensions-changed', handler);
+  }, []);
 
   const activeCategory =
     categories.find((c) => c.id === activeCategoryId) || categories[0] || null;
@@ -520,13 +532,11 @@ export default function Sidebar(props: SidebarProps) {
           </button>
           <div className="flex items-center space-x-0.5 flex-shrink-0">
             <button
-              onClick={toggleShowExtensions}
-              className={`p-1 rounded hover:bg-[#1e2327] transition-colors ${
-                showExtensions ? 'text-blue-400 hover:text-blue-300' : 'text-gray-500 hover:text-gray-200'
-              }`}
-              title={showExtensions ? 'Hide file extensions' : 'Show file extensions'}
+              onClick={onGoHome}
+              className="text-gray-500 hover:text-gray-200 p-1 rounded hover:bg-[#1e2327] transition-colors"
+              title="Home"
             >
-              <Tag size={13} />
+              <Home size={13} />
             </button>
             <button
               onClick={() => setCleanupOpen(true)}
@@ -542,13 +552,39 @@ export default function Sidebar(props: SidebarProps) {
             >
               <Plus size={13} />
             </button>
-            <button
-              onClick={onSwitchVault}
-              className="text-gray-500 hover:text-gray-200 p-1 rounded hover:bg-[#1e2327]"
-              title="Switch vault"
-            >
-              <Settings size={13} />
-            </button>
+            <div className="relative" ref={settingsMenuRef}>
+              <button
+                onClick={() => setSettingsMenuOpen((o) => !o)}
+                className={`p-1 rounded hover:bg-[#1e2327] transition-colors ${
+                  settingsMenuOpen ? 'text-gray-200' : 'text-gray-500 hover:text-gray-200'
+                }`}
+                title="Settings"
+              >
+                <Settings size={13} />
+              </button>
+              {settingsMenuOpen && (
+                <div className="absolute right-0 top-full mt-1 z-40 bg-[#1e2327] border border-[#2a3136] rounded-md shadow-xl py-1 w-44">
+                  <button
+                    onClick={() => {
+                      setSettingsMenuOpen(false);
+                      onOpenSettings();
+                    }}
+                    className="w-full text-left px-3 py-1.5 text-sm text-gray-300 hover:bg-[#2a3136] flex items-center gap-2"
+                  >
+                    <Sliders size={13} /> <span>Settings</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      setSettingsMenuOpen(false);
+                      onSwitchVault();
+                    }}
+                    className="w-full text-left px-3 py-1.5 text-sm text-gray-300 hover:bg-[#2a3136] flex items-center gap-2 border-t border-[#2a3136]"
+                  >
+                    <LogOut size={13} /> <span>Switch vault</span>
+                  </button>
+                </div>
+              )}
+            </div>
             {onCollapse && (
               <button
                 onClick={onCollapse}

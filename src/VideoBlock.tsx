@@ -476,6 +476,22 @@ export const createVideo = createReactBlockSpec(
                 Your original file is safe. You can navigate away — the
                 conversion continues in the background.
               </p>
+              <button
+              type="button"
+              onClick={async () => {
+                try {
+                  await invoke("cancel_video_transcode", { output: proxyPath });
+                } catch (e) {
+                  console.warn("[video] cancel failed:", e);
+                }
+                setPhase("unplayable");
+                setProgress({ percent: 0, etaSec: -1 });
+              }}
+              className="mt-2 flex items-center gap-1.5 px-3 py-1.5 text-xs bg-[#2a3136] hover:bg-[#30363d] border border-[#30363d] rounded text-gray-300 hover:text-red-300 transition-colors"
+              title="Stop the conversion and clean up the partial file"
+              >
+              <X size={11} /> Cancel conversion
+              </button>
             </div>
           )}
 

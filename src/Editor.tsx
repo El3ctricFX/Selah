@@ -1,5 +1,5 @@
 // src/Editor.tsx
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { rename, readTextFile, readDir } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
@@ -18,7 +18,7 @@ import PhotoLightbox from "./PhotoLightbox";
 import { useNoteMode } from "./useNoteMode";
 import { useModal } from "./Modal";
 import { parseNoteFile, type Frontmatter } from "./noteFormat";
-import { saveImageToNoteAssets, assetsDirForNote } from "./imageAssets";
+import { saveImageToNoteAssets, assetsDirForNote, coverValueToRelative } from "./imageAssets";
 import { writeFileAtomic } from "./safeWrite";
 import TagEditor, { scanAllVaultTags, invalidateTagCache } from "./TagEditor";
 
@@ -63,10 +63,15 @@ async function listNoteImages(notePath: string): Promise<{ name: string; abs: st
   }
 }
 
-function resolveCoverUrl(value: string): string {
+function resolveCoverUrl(value: string, noteDir: string): string {
   if (!value) return "";
   if (/^(https?:|data:|blob:)/i.test(value)) return value;
-  try { return convertFileSrc(value); } catch { return value; }
+  if (/^([a-zA-Z]:[\\/]|\/)/.test(value)) {
+    try { return convertFileSrc(value); } catch { return value; }
+  }
+  const sep = noteDir.includes("\\") ? "\\" : "/";
+  const abs = noteDir.replace(/[\\/]+$/, "") + sep + value.replace(/^[\\/]+/, "");
+  try { return convertFileSrc(abs); } catch { return abs; }
 }
 
 const COVER_GRADIENTS = [
@@ -152,6 +157,7 @@ export default function Editor({
   const [coverRadius, setCoverRadius] = useState(0);
   const [coverFeather, setCoverFeather] = useState(0);
   const [coverTextShadow, setCoverTextShadow] = useState(true);
+  const [coverReady, setCoverReady] = useState(false);
   const [iconAnchor, setIconAnchor] = useState<Anchor>("in");
   const [iconX, setIconX] = useState(8);
   const [iconY, setIconY] = useState(50);
@@ -202,6 +208,48 @@ export default function Editor({
   const widthOption = DOC_WIDTHS.find((w) => w.id === docWidth) || DOC_WIDTHS[1];
   const contentWrap = widthOption.wrap;
   const WidthIcon = widthOption.icon;
+
+  // Resolving the URL runs `convertFileSrc`, which does string work on
+  // every call and produces a fresh string each time. Memoizing it means
+  // the browser sees the same `background-image` value across every
+  // render — so typing, hovering, or toggling mode can never accidentally
+  // invalidate the cover and force a refetch/redecode.
+  const noteDir = useMemo(() => {
+    const i = Math.max(activeNote.path.lastIndexOf("/"), activeNote.path.lastIndexOf("\\"));
+    return i === -1 ? "" : activeNote.path.substring(0, i);
+  }, [activeNote.path]);
+
+  const resolvedCoverUrl = useMemo(
+    () => (coverType === "image" ? resolveCoverUrl(coverValue, noteDir) : ""),
+    [coverType, coverValue, noteDir]
+  );
+
+  // Preload and decode the cover image before we paint it. Without this,
+  // the browser fetches the asset:// URL and decodes the bitmap on the
+  // very first render after the cover is applied — which is exactly the
+  // frame that jitters. `img.decode()` lets the browser do that work off
+  // the paint path, so the cover arrives fully prepared instead of
+  // popping in half-decoded.
+  useEffect(() => {
+    if (coverType !== "image" || !resolvedCoverUrl) {
+      setCoverReady(false);
+      return;
+    }
+    let cancelled = false;
+    const img = new Image();
+    img.src = resolvedCoverUrl;
+    const done = () => { if (!cancelled) setCoverReady(true); };
+    if (typeof img.decode === "function") {
+      img.decode().then(done).catch(done);
+    } else if (img.complete) {
+      done();
+    } else {
+      img.onload = done;
+      img.onerror = done;
+    }
+    return () => { cancelled = true; };
+  }, [coverType, resolvedCoverUrl]);
+
 
   const hasAboveContent =
     (iconAnchor === "above" && showHeaderIcon && (icon || mode === "edit")) ||
@@ -490,7 +538,7 @@ export default function Editor({
       if (!picked || typeof picked !== "string") return;
       const ext = (picked.split(".").pop() || "png").toLowerCase();
       const destPath = await saveImageToNoteAssets(activeNote.path, picked, `cover-${Date.now()}.${ext}`);
-      await applyCover("image", destPath);
+      await applyCover("image", coverValueToRelative(destPath, noteDir));
       const imgs = await listNoteImages(activeNote.path);
       setNoteImages(imgs);
     } catch (e) { console.error("[editor] upload cover failed:", e); }
@@ -657,21 +705,23 @@ export default function Editor({
 
   const sourceDirty = sourceDraft !== rawSource;
 
-  const coverBackground: React.CSSProperties = (() => {
+
+
+  const coverBackground: React.CSSProperties = useMemo(() => {
     if (coverType === "color") {
       const preset = COVER_GRADIENTS.find((g) => g.id === coverValue);
       return { backgroundImage: preset?.value || COVER_GRADIENTS[0].value };
     }
-    if (coverType === "image") {
+    if (coverType === "image" && resolvedCoverUrl) {
       return {
-        backgroundImage: `url("${resolveCoverUrl(coverValue)}")`,
+        backgroundImage: `url("${resolvedCoverUrl}")`,
         backgroundSize: "cover",
         backgroundPosition: `${coverPosX}% ${coverPosY}%`,
         backgroundRepeat: "no-repeat",
       };
     }
     return {};
-  })();
+  }, [coverType, coverValue, resolvedCoverUrl, coverPosX, coverPosY]);
 
   const featherMask = coverFeather > 0 ? {
     WebkitMaskImage: `linear-gradient(to right, transparent 0%, black ${coverFeather}%, black ${100 - coverFeather}%, transparent 100%), linear-gradient(to bottom, transparent 0%, black ${coverFeather}%, black ${100 - coverFeather}%, transparent 100%)`,
@@ -912,7 +962,19 @@ export default function Editor({
           {hasCover && (
             <>
               <div className="absolute inset-0 overflow-hidden" style={{ borderRadius: coverRadius > 0 ? `${coverRadius}px` : undefined, ...featherMask }}>
-                <div data-cover-layer className="absolute" style={{ inset: coverBlur > 0 ? `-${Math.max(16, coverBlur * 2)}px` : 0, ...coverBackground, opacity: coverOpacity / 100, filter: coverBlur > 0 ? `blur(${coverBlur}px)` : undefined }} />
+                <div
+                  data-cover-layer
+                  className="absolute"
+                  style={{
+                    inset: coverBlur > 0 ? `-${Math.max(16, coverBlur * 2)}px` : 0,
+                    ...coverBackground,
+                    opacity: coverType === "image"
+                      ? (coverReady ? coverOpacity / 100 : 0)
+                      : coverOpacity / 100,
+                    transition: coverType === "image" ? "opacity 180ms ease-out" : undefined,
+                    filter: coverBlur > 0 ? `blur(${coverBlur}px)` : undefined,
+                  }}
+                />
               </div>
               {coverTextShadow && <div className="absolute inset-0 bg-gradient-to-t from-black/50 via-black/10 to-transparent pointer-events-none" style={{ borderRadius: coverRadius > 0 ? `${coverRadius}px` : undefined }} />}
             </>
@@ -1090,31 +1152,31 @@ export default function Editor({
                   No images in this note yet. Upload or paste an image into the note body and it will show up here.
                 </p>
               ) : (
-                <div className="grid grid-cols-4 gap-x-2 gap-y-0.5 max-h-56 overflow-y-auto pr-1">
-                  {noteImages.map((img) => {
-                    const isActive = coverType === "image" && coverValue === img.abs;
-                    return (
-                      <button
-                        key={img.abs}
-                        type="button"
-                        onClick={() => applyCover("image", img.abs)}
-                        title={img.name}
-                        className={`aspect-square rounded overflow-hidden border bg-[#0f1315] cursor-pointer transition-all hover:ring-2 hover:ring-blue-500 ${
-                          isActive ? "ring-2 ring-blue-400 border-blue-400" : "border-[#30363d]"
-                        }`}
-                      >
-                        <img
-                          src={convertFileSrc(img.abs)}
-                          alt={img.name}
-                          loading="lazy"
-                          className="w-full h-full object-cover"
-                          onError={(e) => {
-                            (e.currentTarget as HTMLImageElement).style.opacity = "0.3";
-                          }}
-                        />
-                      </button>
-                    );
-                  })}
+                <div className="grid grid-cols-2 gap-2.5 max-h-80 overflow-y-auto pr-1">
+                {noteImages.map((img) => {
+                  const isActive = coverType === "image" && coverValue === img.abs;
+                  return (
+                    <button
+                    key={img.abs}
+                    type="button"
+                    onClick={() => applyCover("image", coverValueToRelative(img.abs, noteDir))}
+                    title={img.name}
+                    className={`rounded-md overflow-hidden border bg-[#0f1315] cursor-pointer transition-all hover:border-[#3a4147] hover:ring-2 hover:ring-blue-500/60 ${
+                      isActive ? "ring-2 ring-blue-400 border-blue-400" : "border-[#2a3136]"
+                    }`}
+                    >
+                    <img
+                    src={convertFileSrc(img.abs)}
+                    alt={img.name}
+                    loading="lazy"
+                    className="w-full h-auto block"
+                    onError={(e) => {
+                      (e.currentTarget as HTMLImageElement).style.opacity = "0.3";
+                    }}
+                    />
+                    </button>
+                  );
+                })}
                 </div>
               )}
             </div>

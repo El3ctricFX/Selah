@@ -3,7 +3,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   readTextFile, writeTextFile, mkdir, readDir,
-  exists as fsExists, rename as fsRename,
+  exists as fsExists,
 } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import { invoke } from "@tauri-apps/api/core";
@@ -26,7 +26,7 @@ import NoteBody, { type NoteBodyHandle } from "./NoteBody";
 import PhotoLightbox from "./PhotoLightbox";
 import {
   saveFileToAbbaNote, deleteAbbaNoteAsset, deleteAbbaNoteAssetsFolder,
-  loadAbbaNoteAssetBlob, abbaNoteAssetSize, migrateLegacyAssetToNote,
+  loadAbbaNoteAssetBlob, abbaNoteAssetSize,
 } from "./abbaAssets";
 import { parseNoteFile, serializeNoteFile } from "./noteFormat";
 import { moveToTrash } from "./trash";
@@ -343,94 +343,6 @@ async function deleteSectionNote(
   const name = entry._fileName || entry.id;
   const file = subPath(dir, `${name}.selah`);
   try { if (await fsExists(file)) await moveToTrash(file); } catch {}
-}
-
-async function migrateEntryFileName(abbaDir: string, section: AbbaSection, entry: any): Promise<void> {
-  const desired = desiredFileName(section, entry);
-  const current: string = entry._fileName || "";
-  if (!current || current === desired) return;
-
-  const dir = sectionDir(abbaDir, section);
-  const currentPath = subPath(dir, `${current}.selah`);
-  const desiredPath = subPath(dir, `${desired}.selah`);
-
-  if (await fsExists(desiredPath)) {
-    try { await moveToTrash(currentPath); } catch {}
-    entry._fileName = desired;
-    return;
-  }
-
-  if (!(await fsExists(currentPath))) {
-    entry._fileName = desired;
-    return;
-  }
-
-  try {
-    await fsRename(currentPath, desiredPath);
-    entry._fileName = desired;
-  } catch (e) {
-    console.warn("[abba] migration rename failed:", current, "→", desired, e);
-  }
-}
-
-async function migrateJsonIfNeeded(abbaDir: string): Promise<void> {
-  const specs: [string, AbbaSection][] = [
-    ["sermons.json", "sermons"], ["prayers.json", "prayers"],
-    ["testimonies.json", "testimonies"], ["studies.json", "studies"],
-    ["events.json", "events"], ["links.json", "links"],
-  ];
-
-  for (const [jsonName, section] of specs) {
-    const jsonPath = subPath(abbaDir, jsonName);
-    let raw: string;
-    try { raw = await readTextFile(jsonPath); } catch { continue; }
-    let entries: any[];
-    try {
-      entries = JSON.parse(raw);
-      if (!Array.isArray(entries)) continue;
-    } catch { continue; }
-    if (entries.length === 0) { try { await moveToTrash(jsonPath); } catch {}; continue; }
-
-    const dir = sectionDir(abbaDir, section);
-    await mkdir(dir, { recursive: true });
-
-    const existingIds = new Set<string>();
-    try {
-      const existing = await readDir(dir);
-      for (const e of existing) {
-        if (!e.name || !e.name.endsWith(".selah")) continue;
-        try {
-          const parsed = parseAbbaNote(section, await readTextFile(await join(dir, e.name)));
-          if (parsed.id) existingIds.add(String(parsed.id));
-        } catch {}
-      }
-    } catch {}
-
-    let allMigrated = true;
-    for (const entry of entries) {
-      if (!entry || typeof entry !== "object") continue;
-      if (!entry.id) entry.id = `${section.slice(0, -1)}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-      if (existingIds.has(String(entry.id))) continue;
-
-      const files: string[] = [];
-      if (Array.isArray(entry.images)) files.push(...entry.images);
-      if (typeof entry.audioFile === "string" && entry.audioFile) files.push(entry.audioFile);
-      for (const fileName of files) {
-        if (!fileName) continue;
-        await migrateLegacyAssetToNote(abbaDir, section, entry.id, fileName);
-      }
-
-      try {
-        await writeSectionNote(abbaDir, section, entry);
-        existingIds.add(String(entry.id));
-      } catch (e) {
-        console.error("[abba] could not write migrated note:", entry.id, e);
-        allMigrated = false;
-      }
-    }
-
-    if (allMigrated) { try { await moveToTrash(jsonPath); } catch {}; }
-  }
 }
 
 // ─── Error boundary ─────────────────────────────────────────────────────────
@@ -1092,9 +1004,6 @@ export default function AbbaView({ abbaDir, name, icon }: AbbaViewProps) {
       setLoading(true);
       setReadErrors([]);
       try { await mkdir(abbaDir, { recursive: true }); } catch {}
-      try { await migrateJsonIfNeeded(abbaDir); } catch (e) {
-        console.error("[abba] json migration failed:", e);
-      }
 
       const [se, pr, te, st, ev, li] = await Promise.all([
         readSection<Sermon>(abbaDir, "sermons"),
@@ -1104,17 +1013,6 @@ export default function AbbaView({ abbaDir, name, icon }: AbbaViewProps) {
         readSection<AbbaEvent>(abbaDir, "events"),
         readSection<AbbaLink>(abbaDir, "links"),
       ]);
-
-      const migrationSpecs: [AbbaSection, WithFile<any>[]][] = [
-        ["sermons", se], ["prayers", pr], ["testimonies", te],
-        ["studies", st], ["events", ev], ["links", li],
-      ];
-      for (const [section, list] of migrationSpecs) {
-        for (const entry of list) {
-          try { await migrateEntryFileName(abbaDir, section, entry); }
-          catch (e) { console.warn("[abba] filename migration failed:", section, entry.id, e); }
-        }
-      }
 
       if (!mounted) return;
       setSermons(se.map((x) => ({

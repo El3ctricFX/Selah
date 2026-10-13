@@ -151,7 +151,7 @@ interface ColumnSpec {
 }
 
 interface Segment {
-  kind: "md" | "columns" | "callout" | "bookmark" | "video" | "scripture" | "dmarchive";
+  kind: "md" | "columns" | "callout" | "bookmark" | "video" | "scripture" | "dmarchive" | "imagegallery";
   text?: string;
   columns?: ColumnSpec[];
   callout?: { icon: string; color: string; inner: string };
@@ -182,6 +182,12 @@ interface Segment {
     collapsed: boolean;
     srcs: string;
   };
+  imagegallery?: {
+    grid: string;
+    gap: number;
+    colWidths: string;
+    rowHeights: string;
+  };
 }
 
 function parseAttrs(line: string): Record<string, string> {
@@ -207,7 +213,7 @@ function escAttr(s: unknown): string {
 }
 
 const NESTED_BLOCK_RE = /^:::\s+(columns|column|callout)\b/;
-const SELF_CONTAINED_BLOCK_RE = /^:::\s+(bookmark|video|scripture|dmarchive)\b/;
+const SELF_CONTAINED_BLOCK_RE = /^:::\s+(bookmark|video|scripture|dmarchive|imagegallery)\b/;
 
 function readUntilCloser(
   lines: string[],
@@ -377,6 +383,23 @@ function splitNoteBody(body: string): Segment[] {
           caption: unescapeAttr(attrs.caption || ""),
           collapsed: attrs.collapsed === "true",
           srcs: unescapeAttr(attrs.srcs || ""),
+        },
+      });
+      continue;
+    }
+
+    if (trimmed.startsWith("::: imagegallery")) {
+      flush();
+      const attrs = parseAttrs(trimmed);
+      i++;
+      if (i < lines.length && lines[i].trim() === ":::") i++;
+      out.push({
+        kind: "imagegallery",
+        imagegallery: {
+          grid: unescapeAttr(attrs.grid || "[]"),
+               gap: attrs.gap ? Number(attrs.gap) : 8,
+               colWidths: unescapeAttr(attrs.colWidths || "[]"),
+               rowHeights: unescapeAttr(attrs.rowHeights || "[]"),
         },
       });
       continue;
@@ -729,6 +752,17 @@ async function parseBodyToBlocks(
           srcs: d.srcs,
         },
       });
+    } else if (seg.kind === "imagegallery") {
+      const g = seg.imagegallery!;
+      blocks.push({
+        type: "imagegallery",
+        props: {
+          grid: g.grid,
+          gap: typeof g.gap === "number" ? g.gap : 8,
+          colWidths: g.colWidths ?? "[]",
+          rowHeights: g.rowHeights ?? "[]",
+        },
+      });
     }
   }
 
@@ -821,6 +855,12 @@ async function serializeBlockList(
           p.srcs
         )}"`
       );
+    } else if (block.type === "imagegallery") {
+      await flush();
+      const p = block.props || {};
+      chunks.push(
+        `::: imagegallery grid="${escAttr(p.grid || "[]")}" gap="${escAttr(p.gap ?? 8)}" colWidths="${escAttr(p.colWidths || "[]")}" rowHeights="${escAttr(p.rowHeights || "[]")}"`
+      );
     } else if (block.type === "image") {
       const p = block.props || {};
       const pw = typeof p.previewWidth === "number" && p.previewWidth > 0
@@ -891,6 +931,18 @@ export function flattenToObsidianMarkdown(raw: string): string {
       for (const src of srcs) {
         out.push(`![Screenshot](${src})`);
       }
+    } else if (seg.kind === "imagegallery") {
+      try {
+        const grid = JSON.parse(seg.imagegallery?.grid || "[]");
+        if (Array.isArray(grid)) {
+          for (const row of grid) {
+            if (!Array.isArray(row)) continue;
+            for (const cell of row) {
+              if (cell?.src) out.push(`![${cell.caption || ""}](${cell.src})`);
+            }
+          }
+        }
+      } catch {}
     }
   }
 

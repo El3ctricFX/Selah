@@ -19,6 +19,7 @@ import { useModal } from "./Modal";
 import { useNoteMode } from "./useNoteMode";
 import { moveToTrash } from "./trash";
 import { writeFileAtomic } from "./safeWrite";
+import { coverValueToRelative } from "./imageAssets";
 
 interface GalleryLink {
   id: string;
@@ -792,6 +793,7 @@ export default function GalleryView({ sectionDir, sectionName }: GalleryViewProp
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
   const [coverPickerOpen, setCoverPickerOpen] = useState(false);
   const [coverUrlDraft, setCoverUrlDraft] = useState("");
+  const [coverReady, setCoverReady] = useState(false);
   const coverPickerRef = useRef<HTMLDivElement>(null);
   const iconPickerRef = useRef<HTMLDivElement>(null);
 
@@ -944,8 +946,8 @@ export default function GalleryView({ sectionDir, sectionName }: GalleryViewProp
       const finalName = await uniqueNameIn(assetsDir, safe);
       const destPath = await join(assetsDir, finalName);
       await copyFile(picked, destPath);
-      const absPath = destPath.replace(/\\/g, "/");
-      saveMeta({ coverType: "image", coverValue: absPath });
+      // Store relative to the section dir so the vault is portable.
+      saveMeta({ coverType: "image", coverValue: `assets/${finalName}` });
     } catch (e) {
       console.error("[gallery] cover upload failed:", e);
     }
@@ -978,26 +980,47 @@ export default function GalleryView({ sectionDir, sectionName }: GalleryViewProp
   const resolveCoverUrl = (value: string): string => {
     if (!value) return "";
     if (/^(https?:|data:|blob:)/i.test(value)) return value;
-    try { return convertFileSrc(value); } catch { return value; }
+    if (/^([a-zA-Z]:[\\/]|\/)/.test(value)) {
+      try { return convertFileSrc(value); } catch { return value; }
+    }
+    const sep = sectionDir.includes("\\") ? "\\" : "/";
+    const abs = sectionDir.replace(/[\\/]+$/, "") + sep + value.replace(/^[\\/]+/, "");
+    try { return convertFileSrc(abs); } catch { return abs; }
   };
 
   const hasCover = meta.coverType === "color" || meta.coverType === "image";
 
-  const coverBackground: React.CSSProperties = (() => {
+  // Resolving the URL runs `convertFileSrc`, which does string work on
+  // every call and produces a fresh string each time. Memoizing it means
+  // the browser sees the same `background-image` value across every
+  // render — so anything that re-renders the view can never accidentally
+  // invalidate the cover and force a refetch/redecode.
+  const resolvedCoverUrl = useMemo(
+    () => (meta.coverType === "image" ? resolveCoverUrl(meta.coverValue || "") : ""),
+    [meta.coverType, meta.coverValue]
+  );
+
+  const coverBackground: React.CSSProperties = useMemo(() => {
     if (meta.coverType === "color") {
       const preset = COVER_GRADIENTS.find((g) => g.id === meta.coverValue);
       return { backgroundImage: preset?.value || COVER_GRADIENTS[0].value };
     }
-    if (meta.coverType === "image") {
+    if (meta.coverType === "image" && resolvedCoverUrl) {
       return {
-        backgroundImage: `url("${resolveCoverUrl(meta.coverValue || "")}")`,
+        backgroundImage: `url("${resolvedCoverUrl}")`,
         backgroundSize: "cover",
         backgroundPosition: `${meta.coverPosX ?? 50}% ${meta.coverPosY ?? 50}%`,
         backgroundRepeat: "no-repeat",
       };
     }
     return {};
-  })();
+  }, [
+    meta.coverType,
+    meta.coverValue,
+    meta.coverPosX,
+    meta.coverPosY,
+    resolvedCoverUrl,
+  ]);
 
   // ── Persistence plumbing ────────────────────────────────────────────────
   const writeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1613,6 +1636,32 @@ export default function GalleryView({ sectionDir, sectionName }: GalleryViewProp
     ).then((srcs) => setLightbox({ srcs, index }));
   };
 
+  // Preload and decode the cover image before we paint it. Without this,
+  // the browser fetches the asset:// URL and decodes the bitmap on the
+  // very first render after the cover is applied — which is exactly the
+  // frame that jitters. `img.decode()` lets the browser do that work off
+  // the paint path, so the cover arrives fully prepared instead of
+  // popping in half-decoded.
+  useEffect(() => {
+    if (meta.coverType !== "image" || !resolvedCoverUrl) {
+      setCoverReady(false);
+      return;
+    }
+    let cancelled = false;
+    const img = new Image();
+    img.src = resolvedCoverUrl;
+    const done = () => { if (!cancelled) setCoverReady(true); };
+    if (typeof img.decode === "function") {
+      img.decode().then(done).catch(done);
+    } else if (img.complete) {
+      done();
+    } else {
+      img.onload = done;
+      img.onerror = done;
+    }
+    return () => { cancelled = true; };
+  }, [meta.coverType, resolvedCoverUrl]);
+
   const selected = selectedId
     ? items.find((i) => i.id === selectedId) || null
     : null;
@@ -1967,7 +2016,14 @@ export default function GalleryView({ sectionDir, sectionName }: GalleryViewProp
             className="absolute inset-0"
             style={{
               ...coverBackground,
-              opacity: (meta.coverOpacity ?? 100) / 100,
+              opacity:
+                meta.coverType === "image"
+                  ? (coverReady ? (meta.coverOpacity ?? 100) / 100 : 0)
+                  : (meta.coverOpacity ?? 100) / 100,
+              transition:
+                meta.coverType === "image"
+                  ? "opacity 180ms ease-out"
+                  : undefined,
               filter:
                 (meta.coverBlur ?? 0) > 0
                   ? `blur(${meta.coverBlur}px)`

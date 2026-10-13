@@ -29,6 +29,31 @@ fn ensure_dir(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Read the clipboard's text content as a raw string.
+///
+/// Linux file managers (Nemo, Nautilus, Dolphin, Thunar, …) put a
+/// `text/uri-list` payload on the clipboard when you copy a file. The
+/// WebKitGTK webview advertises that MIME type on the paste event but then
+/// hands the page empty strings for every getter — there is no JS-side
+/// workaround. `arboard` talks to the OS clipboard directly, so we can
+/// read the URI list here and hand it back to the frontend.
+///
+/// Returns the raw text. The caller parses it (one `file:///…` URI per
+/// line, CRLF-separated, `#` for comments).
+#[tauri::command]
+async fn read_clipboard_uri_list() -> Result<String, String> {
+    // arboard can block briefly on some platforms (X11 selection
+    // negotiation, Wayland protocol round-trips). Hop to a blocking thread
+    // so we don't stall the async runtime.
+    tokio::task::spawn_blocking(|| -> Result<String, String> {
+        let mut cb = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+        cb.get_text().map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("clipboard task panicked: {}", e))?
+}
+
+
 /// Read an image off the system clipboard and return it as PNG bytes.
 ///
 /// Returns `Ok(None)` when the clipboard has no image (so the JS side can
@@ -87,21 +112,235 @@ async fn read_clipboard_image_png() -> Result<Option<Vec<u8>>, String> {
     result
 }
 
+/// IMDb-specific metadata fetch via IMDb's private GraphQL API.
+///
+/// IMDb's own frontend talks to `caching.graphql.imdb.com` with a raw
+/// GraphQL POST. The endpoint needs no API key — it only checks that
+/// the `origin`/`referer` headers point at imdb.com and that
+/// `x-imdb-client-name` is set. This returns plot, runtime, rating,
+/// release year, poster, and cast in a single call.
+///
+/// Returns `Ok(None)` if the URL isn't an IMDb title page, the ID can't
+/// be parsed, or the API returns no data — the caller then falls back
+/// to the generic og-scrape.
+async fn fetch_imdb_metadata(
+    client: &reqwest::Client,
+    url: &str,
+) -> Result<Option<LinkMetadata>, String> {
+    // Pull the tt ID out of /title/ttNNNNNNN/...
+    let id = url
+    .split("/title/")
+    .nth(1)
+    .and_then(|s| s.split(['/', '?', '#']).next())
+    .map(str::to_string);
+    let Some(id) = id else { return Ok(None) };
+    if !id.starts_with("tt") {
+        return Ok(None);
+    }
+
+    let query = r#"
+    query TitleDetail($id: ID!) {
+    title(id: $id) {
+    id
+    titleText { text }
+    releaseYear { year endYear }
+    runtime { seconds }
+    ratingsSummary { aggregateRating voteCount }
+    plot { plotText { plainText } }
+    genres { genres { text } }
+    primaryImage { url width height }
+    principalCredits {
+    category { id text }
+    credits {
+    name { id nameText { text } }
+    ... on Cast { characters { name } }
+}
+}
+}
+}
+"#;
+
+let payload = serde_json::json!({
+    "query": query,
+    "variables": { "id": id }
+});
+let body_string = serde_json::to_string(&payload)
+.map_err(|e| format!("serialize GraphQL body failed: {}", e))?;
+
+let res = client
+.post("https://caching.graphql.imdb.com/")
+.header("accept", "application/graphql+json, application/json")
+.header("content-type", "application/json")
+.header("origin", "https://www.imdb.com")
+.header("referer", "https://www.imdb.com/")
+.header("x-imdb-client-name", "imdb-web-next")
+.header("x-imdb-user-language", "en-US")
+.header("x-imdb-user-country", "US")
+.body(body_string)
+.send()
+.await
+.map_err(|e| e.to_string())?;
+
+if !res.status().is_success() {
+    return Ok(None);
+}
+
+let body = res.text().await.map_err(|e| e.to_string())?;
+let json: serde_json::Value = serde_json::from_str(&body)
+.map_err(|e| format!("IMDb GraphQL returned bad JSON: {}", e))?;
+
+let title_node = &json["data"]["title"];
+if title_node.is_null() {
+    return Ok(None);
+}
+
+let raw_title = title_node["titleText"]["text"]
+.as_str()
+.unwrap_or("")
+.trim();
+if raw_title.is_empty() {
+    return Ok(None);
+}
+
+let year = title_node["releaseYear"]["year"].as_i64();
+let runtime_secs = title_node["runtime"]["seconds"].as_i64();
+let rating = title_node["ratingsSummary"]["aggregateRating"].as_f64();
+let plot = title_node["plot"]["plotText"]["plainText"]
+.as_str()
+.unwrap_or("")
+.trim();
+let image = title_node["primaryImage"]["url"]
+.as_str()
+.map(|s| s.to_string());
+
+// ── Format runtime: 5400s → "1h 30m" ──────────────────────────
+let runtime_fmt = runtime_secs.and_then(|s| {
+    if s <= 0 { return None; }
+    let total_min = (s / 60) as u32;
+    let h = total_min / 60;
+    let m = total_min % 60;
+    Some(if h == 0 {
+        format!("{}m", m)
+    } else if m == 0 {
+        format!("{}h", h)
+    } else {
+        format!("{}h {}m", h, m)
+    })
+});
+
+// ── Compact meta line: "2025 · 1h 30m · ★ 4.1" ────────────────
+let mut meta_parts: Vec<String> = Vec::new();
+if let Some(y) = year {
+    meta_parts.push(y.to_string());
+}
+if let Some(rt) = runtime_fmt {
+    meta_parts.push(rt);
+}
+if let Some(r) = rating {
+    meta_parts.push(format!("★ {:.1}", r));
+}
+let meta_line = meta_parts.join(" · ");
+
+// ── Description: plot, or fallback to top cast ────────────────
+let description = if !plot.is_empty() {
+    Some(plot.to_string())
+} else {
+    let mut names: Vec<String> = Vec::new();
+    if let Some(groups) = title_node["principalCredits"].as_array() {
+        for group in groups {
+            if group["category"]["id"].as_str() != Some("cast") {
+                continue;
+            }
+            if let Some(credits) = group["credits"].as_array() {
+                for c in credits {
+                    if let Some(n) = c["name"]["nameText"]["text"].as_str() {
+                        if !n.is_empty() {
+                            names.push(n.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if names.is_empty() {
+        None
+    } else {
+        Some(format!("Starring {}", names.join(", ")))
+    }
+};
+
+// Cap the description so the card stays a card, not a wall of text.
+let description = description.map(|d| {
+    let trimmed = d.trim();
+    if trimmed.len() <= 300 {
+        return trimmed.to_string();
+    }
+    let head = &trimmed[..300.min(trimmed.len())];
+    if let Some(pos) = head.rfind(". ") {
+        return trimmed[..pos + 1].to_string();
+    }
+    format!("{}…", &trimmed[..280.min(trimmed.len())])
+});
+
+Ok(Some(LinkMetadata {
+    title: Some(raw_title.to_string()),
+        description,
+        image,
+        favicon: Some("https://www.imdb.com/favicon.ico".to_string()),
+        meta: if meta_line.is_empty() { None } else { Some(meta_line) },
+}))
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct LinkMetadata {
     pub title: Option<String>,
     pub description: Option<String>,
     pub image: Option<String>,
     pub favicon: Option<String>,
+    /// Compact metadata line — e.g. "2025 · 1h 30m · ★ 4.1".
+    /// Only IMDb (via GraphQL) populates this; other sites leave it None.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<String>,
 }
 
 #[tauri::command]
 async fn fetch_link_metadata(url: String) -> Result<LinkMetadata, String> {
+    // A real browser UA + Accept-Language. Cloudflare-protected sites
+    // (IMDb, and increasingly others) reject obvious bot UAs with a JS
+    // challenge page that has no og: tags at all. Looking like a normal
+    // Chrome request gets us the real HTML. `en-US` on Accept-Language
+    // also forces the English IMDb page instead of a regional variant.
     let client = reqwest::Client::builder()
-        .user_agent("Mozilla/5.0 (compatible; NoteWorkspace/1.0)")
-        .timeout(std::time::Duration::from_secs(10))
+        .user_agent(
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 \
+             (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        )
+        .timeout(std::time::Duration::from_secs(15))
+        .default_headers({
+            let mut h = reqwest::header::HeaderMap::new();
+            h.insert(
+                reqwest::header::ACCEPT,
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                    .parse()
+                    .unwrap(),
+            );
+            h.insert(
+                reqwest::header::ACCEPT_LANGUAGE,
+                "en-US,en;q=0.9".parse().unwrap(),
+            );
+            h
+        })
         .build()
         .map_err(|e| e.to_string())?;
+
+        // IMDb is behind Cloudflare — its HTML has no og: tags for us, but
+        // its JSON suggestions API does. Try that first.
+        if url.contains("imdb.com/title/") {
+            if let Ok(Some(meta)) = fetch_imdb_metadata(&client, &url).await {
+                return Ok(meta);
+            }
+        }
+
 
     let html = client
         .get(&url)
@@ -111,6 +350,34 @@ async fn fetch_link_metadata(url: String) -> Result<LinkMetadata, String> {
         .text()
         .await
         .map_err(|e| e.to_string())?;
+
+        // ── Cloudflare challenge detection ───────────────────────────────
+        // Sites behind Cloudflare (TMDB, IMDb HTML, and others) serve a
+        // JavaScript challenge page to non-browser clients. Its <title> is
+        // literally "Just a moment..." and it has no og: tags at all, so the
+        // generic scraper below would return garbage. Bail out early and
+        // return an empty metadata object — the Bookmark component falls
+        // back to displaying the raw URL, which is honest and clean.
+        //
+        // We check a few signatures because Cloudflare has changed the exact
+        // wording over the years. If any match, we treat the page as a
+        // challenge and return nothing.
+        let lower = html.to_lowercase();
+        let looks_like_challenge = lower.contains("<title>just a moment")
+        || lower.contains("cf-browser-verification")
+        || lower.contains("cf_chl_opt")
+        || lower.contains("challenge-platform")
+        || lower.contains("__cf_chl_");
+
+        if looks_like_challenge {
+            return Ok(LinkMetadata {
+                title: None,
+                description: None,
+                image: None,
+                favicon: Some("https://www.themoviedb.org/favicon.ico".to_string()),
+                      meta: None,
+            });
+        }
 
     let document = Html::parse_document(&html);
     let base = url::Url::parse(&url).ok();
@@ -179,11 +446,40 @@ async fn fetch_link_metadata(url: String) -> Result<LinkMetadata, String> {
         resolve(found.or_else(|| Some("/favicon.ico".to_string())))
     };
 
+    // ── Light per-site cleanup ────────────────────────────────────────
+    // og:title for IMDb often ends with " - IMDb". Strip it. Same for
+    // any other site that adds a redundant suffix.
+    let title = title.map(|t| {
+        let t = t.trim();
+        let stripped = t
+            .strip_suffix(" - IMDb")
+            .or_else(|| t.strip_suffix(" | IMDb"))
+            .unwrap_or(t);
+        stripped.to_string()
+    });
+
+    // og:description for IMDb is often a cast-list dump. Trim it down
+    // to the first clause if it's huge, so the card stays readable.
+    let description = description.map(|d| {
+        let trimmed = d.trim();
+        if trimmed.len() <= 300 {
+            return trimmed.to_string();
+        }
+        // Prefer a sentence boundary if one exists in the first 300
+        // chars; otherwise hard-cut at 280 and add an ellipsis.
+        let head = &trimmed[..300.min(trimmed.len())];
+        if let Some(pos) = head.rfind(". ") {
+            return trimmed[..pos + 1].to_string();
+        }
+        format!("{}…", &trimmed[..280.min(trimmed.len())])
+    });
+
     Ok(LinkMetadata {
         title,
         description,
         image,
         favicon,
+        meta: None,
     })
 }
 
@@ -363,6 +659,36 @@ async fn fetch_bible_verse(reference: String) -> Result<BibleVerse, String> {
     })
 }
 
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use tokio::sync::oneshot;
+
+/// Map of in-flight ffmpeg conversions, keyed by the proxy output path.
+/// When `cancel_video_transcode` is called, we look up the matching
+/// oneshot sender, fire it, and the conversion loop in `convert_to_webm`
+/// selects on the receiving end — kills the child, deletes the .tmp,
+/// and returns an error the frontend can show.
+static CANCEL_MAP: OnceLock<Mutex<HashMap<String, oneshot::Sender<()>>>> =
+OnceLock::new();
+
+fn cancel_map() -> &'static Mutex<HashMap<String, oneshot::Sender<()>>> {
+    CANCEL_MAP.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Cancel a running video transcode by its output path. Safe to call
+/// when no transcode is running — returns Ok(false) to tell the caller
+/// nothing was cancelled.
+#[tauri::command]
+fn cancel_video_transcode(output: String) -> Result<bool, String> {
+    let mut map = cancel_map().lock().map_err(|e| e.to_string())?;
+    if let Some(tx) = map.remove(&output) {
+        let _ = tx.send(());
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
 /// Payload emitted on the `proxy-progress` event during transcoding.
 #[derive(Clone, Serialize)]
 struct ProxyProgress {
@@ -439,6 +765,15 @@ async fn convert_to_webm(
     let stdout = child.stdout.take().ok_or("no stdout")?;
     let stderr = child.stderr.take().ok_or("no stderr")?;
 
+    // Register a cancellation channel for this conversion. The frontend
+    // hits `cancel_video_transcode` with the output path, which fires the
+    // sender. The loop below selects on the receiver and bails out.
+    let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
+    {
+        let mut map = cancel_map().lock().map_err(|e| e.to_string())?;
+        map.insert(output.clone(), cancel_tx);
+    }
+
     // Collect stderr in the background so we can surface it if ffmpeg fails.
     let stderr_handle = tokio::spawn(async move {
         let mut buf = Vec::new();
@@ -451,7 +786,24 @@ async fn convert_to_webm(
     let mut reader = tokio::io::BufReader::new(stdout).lines();
     let start = std::time::Instant::now();
 
-    while let Ok(Some(line)) = reader.next_line().await {
+    loop {
+        let line_opt = tokio::select! {
+            // Normal progress line from ffmpeg.
+            next = reader.next_line() => {
+                match next {
+                    Ok(Some(l)) => Some(l),
+                    _ => None,
+                }
+            }
+            // User hit Cancel. Kill the child, clean up, bail.
+            _ = &mut cancel_rx => {
+                let _ = child.kill().await;
+                let _ = std::fs::remove_file(&tmp_output);
+                return Err("Cancelled by user".to_string());
+            }
+        };
+
+        let Some(line) = line_opt else { break };
         let val = match line.strip_prefix("out_time_ms=") {
             Some(v) => v.trim(),
             None => continue,
@@ -486,6 +838,14 @@ async fn convert_to_webm(
                 eta_sec,
             },
         );
+    }
+
+    // Natural completion — remove ourselves from the cancel map so
+    // future invocations of cancel_video_transcode don't fire a stale
+    // channel.
+    {
+        let mut map = cancel_map().lock().map_err(|e| e.to_string())?;
+        map.remove(&output);
     }
 
     let status = child.wait().await.map_err(|e| e.to_string())?;
@@ -553,7 +913,9 @@ pub fn run() {
             fetch_image_data_url,
             ensure_dir,
             convert_to_webm,
+            cancel_video_transcode,
             read_clipboard_image_png,
+            read_clipboard_uri_list,
             fetch_bible_verse
         ])
         .run(tauri::generate_context!())

@@ -297,3 +297,129 @@ export function dmarchiveSrcsToRelativePaths(md: string, noteDir: string): strin
       pre + convertSrcs(String(srcsRaw), noteDir, "toRelative") + post
   );
 }
+
+
+// ─── Image gallery grid transforms ──────────────────────────────────────────
+// The `grid` attribute on an imagegallery block is a JSON-encoded 2D
+// array of cells. Each cell may hold { src, caption }. We rewrite the
+// src fields the same way dmarchive rewrites its srcs attribute.
+//
+// The JSON is HTML-entity-escaped when written into the `:::` line (see
+// escAttr in noteFormat.ts), so we unescape on the way in and re-escape
+// on the way out.
+
+function unescapeGridAttr(s: string): string {
+  return s
+  .replace(/&quot;/g, '"')
+  .replace(/&#10;/g, "\n")
+  .replace(/&amp;/g, "&");
+}
+
+function escapeGridAttr(s: string): string {
+  return s
+  .replace(/&/g, "&amp;")
+  .replace(/"/g, "&quot;")
+  .replace(/\n/g, "&#10;");
+}
+
+function convertGrid(
+  gridRaw: string,
+  noteDir: string,
+  direction: "toAsset" | "toRelative"
+): string {
+  let grid: any;
+  try {
+    grid = JSON.parse(gridRaw);
+  } catch {
+    return escapeGridAttr(gridRaw);
+  }
+  if (!Array.isArray(grid)) return escapeGridAttr(gridRaw);
+
+  const mapped = grid.map((row: any) => {
+    if (!Array.isArray(row)) return row;
+    return row.map((cell: any) => {
+      if (!cell || typeof cell.src !== "string" || !cell.src) return cell;
+      const src: string = cell.src;
+
+      if (direction === "toAsset") {
+        if (/^(https?:|data:|blob:|asset:)/i.test(src)) return cell;
+        const decoded = safeDecode(src);
+        const sep = noteDir.includes("\\") ? "\\" : "/";
+        const abs = noteDir.replace(/[\\/]+$/, "") + sep + decoded;
+        try {
+          return { ...cell, src: convertFileSrc(abs) };
+        } catch {
+          return cell;
+        }
+      }
+
+      const absPath = assetUrlToAbsolutePath(src);
+      if (!absPath) return cell;
+      const normNote = noteDir.replace(/\\/g, "/").replace(/\/+$/, "");
+      const normAbs = absPath.replace(/\\/g, "/");
+      if (!normAbs.startsWith(normNote + "/")) return cell;
+      const rel = normAbs.slice(normNote.length + 1);
+      return { ...cell, src: encodeAssetPath(rel) };
+    });
+  });
+
+  return escapeGridAttr(JSON.stringify(mapped));
+}
+
+export function imageGalleryToAssetUrls(md: string, noteDir: string): string {
+  return md.replace(
+    /(::: imagegallery\b[^\n]*?\bgrid=")([^"]*)(")/g,
+                    (_m, pre, gridRaw, post) =>
+                    pre +
+                    convertGrid(unescapeGridAttr(String(gridRaw)), noteDir, "toAsset") +
+                    post
+  );
+}
+
+export function imageGalleryToRelativePaths(md: string, noteDir: string): string {
+  return md.replace(
+    /(::: imagegallery\b[^\n]*?\bgrid=")([^"]*)(")/g,
+                    (_m, pre, gridRaw, post) =>
+                    pre +
+                    convertGrid(unescapeGridAttr(String(gridRaw)), noteDir, "toRelative") +
+                    post
+  );
+}
+
+// ── Cover path portability ──────────────────────────────────────────────
+// Covers are stored in frontmatter (or gallery.meta.json) and must
+// survive a vault move. We store them *relative to the note's directory*
+// so the reference travels with the vault, then resolve them at read time.
+
+const URL_LIKE = /^(https?:|data:|blob:|asset:)/i;
+const ABSOLUTE_PATH = /^([a-zA-Z]:[\\/]|\/)/;
+
+/** Convert a stored coverValue into a vault-relative form, if it's inside
+ *  the note's directory. Anything external (URL, different drive, an
+ *  absolute path outside the note dir) is returned unchanged. */
+export function coverValueToRelative(
+  coverValue: string,
+  noteDir: string
+): string {
+  if (!coverValue) return coverValue;
+  if (URL_LIKE.test(coverValue)) return coverValue;
+  if (!ABSOLUTE_PATH.test(coverValue)) return coverValue; // already relative
+
+  const normNote = noteDir.replace(/\\/g, "/").replace(/\/+$/, "");
+  const normCv = coverValue.replace(/\\/g, "/");
+  if (!normCv.startsWith(normNote + "/")) return coverValue;
+  return normCv.slice(normNote.length + 1);
+}
+
+/** Resolve a stored coverValue to an absolute path we can hand to
+ *  convertFileSrc or readFile. URLs and absolute paths pass through. */
+export function coverValueToAbsolute(
+  coverValue: string,
+  noteDir: string
+): string {
+  if (!coverValue) return coverValue;
+  if (URL_LIKE.test(coverValue)) return coverValue;
+  if (ABSOLUTE_PATH.test(coverValue)) return coverValue;
+  const sep = noteDir.includes("\\") ? "\\" : "/";
+  return noteDir.replace(/[\\/]+$/, "") + sep + coverValue.replace(/^[\\/]+/, "");
+}

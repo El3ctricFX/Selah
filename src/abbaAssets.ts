@@ -235,26 +235,3 @@ export async function deleteAbbaNoteAssetsFolder(
     }
   }
 }
-
-/** Copy a legacy flat asset (<abbaDir>/assets/<fileName>) into a per-note
- *  folder. Returns true if the asset exists in the destination afterwards. */
-export async function migrateLegacyAssetToNote(
-  abbaDir: string,
-  section: string,
-  noteId: string,
-  fileName: string
-): Promise<boolean> {
-  try {
-    const src = await join(abbaDir, ASSETS_DIR, fileName);
-    if (!(await exists(src))) return false;
-    const destDir = await abbaNoteAssetsDir(abbaDir, section, noteId);
-    await mkdir(destDir, { recursive: true });
-    const dest = await join(destDir, fileName);
-    if (await exists(dest)) return true;
-    await copyFile(src, dest);
-    return true;
-  } catch (e) {
-    console.error("[abba] legacy asset copy failed:", fileName, e);
-    return false;
-  }
-}
