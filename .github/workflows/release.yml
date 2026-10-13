@@ -155,6 +155,7 @@ jobs:
         run: |
           set -euo pipefail
           VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
           DEB_NAME="Selah_${VERSION}_amd64.deb"
           echo "Syncing flatpak manifest to ${DEB_NAME}"
           sed -i -E "s/Selah_[0-9]+\\.[0-9]+\\.[0-9]+_amd64\\.deb/${DEB_NAME}/g" \
@@ -167,14 +168,14 @@ jobs:
       - name: Build Flatpak bundle
         uses: flatpak/flatpak-github-actions/flatpak-builder@v6
         with:
-          bundle: selah.flatpak
+          bundle: Selah_${{ env.VERSION }}_x86_64.flatpak
           manifest-path: flatpak/io.github.el3ctricfx.selah.yml
           cache-key: flatpak-builder-${{ github.sha }}
 
-      - name: Upload Flatpak and setup.sh to release
+      - name: Upload Flatpak and setup script to release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            selah.flatpak
-            setup.sh
+            Selah_${{ env.VERSION }}_x86_64.flatpak
+            Selah-setup.sh
           tag_name: ${{ github.ref_name }}
