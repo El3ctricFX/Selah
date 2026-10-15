@@ -6,7 +6,7 @@ import {
   AlertTriangle, Check, Loader2, Sparkles, X, Trash2,
   Wrench, FolderOpen, ShieldOff, RefreshCw, ArrowRight, HelpCircle,
 } from "lucide-react";
-import { auditVault, type VaultReport, type BrokenRef, type UnusedFile, type OldLayoutFolder, type MissingProxiesForNote, type MissingThumbForNote, type ProxiesOffNote } from "./mediaVault";
+import { auditVault, type VaultReport, type BrokenRef, type MissingProxiesForNote, type MissingThumbForNote, type ProxiesOffNote } from "./mediaVault";
 import { fixBrokenRef, fixAllBrokenRefsForNote, deleteUnusedFile, keepUnusedFile, fixOldLayout, buildProxiesForNote, buildThumbsForNote, removeProxiesForNote } from "./mediaFix";
 import { basename } from "./mediaVault";
 

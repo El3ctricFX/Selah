@@ -1,6 +1,6 @@
 // src/mediaFix.ts
 import {
-  readDir, readTextFile, exists, mkdir, rename, writeFile, readFile, remove,
+  readDir, readTextFile, writeTextFile, exists, mkdir, rename, writeFile, remove,
 } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import { parseNoteFile, serializeNoteFile, type Frontmatter } from "./noteFormat";
@@ -99,7 +99,6 @@ export async function fixBrokenRef(item: BrokenRef): Promise<boolean> {
   // If the note's ref raw form doesn't equal the on-disk path we just
   // created, rewrite it. Compute the canonical relative path.
   const noteDir = dirname(notePath);
-  const relSep = noteDir.includes("\\") ? "\\" : "/";
   const canonicalAbs = fix.kind === "move" ? fix.to : absPath;
   const normNote = noteDir.replace(/\\/g, "/").replace(/\/+$/, "");
   const normAbs = canonicalAbs.replace(/\\/g, "/");
@@ -296,7 +295,7 @@ export async function keepUnusedFile(item: UnusedFile): Promise<boolean> {
   } catch {}
   if (!list.includes(name)) list.push(name);
   try {
-    await writeFile(keepPath, JSON.stringify(list, null, 2));
+    await writeTextFile(keepPath, JSON.stringify(list, null, 2));
     return true;
   } catch (e) {
     console.warn("[mediaFix] keep failed:", e);

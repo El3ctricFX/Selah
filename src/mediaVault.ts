@@ -254,7 +254,6 @@ async function inferFix(
 ): Promise<BrokenRef["fix"]> {
   const name = basename(absPath);
   const parentName = basename(dirname(absPath));
-  const sep = absPath.includes("\\") ? "\\" : "/";
 
   // Helper: look through every old-layout folder for this filename.
   const findOld = async (): Promise<string | null> => {
