@@ -9,6 +9,7 @@ import {
   ExternalLink, Heart, Code2, MessageCircle,
 } from "lucide-react";
 import { writeFileAtomic } from "./safeWrite";
+import { proxyFeatureEnabled, setProxyFeatureEnabled } from "./proxyFeature";
 import {
   HomeSettingsPanel,
   DEFAULT_HOME_SETTINGS,
@@ -372,7 +373,7 @@ export default function SettingsModal({
                 vaultPath={vaultPath}
               />
             ) : section === "general" ? (
-              <GeneralPanel />
+              <GeneralPanel vaultPath={vaultPath} />
             ) : section === "appearance" ? (
               <ComingSoon
                 title="Appearance"
@@ -417,13 +418,37 @@ export default function SettingsModal({
   );
 }
 
-function GeneralPanel() {
+function Switch({ on, onClick }: { on: boolean; onClick: () => void }) {
+  return (
+    <button
+    type="button"
+    onClick={onClick}
+    className="relative rounded-full transition-colors flex-shrink-0"
+    style={{ width: 28, height: 16, backgroundColor: on ? "#3b82f6" : "#3a4147" }}
+    aria-pressed={on}
+    >
+    <span
+    className="absolute rounded-full bg-white"
+    style={{
+      width: 12, height: 12, top: 2,
+      left: on ? 14 : 2,
+      transition: "left 150ms ease",
+      boxShadow: "0 1px 2px rgba(0,0,0,0.3)",
+    }}
+    />
+    </button>
+  );
+}
+
+function GeneralPanel({ vaultPath }: { vaultPath: string }) {
   const [showExtensions, setShowExtensions] = useState<boolean>(() => {
     try { return localStorage.getItem("sidebar-show-extensions") === "true"; }
     catch { return false; }
   });
+  const [proxies, setProxies] = useState<boolean>(() => proxyFeatureEnabled());
+  const [confirmOff, setConfirmOff] = useState(false);
 
-  const toggle = () => {
+  const toggleExtensions = () => {
     setShowExtensions((prev) => {
       const next = !prev;
       try { localStorage.setItem("sidebar-show-extensions", String(next)); } catch {}
@@ -432,45 +457,91 @@ function GeneralPanel() {
     });
   };
 
+  const toggleProxies = () => {
+    if (proxies) { setConfirmOff(true); return; } // turning off: ask first
+    setProxies(true);
+    setProxyFeatureEnabled(true);
+  };
+
+  const finishOff = (deleteProxies: boolean) => {
+    setConfirmOff(false);
+    setProxies(false);
+    setProxyFeatureEnabled(false);
+    if (deleteProxies) {
+      window.dispatchEvent(
+        new CustomEvent("proxy-toggle-request", {
+          detail: { path: "", next: false, vaultPath },
+        })
+      );
+    }
+  };
+
   return (
     <div className="p-5 space-y-6">
-      <div>
-        <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-3">
-          Sidebar
-        </div>
+    <div>
+    <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-3">
+    Sidebar
+    </div>
+    <label className="flex items-center justify-between text-xs text-gray-300 cursor-pointer py-1">
+    <span>Show file extensions</span>
+    <Switch on={showExtensions} onClick={toggleExtensions} />
+    </label>
+    <p className="text-[10px] text-gray-600 mt-2 leading-snug">
+    Shows the file extension (e.g. <span className="font-mono">.selah</span>)
+    next to entries in the sidebar tree.
+    </p>
+    </div>
 
-        <label className="flex items-center justify-between text-xs text-gray-300 cursor-pointer py-1">
-          <span>Show file extensions</span>
-          <button
-            type="button"
-            onClick={toggle}
-            className="relative rounded-full transition-colors flex-shrink-0"
-            style={{
-              width: 28,
-              height: 16,
-              backgroundColor: showExtensions ? "#3b82f6" : "#3a4147",
-            }}
-            aria-pressed={showExtensions}
-          >
-            <span
-              className="absolute rounded-full bg-white"
-              style={{
-                width: 12,
-                height: 12,
-                top: 2,
-                left: showExtensions ? 14 : 2,
-                transition: "left 150ms ease",
-                boxShadow: "0 1px 2px rgba(0,0,0,0.3)",
-              }}
-            />
-          </button>
-        </label>
+    <div>
+    <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-3">
+    Images
+    </div>
+    <label className="flex items-center justify-between text-xs text-gray-300 cursor-pointer py-1">
+    <span>Enable image proxies</span>
+    <Switch on={proxies} onClick={toggleProxies} />
+    </label>
+    <p className="text-[10px] text-gray-600 mt-2 leading-snug">
+    Off by default. When on, a Proxies button appears in each note's toolbar
+    and you choose which notes get smaller WebP copies for smoother scrolling.
+    When you turn this off, you'll be asked whether to delete the existing
+    proxies or keep them.
+    </p>
 
-        <p className="text-[10px] text-gray-600 mt-2 leading-snug">
-          Shows the file extension (e.g. <span className="font-mono">.selah</span>)
-          next to entries in the sidebar tree.
-        </p>
+    {confirmOff && (
+      <div className="mt-3 rounded-md border border-[#2a3136] bg-[#0f1315] p-3">
+      <div className="text-xs text-gray-200 mb-1">Delete existing proxies?</div>
+      <p className="text-[10px] text-gray-500 leading-snug mb-3">
+      <span className="text-gray-300">Yes</span> moves every proxy and thumbnail in
+      this vault to your system trash and points your notes back at the original
+      photos. <span className="text-gray-300">No</span> keeps everything as it is:
+      notes keep using the proxies they already have, but new photos won't get any.
+      </p>
+      <div className="flex items-center gap-2">
+      <button
+      type="button"
+      onClick={() => finishOff(true)}
+      className="px-3 py-1 text-xs bg-red-600 hover:bg-red-500 text-white rounded cursor-pointer"
+      >
+      Yes, delete them
+      </button>
+      <button
+      type="button"
+      onClick={() => finishOff(false)}
+      className="px-3 py-1 text-xs bg-[#2a3136] hover:bg-[#343c42] text-gray-200 rounded cursor-pointer"
+      >
+      No, keep them
+      </button>
+      <button
+      type="button"
+      onClick={() => setConfirmOff(false)}
+      className="px-2 py-1 text-xs text-gray-500 hover:text-gray-300 cursor-pointer"
+      >
+      Cancel
+      </button>
       </div>
+      </div>
+    )}
+    </div>
     </div>
   );
 }

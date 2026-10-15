@@ -98,6 +98,13 @@ import {
   imageGalleryToAssetUrls,
   imageGalleryToRelativePaths,
 } from "./imageAssets";
+import {
+  canonicalizeUrl,
+  detectPlatform,
+  fetchEnrichedMetadata,
+  humanizeUrlTitle,
+  normalizeUrlInput,
+} from "./linkMeta";
 import { writeFileAtomic } from "./safeWrite";
 import { registerFlusher } from "./flushRegistry";
 
@@ -568,38 +575,46 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
           }
           node = node.parentElement;
         }
-        if (targets.length === 0) return;
 
-        // Also catch the window itself in case the app scrolls there.
         const winX = window.scrollX;
         const winY = window.scrollY;
 
-        for (const { el, saved } of targets) {
-          try {
-            Object.defineProperty(el, "scrollTop", {
-              configurable: true,
-              get() {
-                return saved;
-              },
-              set() {
-                /* swallow ProseMirror's scroll */
-              },
-            });
-          } catch {
-            /* already non-configurable — fall back to rAF restore */
-          }
-        }
+        if (targets.length === 0 && winX === 0 && winY === 0) return;
 
-        let restored = false;
-        const restore = () => {
-          if (restored) return;
-          restored = true;
+        // Enforcement loop.
+        //
+        // Patching `el.scrollTop` only blocks direct `scrollTop = …`
+        // writes. It does not block `scrollTo()`, `scrollBy()`,
+        // `scrollIntoView()`, or the browser's native reflow scroll
+        // adjustments — so those kept moving the viewport after we'd
+        // "protected" it, producing the one-frame up-and-back.
+        //
+        // Reading back the *actual* scroll position on every rAF and
+        // rewriting it when it drifts is the only technique that
+        // catches every mover uniformly. rAF callbacks run before the
+        // paint phase, so a correction applied in the same frame is
+        // never visible to the user.
+        const deadline = performance.now() + 220;
+
+        const enforce = () => {
           for (const { el, saved } of targets) {
-            try {
-              delete (el as any).scrollTop;
-            } catch {}
-            // Now that the native setter is back, make sure we're still
-            // where we started (in case something else moved it).
+            if (el.scrollTop !== saved) {
+              el.scrollTop = saved;
+            }
+          }
+          if (window.scrollX !== winX || window.scrollY !== winY) {
+            window.scrollTo(winX, winY);
+          }
+          if (performance.now() < deadline) {
+            requestAnimationFrame(enforce);
+          }
+        };
+
+        requestAnimationFrame(enforce);
+
+        // Failsafe for backgrounded tabs where rAF may be throttled.
+        setTimeout(() => {
+          for (const { el, saved } of targets) {
             try {
               if (el.scrollTop !== saved) el.scrollTop = saved;
             } catch {}
@@ -609,23 +624,66 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
               window.scrollTo(winX, winY);
             }
           } catch {}
-        };
-
-        // Two rAFs is the safest: first one fires after the current
-        // input event has been fully processed (ProseMirror's scroll
-        // attempt already swallowed), second one after the next layout
-        // pass, in case the undo changed any element heights.
-        requestAnimationFrame(() => {
-          requestAnimationFrame(restore);
-        });
-
-        // Failsafe in case rAF is throttled (backgrounded tab, etc.).
-        setTimeout(restore, 120);
+        }, 240);
       };
 
       const onKeyDown = (e: KeyboardEvent) => {
         const ctrl = e.ctrlKey || e.metaKey;
-        if (!ctrl) return;
+
+        // Markdown input-rule scroll guard.
+        //
+        // Typing `---`, `*** `, or `___ ` turns the paragraph into a
+        // horizontal rule. BlockNote/TipTap's rule is:
+        //     /^(?:---|—-|___\s|\*\*\*\s)$/
+        // Notice `---` has NO trailing `\s` — it fires the instant you
+        // type the third hyphen, not on a following space. `***` and
+        // `___` do require the trailing space.
+        //
+        // Either way a taller paragraph is swapped for a shorter HR and
+        // ProseMirror's `scrollIntoView` yanks the viewport. Pin the
+        // scroll *before* ProseMirror's input-rule handler sees this
+        // keystroke so the override is in place when the transaction
+        // dispatches.
+        if (!ctrl) {
+          try {
+            const tiptap: any = (editor as any)._tiptapEditor;
+            const state = tiptap?.state;
+            const sel = state?.selection;
+            const from = sel?.empty ? sel.from : -1;
+
+            if (from >= 0) {
+              if (e.key === "-" || e.key === "*" || e.key === "_") {
+                // Third repetition: typing `-` after `--`, etc.
+                const two = state.doc.textBetween(
+                  Math.max(0, from - 2),
+                  from,
+                  "",
+                  ""
+                );
+                if (two === e.key + e.key) preserveScroll();
+              } else if (e.key === " " || e.key === "Enter") {
+                // Trailing-space variant: `*** ` / `___ ` (and `--- `
+                // defensively, in case BlockNote ever changes the rule
+                // to require a space).
+                const three = state.doc.textBetween(
+                  Math.max(0, from - 3),
+                  from,
+                  "",
+                  ""
+                );
+                if (
+                  three === "---" ||
+                  three === "***" ||
+                  three === "___"
+                ) {
+                  preserveScroll();
+                }
+              }
+            }
+          } catch {}
+          return;
+        }
+
         const k = e.key.toLowerCase();
         if (k !== "z" && k !== "y") return;
 
@@ -2197,7 +2255,12 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         // ── URL → bookmark / embed popup ──────────────────────────────
         // Runs synchronously so the coordinate lookup uses the current
         // selection. Skip it if the paste is a file-manager copy.
-        if (!hasUriListItem && URL_RE.test(plainSync)) {
+        //
+        // We normalize first so bare "x.com/user/status/123" pastes also
+        // trigger the menu, then canonicalize so tracking params don't break
+        // the metadata fetch downstream.
+        const normalizedUrl = normalizeUrlInput(plainSync);
+        if (!hasUriListItem && URL_RE.test(normalizedUrl)) {
           const tiptap: any = (editor as any)._tiptapEditor;
           if (tiptap) {
             const sel = tiptap.state.selection;
@@ -2211,7 +2274,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
                 coords = { left: c.left, bottom: c.bottom };
               } catch {}
               setPasteMenu({
-                url: plainSync,
+                url: canonicalizeUrl(normalizedUrl),
                 x: Math.min(Math.max(8, coords.left), window.innerWidth - 260),
                            y: Math.min(coords.bottom + 6, window.innerHeight - 160),
               });
@@ -2328,17 +2391,24 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       linkMode: "bookmark" | "embed"
     ) => {
       setPasteMenu(null);
+
+      const canonical = canonicalizeUrl(url);
+      const platform = detectPlatform(canonical);
+
+      const fallbackTitle = humanizeUrlTitle(canonical) || canonical;
+
       try {
         const inserted = insertBlocksSmart([
           {
             type: "bookmark",
             props: {
-              url,
-              title: url,
+              url: canonical,
+              title: fallbackTitle,
               description: "",
               icon: "",
               image: "",
               mode: linkMode,
+              meta: platform?.label || "",
             },
           },
         ]);
@@ -2346,22 +2416,21 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         if (!newId) return;
 
         try {
-          const meta: any = await invoke("fetch_link_metadata", { url });
-          if (meta) {
-            editor.updateBlock(newId, {
-              props: {
-                url,
-                title: meta.title || url,
-                description: meta.description || "",
-                icon: meta.favicon || "",
-                image: meta.image || "",
-                mode: linkMode,
-                meta: (meta as any).meta || "",
-              },
-            });
-          }
+          const meta = await fetchEnrichedMetadata(canonical);
+
+          editor.updateBlock(newId, {
+            props: {
+              url: canonical,
+              title: meta.title || fallbackTitle,
+              description: meta.description || "",
+              icon: meta.icon || "",
+              image: meta.image || "",
+              mode: linkMode,
+              meta: meta.meta || platform?.label || "",
+            },
+          });
         } catch (err) {
-          console.warn("[bookmark] metadata fetch failed:", err);
+          console.warn("[bookmark] enrichment failed:", err);
         }
       } catch (e) {
         console.error("[paste] insert link block failed:", e);
@@ -3413,35 +3482,56 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
             </div>
           )}
 
-          {pasteMenu && (
-            <div
-              ref={pasteMenuRef}
-              className="fixed z-[500] bg-[#1e2327] border border-[#2a3136] rounded-md shadow-2xl py-1 w-60"
-              style={{ top: pasteMenu.y, left: pasteMenu.x }}
-              onMouseDown={(e) => e.preventDefault()}
-            >
-              <button
-                onClick={() => pasteAsText(pasteMenu.url)}
-                className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
+          {pasteMenu && (() => {
+            const platform = detectPlatform(pasteMenu.url);
+            const preview = humanizeUrlTitle(pasteMenu.url);
+            return (
+              <div
+                ref={pasteMenuRef}
+                className="fixed z-[500] bg-[#1e2327] border border-[#2a3136] rounded-md shadow-2xl py-1 w-64"
+                style={{ top: pasteMenu.y, left: pasteMenu.x }}
+                onMouseDown={(e) => e.preventDefault()}
               >
-                <TypeIcon size={13} /> <span>Paste as text</span>
-              </button>
-              <button
-                onClick={() => pasteAsLink(pasteMenu.url, "bookmark")}
-                className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2 border-t border-[#2a3136]"
-              >
-                <LinkIcon size={13} /> <span>Paste as bookmark</span>
-              </button>
-              {pasteMenuCanEmbed && (
+                {platform && (
+                  <div className="px-3 pt-1.5 pb-1.5 border-b border-[#2a3136] flex items-center gap-2">
+                    <span
+                      className="w-2 h-2 rounded-full flex-shrink-0"
+                      style={{ backgroundColor: platform.accent }}
+                    />
+                    <span className="text-[10px] uppercase tracking-wider text-gray-400 flex-shrink-0">
+                      {platform.label}
+                    </span>
+                    <span
+                      className="text-[10px] text-gray-500 truncate ml-auto"
+                      title={preview}
+                    >
+                      {preview}
+                    </span>
+                  </div>
+                )}
                 <button
-                  onClick={() => pasteAsLink(pasteMenu.url, "embed")}
+                  onClick={() => pasteAsText(pasteMenu.url)}
+                  className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
+                >
+                  <TypeIcon size={13} /> <span>Paste as text</span>
+                </button>
+                <button
+                  onClick={() => pasteAsLink(pasteMenu.url, "bookmark")}
                   className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2 border-t border-[#2a3136]"
                 >
-                  <PlayIcon size={13} /> <span>Embed</span>
+                  <LinkIcon size={13} /> <span>Paste as bookmark</span>
                 </button>
-              )}
-            </div>
-          )}
+                {pasteMenuCanEmbed && (
+                  <button
+                    onClick={() => pasteAsLink(pasteMenu.url, "embed")}
+                    className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2 border-t border-[#2a3136]"
+                  >
+                    <PlayIcon size={13} /> <span>Embed</span>
+                  </button>
+                )}
+              </div>
+            );
+          })()}
 
           {linkPickerOpen && (
             <div

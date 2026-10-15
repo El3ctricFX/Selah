@@ -6,7 +6,7 @@ import {
   Image as ImageIcon, Smile, X, Palette, Trash2, Type as TypeIcon,
   Sparkles, Sliders, Move, Columns2, Columns3, Columns4, Square,
   GripHorizontal, ArrowUp, ArrowDown, Minus, Upload, Link as LinkIcon,
-  List, Code2, Copy, Plus, Check, Maximize2, Minimize2, LayoutGrid,
+  List, Code2, Copy, Plus, Check, Maximize2, Minimize2, LayoutGrid, Zap,
 } from "lucide-react";
 import {
   mkdir, exists, rename as renameFs, readDir, readTextFile,
@@ -18,11 +18,13 @@ import EmojiPicker, { Theme, EmojiStyle } from "emoji-picker-react";
 import NoteBody, { type NoteBodyHandle } from "./NoteBody";
 import JournalTimeline from "./JournalTimeline";
 import PhotoLightbox from "./PhotoLightbox";
+import ThumbImg from "./ThumbImg";
 import { useNoteMode } from "./useNoteMode";
 import { useModal } from "./Modal";
 import { parseNoteFile, type Frontmatter } from "./noteFormat";
-import { saveImageToNoteAssets, assetsDirForNote, coverValueToRelative } from "./imageAssets";
+import { saveImageToNoteAssets, assetsDirForNote, coverValueToRelative, setProxyPref } from "./imageAssets";
 import { writeFileAtomic } from "./safeWrite";
+import { useProxyFeature } from "./proxyFeature";
 
 interface JournalViewProps {
   vaultPath: string;
@@ -69,6 +71,19 @@ async function listNoteImages(notePath: string): Promise<{ name: string; abs: st
     for (const name of names) {
       out.push({ name, abs: await join(dir, name) });
     }
+    // Originals may have been trashed after optimizing; still offer their
+    // WebP proxies as cover choices.
+    try {
+      const proxyDir = await join(dir, "proxy");
+      const have = new Set(names);
+      const pEntries = await readDir(proxyDir);
+      for (const e of pEntries) {
+        if (e.isDirectory || !e.name || !/\.webp$/i.test(e.name)) continue;
+        const src = e.name.slice(0, -5);
+        if (have.has(src) || !IMAGE_FILE_RE.test(src)) continue;
+        out.push({ name: src, abs: await join(proxyDir, e.name) });
+      }
+    } catch {}
     return out;
   } catch {
     return [];
@@ -156,6 +171,9 @@ export default function JournalView({
   const [dayPath, setDayPath] = useState<string | null>(null);
   const [monthPath, setMonthPath] = useState<string | null>(null);
 
+  // Must be defined before the effects below reference it in their deps.
+  const currentPath = mode === "day" ? dayPath : monthPath;
+
   const { mode: noteMode, toggle: toggleNoteMode } = useNoteMode();
   const { modal, confirmAsync } = useModal();
   const noteBodyRef = useRef<NoteBodyHandle>(null);
@@ -181,6 +199,8 @@ export default function JournalView({
   const [titleY, setTitleY] = useState(50);
   const [titleFont, setTitleFont] = useState("default");
   const [docWidth, setDocWidth] = useState<DocWidthId>("default");
+  const [proxiesOn, setProxiesOn] = useState(false);
+  const proxyFeature = useProxyFeature();
   const [createdAt, setCreatedAt] = useState<string>("");
   const [modifiedAt, setModifiedAt] = useState<string>("");
   const [wordCount, setWordCount] = useState(0);
@@ -196,6 +216,17 @@ export default function JournalView({
   const [sourceDraft, setSourceDraft] = useState("");
   const [sourceSaving, setSourceSaving] = useState(false);
   const [sourceNonce, setSourceNonce] = useState(0);
+
+  // Reload the editor when cleanup rewrites this note's file on disk.
+  useEffect(() => {
+    const norm = (p: string) => p.replace(/\\/g, "/");
+    const onRewritten = (e: Event) => {
+      const p = (e as CustomEvent).detail?.path as string | undefined;
+      if (p && currentPath && norm(p) === norm(currentPath)) setSourceNonce((n) => n + 1);
+    };
+    window.addEventListener("note-rewritten", onRewritten);
+    return () => window.removeEventListener("note-rewritten", onRewritten);
+  }, [currentPath]);
   const [newPropKey, setNewPropKey] = useState("");
   const [newPropValue, setNewPropValue] = useState("");
   const [copied, setCopied] = useState(false);
@@ -227,7 +258,6 @@ export default function JournalView({
   const monthName = date.toLocaleString("en-US", { month: "long" });
   const dayName = formatDayName(year, month + 1, day);
 
-  const currentPath = mode === "day" ? dayPath : monthPath;
   const hasCover = coverType === "color" || coverType === "image";
   const fontStack = TITLE_FONTS.find((f) => f.id === titleFont)?.stack || "inherit";
   const widthOption = DOC_WIDTHS.find((w) => w.id === docWidth) || DOC_WIDTHS[1];
@@ -727,6 +757,14 @@ export default function JournalView({
     await noteBodyRef.current?.updateFrontmatter({ coverTextShadow: next });
   };
 
+  const toggleProxies = async () => {
+    const next = !proxiesOn;
+    setProxiesOn(next);
+    if (currentPath) setProxyPref(currentPath, next);
+    try { window.dispatchEvent(new CustomEvent("proxy-toggle-request", { detail: { path: currentPath, next, writeFlag: () => noteBodyRef.current?.updateFrontmatter({ proxies: next ? true : undefined }) } })); }
+    catch (e) { console.error("[journal] toggleProxies failed:", e); }
+  };
+
   const applyDocWidth = async (w: DocWidthId) => {
     setDocWidth(w); setWidthMenuOpen(false);
     try { await noteBodyRef.current?.updateFrontmatter({ docWidth: w }); }
@@ -1026,6 +1064,14 @@ export default function JournalView({
                   <span className="hidden xl:inline">{widthOption.label}</span>
                 </button>
 
+                <button type="button" onClick={toggleProxies} style={proxyFeature ? undefined : { display: "none" }}
+                  className={`flex items-center gap-1.5 px-2 h-7 rounded text-xs hover:bg-[#1e2327] transition-colors cursor-pointer flex-shrink-0 ${proxiesOn ? "text-blue-400" : "text-gray-500"}`}
+                  title={proxiesOn
+                    ? "Image proxies ON — new photos also get small WebP copies for smoother scrolling (uses extra disk). Click to turn off for this note."
+                    : "Image proxies OFF — photos are used as-is, no extra copies. Click to turn on for this note."}>
+                  <Zap size={15} />
+                  <span className="hidden xl:inline">{proxiesOn ? "Proxies" : "No proxies"}</span>
+                </button>
                 <button onClick={openProperties}
                   className="flex items-center justify-center w-7 h-7 rounded text-gray-400 hover:text-gray-100 hover:bg-[#1e2327] transition-colors cursor-pointer flex-shrink-0"
                   title="Properties">
@@ -1226,6 +1272,8 @@ export default function JournalView({
                     setTitleY(typeof fm.titleY === "number" ? fm.titleY : 50);
                     setTitleFont((fm.titleFont as string) || "default");
                     setDocWidth(((fm.docWidth as string) as DocWidthId) || "default");
+                    setProxiesOn(fm.proxies === true);
+                    if (currentPath) setProxyPref(currentPath, fm.proxies === true);
                     setCreatedAt((fm.created as string) || "");
                     setModifiedAt((fm.modified as string) || "");
                   }}
@@ -1491,10 +1539,9 @@ export default function JournalView({
                       isActive ? "ring-2 ring-blue-400 border-blue-400" : "border-[#2a3136]"
                     }`}
                     >
-                    <img
+                    <ThumbImg
                     src={convertFileSrc(img.abs)}
                     alt={img.name}
-                    loading="lazy"
                     className="w-full h-auto block"
                     onError={(e) => {
                       (e.currentTarget as HTMLImageElement).style.opacity = "0.3";

@@ -67,7 +67,7 @@ function proxyPathFor(absOriginal: string): string {
   const dir = dirname(absOriginal);
   const name = basename(absOriginal);
   const sep = absOriginal.includes("\\") ? "\\" : "/";
-  return `${dir}${sep}proxy videos${sep}${name}.webm`;
+  return `${dir}${sep}proxy${sep}${name}.webm`;
 }
 
 async function makeBlobUrl(absPath: string): Promise<string> {
@@ -181,13 +181,6 @@ export const createVideo = createReactBlockSpec(
         setErrorMsg("");
         setProgress({ percent: 0, etaSec: -1 });
 
-        console.log("[video] load", {
-          src,
-          noteDir,
-          absOriginal,
-          proxyPath,
-        });
-
         if (!src) {
           setPhase("ready");
           return;
@@ -242,7 +235,6 @@ export const createVideo = createReactBlockSpec(
             } catch {}
 
             if (cancelled) return;
-            console.log("[video] reading", toLoad);
             const url = await makeBlobUrl(toLoad);
             if (cancelled) { URL.revokeObjectURL(url); return; }
             revoked = url;
@@ -330,7 +322,6 @@ export const createVideo = createReactBlockSpec(
         clearProbe();
         setProgress({ percent: 0, etaSec: -1 });
         setPhase("generating");
-        console.log("[video] generate start:", { absOriginal, proxyPath });
 
         let settled = false;
 
@@ -338,9 +329,7 @@ export const createVideo = createReactBlockSpec(
           if (settled) return;
           settled = true;
           try {
-            console.log("[video] reading proxy blob…");
             const url = await makeBlobUrl(proxyPath);
-            console.log("[video] proxy blob ready");
             setPlayable(url);
             setUsingProxy(true);
             setPhase("ready");
@@ -374,7 +363,6 @@ export const createVideo = createReactBlockSpec(
             if (settled) return;
             try {
               if (await exists(proxyPath)) {
-                console.log("[video] proxy file found after", i + 1, "polls");
                 await finalize();
                 return;
               }
@@ -390,7 +378,6 @@ export const createVideo = createReactBlockSpec(
         // Also await the conversion itself for error reporting.
         try {
           await conversion;
-          console.log("[video] invoke resolved");
           await finalize();
         } catch (e: any) {
           console.error("[video] ensureProxy rejected:", e);
@@ -506,7 +493,7 @@ export const createVideo = createReactBlockSpec(
               <p className="text-[11px] text-gray-400 max-w-md leading-relaxed">
                 Your original file is safe and untouched. Generate a playback
                 copy just for this system? It's stored in{" "}
-                <span className="font-mono">proxy videos/</span> and can be
+                <span className="font-mono">proxy/</span> and can be
                 deleted any time without affecting the original.
               </p>
               <div className="flex items-center gap-2">

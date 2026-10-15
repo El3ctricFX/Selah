@@ -11,6 +11,7 @@ import AbbaView from "./AbbaView";
 import NotesView from "./NotesView";
 import HomeView from "./HomeView";
 import SettingsModal from "./SettingsModal";
+import ProxyToggleHost from "./ProxyToggleHost";
 import "./App.css";
 import VaultWelcome from "./VaultWelcome";
 import { useRecentVaults } from "./useRecentVaults";
@@ -396,6 +397,7 @@ export default function App() {
         )}
       </div>
 
+      <ProxyToggleHost />
       <SettingsModal
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}

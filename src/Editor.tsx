@@ -10,7 +10,7 @@ import {
   Type as TypeIcon, Sparkles, Sliders, Move, Trash2,
   Columns2, Columns3, Columns4, Square, GripHorizontal,
   ArrowUp, ArrowDown, Minus, Upload, Link as LinkIcon,
-  Maximize2, Minimize2, List, Code2, Copy, Check, Plus,
+  Maximize2, Minimize2, List, Code2, Copy, Check, Plus, Zap,
 } from "lucide-react";
 import EmojiPicker, { Theme, EmojiStyle } from "emoji-picker-react";
 import NoteBody, { type NoteBodyHandle } from "./NoteBody";
@@ -18,8 +18,9 @@ import PhotoLightbox from "./PhotoLightbox";
 import { useNoteMode } from "./useNoteMode";
 import { useModal } from "./Modal";
 import { parseNoteFile, type Frontmatter } from "./noteFormat";
-import { saveImageToNoteAssets, assetsDirForNote, coverValueToRelative } from "./imageAssets";
+import { saveImageToNoteAssets, assetsDirForNote, coverValueToRelative, setProxyPref } from "./imageAssets";
 import { writeFileAtomic } from "./safeWrite";
+import { useProxyFeature } from "./proxyFeature";
 import TagEditor, { scanAllVaultTags, invalidateTagCache } from "./TagEditor";
 
 interface EditorProps {
@@ -166,6 +167,8 @@ export default function Editor({
   const [titleY, setTitleY] = useState(50);
   const [titleFont, setTitleFont] = useState("default");
   const [docWidth, setDocWidth] = useState<DocWidthId>("default");
+  const [proxiesOn, setProxiesOn] = useState(false);
+  const proxyFeature = useProxyFeature();
 
   const [tags, setTags] = useState<string[]>([]);
   const [allVaultTags, setAllVaultTags] = useState<string[]>([]);
@@ -189,6 +192,17 @@ export default function Editor({
   const [sourceDraft, setSourceDraft] = useState("");
   const [sourceSaving, setSourceSaving] = useState(false);
   const [sourceNonce, setSourceNonce] = useState(0);
+
+  // Reload the editor when cleanup rewrites this note's file on disk.
+  useEffect(() => {
+    const norm = (p: string) => p.replace(/\\/g, "/");
+    const onRewritten = (e: Event) => {
+      const p = (e as CustomEvent).detail?.path as string | undefined;
+      if (p && activeNote.path && norm(p) === norm(activeNote.path)) setSourceNonce((n) => n + 1);
+    };
+    window.addEventListener("note-rewritten", onRewritten);
+    return () => window.removeEventListener("note-rewritten", onRewritten);
+  }, [activeNote.path]);
   const [newPropKey, setNewPropKey] = useState("");
   const [newPropValue, setNewPropValue] = useState("");
   const [copied, setCopied] = useState(false);
@@ -304,6 +318,8 @@ export default function Editor({
         setTitleY(typeof frontmatter.titleY === "number" ? frontmatter.titleY : 50);
         setTitleFont((frontmatter.titleFont as string) || "default");
         setDocWidth(((frontmatter.docWidth as string) as DocWidthId) || "default");
+        setProxiesOn(frontmatter.proxies === true);
+        setProxyPref(activeNote.path, frontmatter.proxies === true);
         setTags(tagsFromFrontmatter(frontmatter));
       } catch {}
     })();
@@ -581,6 +597,14 @@ export default function Editor({
     const next = !coverTextShadow;
     setCoverTextShadow(next);
     await noteBodyRef.current?.updateFrontmatter({ coverTextShadow: next });
+  };
+
+  const toggleProxies = async () => {
+    const next = !proxiesOn;
+    setProxiesOn(next);
+    if (activeNote.path) setProxyPref(activeNote.path, next);
+    try { window.dispatchEvent(new CustomEvent("proxy-toggle-request", { detail: { path: activeNote.path, next, writeFlag: () => noteBodyRef.current?.updateFrontmatter({ proxies: next ? true : undefined }) } })); }
+    catch (e) { console.error("[editor] toggleProxies failed:", e); }
   };
 
   const applyDocWidth = async (w: DocWidthId) => {
@@ -930,7 +954,15 @@ export default function Editor({
             )}
           </div>
 
-          <button onClick={openProperties} className="flex items-center justify-center w-8 h-8 rounded text-gray-400 hover:text-gray-100 hover:bg-[#1e2327] transition-colors cursor-pointer" title="Properties">
+          <button type="button" onClick={toggleProxies} style={proxyFeature ? undefined : { display: "none" }}
+                  className={`flex items-center gap-1.5 px-2 h-8 rounded text-xs hover:bg-[#1e2327] transition-colors cursor-pointer flex-shrink-0 ${proxiesOn ? "text-blue-400" : "text-gray-500"}`}
+                  title={proxiesOn
+                    ? "Image proxies ON — new photos also get small WebP copies for smoother scrolling (uses extra disk). Click to turn off for this note."
+                    : "Image proxies OFF — photos are used as-is, no extra copies. Click to turn on for this note."}>
+                  <Zap size={15} />
+                  <span className="hidden xl:inline">{proxiesOn ? "Proxies" : "No proxies"}</span>
+                </button>
+                <button onClick={openProperties} className="flex items-center justify-center w-8 h-8 rounded text-gray-400 hover:text-gray-100 hover:bg-[#1e2327] transition-colors cursor-pointer" title="Properties">
             <List size={16} />
           </button>
           <button onClick={openSource} className="flex items-center justify-center w-8 h-8 rounded text-gray-400 hover:text-gray-100 hover:bg-[#1e2327] transition-colors cursor-pointer" title="Source">
@@ -1062,6 +1094,8 @@ export default function Editor({
               setTitleY(typeof fm.titleY === "number" ? fm.titleY : 50);
               setTitleFont((fm.titleFont as string) || "default");
               setDocWidth(((fm.docWidth as string) as DocWidthId) || "default");
+              setProxiesOn(fm.proxies === true);
+              setProxyPref(activeNote.path, fm.proxies === true);
               setTags(tagsFromFrontmatter(fm));
             }}
           />

@@ -1,5 +1,6 @@
 // src/ImageGallery.tsx
 import { createReactBlockSpec } from "@blocknote/react";
+import { createPortal } from "react-dom";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -9,8 +10,9 @@ import {
 } from "lucide-react";
 import { useNoteMode } from "./useNoteMode";
 import { useNoteContext } from "./NoteContext";
-import { saveImageToNoteAssets } from "./imageAssets";
+import { saveImageToNoteAssets, proxiesEnabledForNote } from "./imageAssets";
 import PhotoLightbox from "./PhotoLightbox";
+import ThumbImg from "./ThumbImg";
 
 export interface GalleryCell {
   src: string;
@@ -428,7 +430,7 @@ function EmptyCell({
 
 // ── Filled cell ──────────────────────────────────────────────────────
 function FilledCell({
-  cell, row, col, blockId, colspan, rowspan, isEdit,
+  cell, row, col, blockId, colspan, rowspan, isEdit, proxiesOn,
   canResizeCol, canResizeRow,
   canResizeLeft, canResizeTop,
   onResizeColStart, onResizeRowStart,
@@ -437,6 +439,7 @@ function FilledCell({
 }: {
   cell: GalleryCell; row: number; col: number; blockId: string;
   colspan: number; rowspan: number; isEdit: boolean;
+  proxiesOn: boolean;
   canResizeCol: boolean; canResizeRow: boolean;
   canResizeLeft: boolean; canResizeTop: boolean;
   onResizeColStart: (e: React.MouseEvent) => void;
@@ -510,8 +513,9 @@ function FilledCell({
       }}
       onClick={() => onOpen(row, col)}
     >
-    <img
+    <ThumbImg
     src={resolveSrc(cell.src)}
+    allowThumb={proxiesOn && colspan * rowspan <= 4}
     alt={cell.caption || ""}
     draggable={false}
     style={{
@@ -699,6 +703,19 @@ export const createImageGallery = createReactBlockSpec(
       const noteCtx = useNoteContext();
       const notePath = noteCtx?.notePath || "";
 
+      // The note's proxy preference decides whether thumbnails are even a
+      // thing for this note. When proxies are off, the user has asked us
+      // not to create or use anything in proxy/ — thumbnails included.
+      const [proxiesOn, setProxiesOn] = useState(false);
+      useEffect(() => {
+        if (!notePath) return;
+        let cancelled = false;
+        proxiesEnabledForNote(notePath).then((on) => {
+          if (!cancelled) setProxiesOn(on);
+        });
+        return () => { cancelled = true; };
+      }, [notePath]);
+
       const [busyCell, setBusyCell] = useState<string | null>(null);
       const [lightbox, setLightbox] = useState<{ srcs: string[]; index: number } | null>(null);
       const [hoverSide, setHoverSide] = useState<"top" | "bottom" | "left" | "right" | null>(null);
@@ -752,29 +769,43 @@ export const createImageGallery = createReactBlockSpec(
           if (colIdx < 0 || colIdx + 1 >= startSizes.length) return;
           const rect = containerEl.getBoundingClientRect();
           const startX = e.clientX;
+          const startY = e.clientY;
           const sumFrac = startSizes.reduce((a, b) => a + b, 0) || 1;
           const totalGap = Math.max(0, startSizes.length - 1) * gap;
           const available = Math.max(50, rect.width - totalGap);
           const pxPerUnit = available / sumFrac;
 
-          setPreviewColWidths(startSizes);
-          lastColRef.current = startSizes;
+          // Require real mouse movement before treating this as a drag.
+          // The handles are only 6px wide, so a plain click on the edge
+          // of a `fit: cover` image used to emit a tiny mousemove that
+          // accumulated drift into the stored sizes. Now a click alone
+          // does nothing.
+          let hasMoved = false;
+          let pendingSizes: number[] | null = null;
 
           const onMove = (ev: MouseEvent) => {
             const dx = ev.clientX - startX;
+            const dy = ev.clientY - startY;
+            if (!hasMoved) {
+              if (Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
+              hasMoved = true;
+              setPreviewColWidths(startSizes);
+              lastColRef.current = startSizes;
+            }
             const dUnits = dx / pxPerUnit;
             const next = [...startSizes];
             next[colIdx] = Math.max(MIN_COL_WIDTH, startSizes[colIdx] + dUnits);
             next[colIdx + 1] = Math.max(MIN_COL_WIDTH, startSizes[colIdx + 1] - dUnits);
             setPreviewColWidths(next);
+            pendingSizes = next;
             lastColRef.current = next;
           };
           const onUp = () => {
             document.removeEventListener("mousemove", onMove);
             document.removeEventListener("mouseup", onUp);
-            const final = lastColRef.current;
-            if (final) {
-              writeGrid(readGrid(), { colWidths: final });
+            // Persist only if the user actually dragged.
+            if (hasMoved && pendingSizes) {
+              writeGrid(readGrid(), { colWidths: pendingSizes });
             }
             setPreviewColWidths(null);
             lastColRef.current = null;
@@ -792,25 +823,33 @@ export const createImageGallery = createReactBlockSpec(
           e.stopPropagation();
           const startSizes = [...storedRowHeights];
           if (rowIdx < 0 || rowIdx + 1 >= startSizes.length) return;
+          const startX = e.clientX;
           const startY = e.clientY;
 
-          setPreviewRowHeights(startSizes);
-          lastRowRef.current = startSizes;
+          let hasMoved = false;
+          let pendingSizes: number[] | null = null;
 
           const onMove = (ev: MouseEvent) => {
+            const dx = ev.clientX - startX;
             const dy = ev.clientY - startY;
+            if (!hasMoved) {
+              if (Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
+              hasMoved = true;
+              setPreviewRowHeights(startSizes);
+              lastRowRef.current = startSizes;
+            }
             const next = [...startSizes];
             next[rowIdx] = Math.max(MIN_ROW_HEIGHT, startSizes[rowIdx] + dy);
             next[rowIdx + 1] = Math.max(MIN_ROW_HEIGHT, startSizes[rowIdx + 1] - dy);
             setPreviewRowHeights(next);
+            pendingSizes = next;
             lastRowRef.current = next;
           };
           const onUp = () => {
             document.removeEventListener("mousemove", onMove);
             document.removeEventListener("mouseup", onUp);
-            const final = lastRowRef.current;
-            if (final) {
-              writeGrid(readGrid(), { rowHeights: final });
+            if (hasMoved && pendingSizes) {
+              writeGrid(readGrid(), { rowHeights: pendingSizes });
             }
             setPreviewRowHeights(null);
             lastRowRef.current = null;
@@ -1375,6 +1414,7 @@ export const createImageGallery = createReactBlockSpec(
                     row={r} col={c} blockId={props.block.id}
                     colspan={cs} rowspan={rs}
                     isEdit={isEdit}
+                    proxiesOn={proxiesOn}
                     canResizeCol={canResizeCol}
                     canResizeRow={canResizeRow}
                     canResizeLeft={c > 0}
@@ -1524,16 +1564,18 @@ export const createImageGallery = createReactBlockSpec(
             </div>
           )}
 
-          {lightbox && (
-            <PhotoLightbox
-              srcs={lightbox.srcs}
-              index={lightbox.index}
-              onClose={() => setLightbox(null)}
-              onIndexChange={(i) =>
-                setLightbox((p) => (p ? { ...p, index: i } : null))
-              }
-            />
-          )}
+          {lightbox &&
+            createPortal(
+              <PhotoLightbox
+                srcs={lightbox.srcs}
+                index={lightbox.index}
+                onClose={() => setLightbox(null)}
+                onIndexChange={(i) =>
+                  setLightbox((p) => (p ? { ...p, index: i } : null))
+                }
+              />,
+              document.body
+            )}
         </>
       );
     },

@@ -4,6 +4,7 @@ import { readDir, readTextFile } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { parseNoteFile } from "./noteFormat";
+import ThumbImg from "./ThumbImg";
 
 interface TimelineEntry {
   path: string;
@@ -16,6 +17,8 @@ interface TimelineEntry {
   image: string | null;
   snippet: string;
   wordCount: number;
+  /** False when the note's frontmatter says `proxies: false`. */
+  proxiesOn: boolean;
 }
 
 interface Props {
@@ -183,6 +186,7 @@ async function parseEntry(
       image,
       snippet,
       wordCount,
+      proxiesOn: frontmatter.proxies !== false,
     };
   } catch {
     return null;
@@ -443,10 +447,10 @@ function JournalCard({
     >
       {entry.image ? (
         <div className="w-full h-44 bg-[#0f1315] overflow-hidden">
-          <img
+          <ThumbImg
             src={entry.image}
             alt=""
-            loading="lazy"
+            allowThumb={entry.proxiesOn}
             className="w-full h-full object-cover group-hover:scale-[1.03] transition-transform duration-300"
             onError={(e) => {
               (e.currentTarget as HTMLImageElement).style.display = "none";

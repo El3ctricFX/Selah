@@ -189,3 +189,25 @@ html, body, #root {
   overflow: hidden;
   color-scheme: dark;   /* ← add this one line */
 }
+
+/* Disable native scroll anchoring everywhere in the app.
+ *
+ * The editor swaps blocks in place on every keystroke (markdown input
+ * rules, slash-menu inserts, undo/redo). When a taller block above the
+ * viewport is replaced by a shorter one — e.g. a paragraph becoming a
+ * horizontal rule — the browser's scroll anchoring "helpfully" adjusts
+ * scrollTop to keep the anchor stable, which fights the WYSIWYG intent
+ * and produces a visible one-frame up-then-down jitter. That adjustment
+ * happens in the layout engine and bypasses the JS `scrollTop` setter,
+ * so runtime guards cannot intercept it. The only reliable fix is to
+ * turn the feature off. */
+html, body, #root,
+.bn-editor,
+.bn-container,
+.ProseMirror {
+  overflow-anchor: none;
+}
+
+#root * {
+overflow-anchor: none;
+}
