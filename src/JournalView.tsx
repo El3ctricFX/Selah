@@ -15,7 +15,7 @@ import { join } from "@tauri-apps/api/path";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import EmojiPicker, { Theme, EmojiStyle } from "emoji-picker-react";
-import { currentEmojiTheme } from "./emojiTheme";
+
 import NoteBody, { type NoteBodyHandle } from "./NoteBody";
 import JournalTimeline from "./JournalTimeline";
 import PhotoLightbox from "./PhotoLightbox";

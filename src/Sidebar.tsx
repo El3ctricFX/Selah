@@ -12,7 +12,7 @@ import {
   Sliders, LogOut, Home,
 } from 'lucide-react';
 import EmojiPicker, { Theme, EmojiStyle } from 'emoji-picker-react';
-import { currentEmojiTheme } from './emojiTheme';
+
 import { useModal } from './Modal';
 import { moveToTrash } from './trash';
 import { writeFileAtomic } from './safeWrite';

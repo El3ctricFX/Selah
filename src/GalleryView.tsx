@@ -15,7 +15,7 @@ import {
   Sparkles, ExternalLink, Loader2, GitBranch, ListChecks,
 } from "lucide-react";
 import EmojiPicker, { Theme, EmojiStyle } from "emoji-picker-react";
-import { currentEmojiTheme } from "./emojiTheme";
+
 import { useModal } from "./Modal";
 import { useNoteMode } from "./useNoteMode";
 import { moveToTrash } from "./trash";

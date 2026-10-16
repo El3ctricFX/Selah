@@ -4,7 +4,7 @@ import { readTextFile } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import { getVersion } from "@tauri-apps/api/app";
 import {
-  X, Home, Palette, Sparkles, Info,
+    X, Home, Palette, Info,
   GripHorizontal, Eye, EyeOff, Crosshair, Sliders,
   ExternalLink, Heart, Code2, MessageCircle,
 } from "lucide-react";
@@ -562,17 +562,7 @@ function GeneralPanel({ vaultPath }: { vaultPath: string }) {
   );
 }
 
-function ComingSoon({ title, hint }: { title: string; hint: string }) {
-  return (
-    <div className="p-10 text-center">
-      <Sparkles size={22} className="text-gray-600 mx-auto mb-3" />
-      <div className="text-sm text-gray-300 font-medium mb-1">{title}</div>
-      <div className="text-xs text-gray-500 max-w-sm mx-auto leading-relaxed">
-        {hint}
-      </div>
-    </div>
-  );
-}
+
 
 function AboutPanel() {
   const [version, setVersion] = useState<string>("");

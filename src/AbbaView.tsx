@@ -19,7 +19,7 @@ import {
   List as ListIcon, LayoutGrid, Smile,
 } from "lucide-react";
 import EmojiPicker, { Theme, EmojiStyle } from "emoji-picker-react";
-import { currentEmojiTheme } from "./emojiTheme";
+
 import { useModal } from "./Modal";
 import { useNoteMode } from "./useNoteMode";
 import AudioPlayer from "./AudioPlayer";

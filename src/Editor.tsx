@@ -13,7 +13,7 @@ import {
   Maximize2, Minimize2, List, Code2, Copy, Check, Plus, Zap,
 } from "lucide-react";
 import EmojiPicker, { Theme, EmojiStyle } from "emoji-picker-react";
-import { currentEmojiTheme } from "./emojiTheme";
+
 import NoteBody, { type NoteBodyHandle } from "./NoteBody";
 import PhotoLightbox from "./PhotoLightbox";
 import { useNoteMode } from "./useNoteMode";
