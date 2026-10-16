@@ -12,6 +12,7 @@ import {
   Sliders, LogOut, Home,
 } from 'lucide-react';
 import EmojiPicker, { Theme, EmojiStyle } from 'emoji-picker-react';
+import { currentEmojiTheme } from './emojiTheme';
 import { useModal } from './Modal';
 import { moveToTrash } from './trash';
 import { writeFileAtomic } from './safeWrite';
@@ -631,39 +632,39 @@ export default function Sidebar(props: SidebarProps) {
                       <Check size={12} className="text-blue-400 flex-shrink-0" />
                     )}
                   </button>
+                  <div className="flex items-center space-x-0.5 opacity-0 group-hover/cat:opacity-100 transition-opacity">
+                  <button
+                  onClick={(e) => { e.stopPropagation(); renameCategory(c); }}
+                  className="text-gray-500 hover:text-gray-200 p-1"
+                  title="Rename"
+                  >
+                  <Pencil size={11} />
+                  </button>
+                  <button
+                  data-category-icon-btn
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    changeCategoryIcon(c, e.clientX, e.clientY);
+                  }}
+                  className={`p-1 ${
+                    categoryIconPicker?.categoryId === c.id
+                    ? 'text-blue-400 hover:text-blue-300'
+                    : 'text-gray-500 hover:text-gray-200'
+                  }`}
+                  title="Change icon"
+                  >
+                  <Smile size={11} />
+                  </button>
                   {!c.builtin && (
-                    <div className="flex items-center space-x-0.5 opacity-0 group-hover/cat:opacity-100 transition-opacity">
-                      <button
-                        onClick={(e) => { e.stopPropagation(); renameCategory(c); }}
-                        className="text-gray-500 hover:text-gray-200 p-1"
-                        title="Rename"
-                      >
-                        <Pencil size={11} />
-                      </button>
-                      <button
-                        data-category-icon-btn
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          changeCategoryIcon(c, e.clientX, e.clientY);
-                        }}
-                        className={`p-1 ${
-                          categoryIconPicker?.categoryId === c.id
-                            ? 'text-blue-400 hover:text-blue-300'
-                            : 'text-gray-500 hover:text-gray-200'
-                        }`}
-                        title="Change icon"
-                      >
-                        <Smile size={11} />
-                      </button>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); deleteCategory(c); }}
-                        className="text-gray-500 hover:text-red-400 p-1"
-                        title="Delete"
-                      >
-                        <Trash2 size={11} />
-                      </button>
-                    </div>
+                    <button
+                    onClick={(e) => { e.stopPropagation(); deleteCategory(c); }}
+                    className="text-gray-500 hover:text-red-400 p-1"
+                    title="Delete"
+                    >
+                    <Trash2 size={11} />
+                    </button>
                   )}
+                  </div>
                 </div>
               ))}
               <div className="border-t border-[#2a3136] mt-1 pt-1">
@@ -1304,7 +1305,7 @@ function NotesTree({
   const renderNote = (note: NoteEntry, depth: number) => {
     const active = isActive(note);
     const { ext } = splitFilename(note.fileName);
-    const colorText = note.color ? FOLDER_COLORS[note.color]?.text || '' : '';
+    const colorText = note.color && note.color !== 'default' ? FOLDER_COLORS[note.color]?.text || '' : '';
     const isDragging = dragNote?.path === note.path;
     return (
       <div
@@ -1329,7 +1330,7 @@ function NotesTree({
           active ? 'bg-[#2a3136]' : 'hover:bg-[#1e2327]'
         } ${isDragging ? 'opacity-40' : ''}`}
         style={{
-          color: active ? colorText || '#e5e7eb' : colorText || undefined,
+          color: active ? colorText || 'var(--c-text-strong)' : colorText || undefined,
           paddingLeft: `${8 + depth * 12 + 14}px`,
         }}
         title={note.fileName}
@@ -2031,12 +2032,19 @@ function JournalTree({
 
   const applyPickerValue = async (value: string) => {
     if (!picker) return;
+    // "Reset to default" in the color picker means "no color — follow the
+    // theme". Storing the literal string "default" makes the note read
+    // FOLDER_COLORS.default.text (#9ca3af) on the way back, so it turns
+    // gray instead of inheriting the theme's text color. Normalize it to
+    // an empty string; writeNoteMeta already strips empty values.
+    const cleanValue =
+      picker.kind === 'color' && value === 'default' ? '' : value;
     if (picker.folderKey) {
       await saveFolderMeta({
-        [picker.folderKey]: { ...(folderMeta[picker.folderKey] || {}), [picker.kind]: value },
+        [picker.folderKey]: { ...(folderMeta[picker.folderKey] || {}), [picker.kind]: cleanValue },
       });
     } else if (picker.notePath) {
-      await writeNoteMeta(picker.notePath, { [picker.kind]: value });
+      await writeNoteMeta(picker.notePath, { [picker.kind]: cleanValue });
       window.dispatchEvent(new CustomEvent('file-changed', { detail: { path: picker.notePath } }));
       window.dispatchEvent(new CustomEvent('note-frontmatter-changed', { detail: { path: picker.notePath } }));
     }
@@ -2505,7 +2513,7 @@ function JournalTree({
 
                       {expandedMonths[key] && (days[key] || []).map(({ day, file, icon, color }) => {
                         const active = isActiveDay(year, month, day);
-                        const dayColor = color ? FOLDER_COLORS[color]?.text || '' : '';
+                        const dayColor = color && color !== 'default' ? FOLDER_COLORS[color]?.text || '' : '';
                         const { base, ext } = splitFilename(file);
                         return (
                           <div
@@ -2513,7 +2521,7 @@ function JournalTree({
                             onClick={() => onOpenDay(category, Number(year), Number(month), day)}
                             onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setCtx({ kind: 'day', year, month, day, file, x: e.clientX, y: e.clientY }); }}
                             className={`py-1 pl-12 pr-2 rounded cursor-pointer text-sm flex items-center space-x-1.5 ${active ? 'bg-[#2a3136]' : 'hover:bg-[#1e2327]'}`}
-                            style={{ color: active ? dayColor || '#e5e7eb' : dayColor || undefined }}
+                            style={{ color: active ? dayColor || 'var(--c-text-strong)' : dayColor || undefined }}
                           >
                             {icon && <span className="flex-shrink-0">{icon}</span>}
                             <span className="truncate">{base}</span>

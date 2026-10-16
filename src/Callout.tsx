@@ -3,6 +3,7 @@ import { createReactBlockSpec } from "@blocknote/react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import EmojiPicker, { Theme, EmojiStyle } from "emoji-picker-react";
+import { currentEmojiTheme } from "./emojiTheme";
 
 // Notion-style dark tinted backgrounds.
 const COLORS = {

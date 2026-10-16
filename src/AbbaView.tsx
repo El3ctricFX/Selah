@@ -19,6 +19,7 @@ import {
   List as ListIcon, LayoutGrid, Smile,
 } from "lucide-react";
 import EmojiPicker, { Theme, EmojiStyle } from "emoji-picker-react";
+import { currentEmojiTheme } from "./emojiTheme";
 import { useModal } from "./Modal";
 import { useNoteMode } from "./useNoteMode";
 import AudioPlayer from "./AudioPlayer";
@@ -615,7 +616,11 @@ type Tab = "sermons" | "prayer" | "testimonies" | "events" | "studies" | "links"
 type ViewMode = "list" | "grid";
 
 interface AbbaViewProps {
-  abbaDir: string; name: string; icon?: string;
+  abbaDir: string;
+  name: string;
+  icon?: string;
+  focusSection?: string;
+  focusNoteId?: string;
 }
 
 type ListContextHandler<T> = (e: React.MouseEvent, entity: T) => void;
@@ -774,8 +779,13 @@ function GridCard({
 // ═══════════════════════════════════════════════════════════════════════════
 //  Main component
 // ═══════════════════════════════════════════════════════════════════════════
-export default function AbbaView({ abbaDir, name, icon }: AbbaViewProps) {
-  const [tab, setTab] = useState<Tab>("sermons");
+export default function AbbaView({
+  abbaDir,
+  name,
+  icon,
+  focusSection,
+  focusNoteId,
+}: AbbaViewProps) {  const [tab, setTab] = useState<Tab>("sermons");
   const [loading, setLoading] = useState(true);
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
     try {
@@ -983,6 +993,56 @@ export default function AbbaView({ abbaDir, name, icon }: AbbaViewProps) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [abbaDir]);
+
+  // ── External focus (home search, wiki links) ─────────────────────────
+  // When the app hands us a section folder + note id, switch the tab
+  // and open the matching entry. We use a ref so a re-render (e.g. a
+  // list update after loading) doesn't re-open the detail view if the
+  // user already closed it.
+  const lastFocusAppliedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (loading) return;
+    if (!focusSection || !focusNoteId) return;
+    const key = `${focusSection}:${focusNoteId}`;
+    if (lastFocusAppliedRef.current === key) return;
+
+    const sectionToTab: Record<string, Tab> = {
+      sermons: "sermons",
+      prayers: "prayer",
+      testimonies: "testimonies",
+      studies: "studies",
+      events: "events",
+      links: "links",
+    };
+    const nextTab = sectionToTab[focusSection];
+    if (!nextTab) return;
+
+    // Confirm the entry actually lives in that tab's list. If not (e.g.
+    // still loading), bail — the effect will re-run when the list fills.
+    const list: any[] =
+    nextTab === "sermons" ? sermons :
+    nextTab === "prayer" ? prayers :
+    nextTab === "testimonies" ? testimonies :
+    nextTab === "studies" ? studies :
+    nextTab === "events" ? events :
+    nextTab === "links" ? links : [];
+    if (!list.some((x) => x.id === focusNoteId)) return;
+
+    lastFocusAppliedRef.current = key;
+    setTab(nextTab);
+    setOpenSermonId(null);
+    setOpenPrayerId(null);
+    setOpenTestimonyId(null);
+    setOpenStudyId(null);
+    setOpenEventId(null);
+    if (nextTab === "sermons") setOpenSermonId(focusNoteId);
+    else if (nextTab === "prayer") setOpenPrayerId(focusNoteId);
+    else if (nextTab === "testimonies") setOpenTestimonyId(focusNoteId);
+    else if (nextTab === "studies") setOpenStudyId(focusNoteId);
+    else if (nextTab === "events") setOpenEventId(focusNoteId);
+    // links have no detail pane
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, focusSection, focusNoteId, sermons, prayers, testimonies, studies, events, links]);
 
   useEffect(() => {
     const onErr = (e: Event) => {

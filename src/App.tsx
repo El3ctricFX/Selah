@@ -1,6 +1,8 @@
 // src/App.tsx
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { readTextFile } from "@tauri-apps/plugin-fs";
+import { join } from "@tauri-apps/api/path";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PanelLeftOpen } from "lucide-react";
 import Editor from "./Editor";
@@ -17,14 +19,17 @@ import VaultWelcome from "./VaultWelcome";
 import { useRecentVaults } from "./useRecentVaults";
 import { flushAll } from "./flushRegistry";
 import { migrateVaultPaths } from "./vaultMigration";
+import { useTheme } from "./theme";
+import ThemeBackground from "./ThemeBackground";
 
 type JournalFocus = { year: number; month: number; day: number };
+type ViewSnapshot = { view: ActiveView; categoryId: string | null };
 
 type ActiveView =
   | { kind: "note"; path: string; name: string }
   | { kind: "journal"; dir: string; focus?: JournalFocus; focusMode?: "day" | "month" }
   | { kind: "gallery"; dir: string; name: string }
-  | { kind: "abba"; dir: string; name: string; icon: string }
+    | { kind: "abba"; dir: string; name: string; icon: string; focusSection?: string; focusNoteId?: string }
   | { kind: "notes"; dir: string; name: string; icon: string; categoryId: string }
   | null;
 
@@ -56,6 +61,13 @@ export default function App() {
   const [focusMode, setFocusMode] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [vaultCategories, setVaultCategories] = useState<
+  Array<{ id: string; name: string; icon: string; mode: string; dirName: string }>
+  >([]);
+
+  // Applies the saved theme to :root and keeps it in sync with the
+  // Appearance panel. The panel uses the same hook, so both stay in step.
+  useTheme();
 
   const {
     vaults: recentVaults,
@@ -143,6 +155,167 @@ export default function App() {
     );
   }, [vaultPath]);
 
+  useEffect(() => {
+    if (!vaultPath) {
+      setVaultCategories([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const raw = await readTextFile(await join(vaultPath, ".vault_metadata.json"));
+        const meta = JSON.parse(raw);
+        if (cancelled) return;
+        setVaultCategories(Array.isArray(meta.categories) ? meta.categories : []);
+      } catch {
+        if (!cancelled) setVaultCategories([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [vaultPath]);
+  // ── View history (mouse-back / Alt+← navigation) ─────────────────────
+  const historyRef = useRef<ViewSnapshot[]>([]);
+  const forwardRef = useRef<ViewSnapshot[]>([]);
+  const prevSnapshotRef = useRef<ViewSnapshot | null>(null);
+  const suppressHistoryRef = useRef(false);
+  const activeViewRef = useRef<ActiveView>(null);
+  const activeCategoryRef = useRef<string | null>(null);
+
+  useEffect(() => { activeViewRef.current = activeView; }, [activeView]);
+  useEffect(() => { activeCategoryRef.current = activeCategoryId; }, [activeCategoryId]);
+
+  const viewsEqual = (a: ActiveView, b: ActiveView): boolean => {
+    if (a === b) return true;
+    if (!a || !b) return false;
+    try { return JSON.stringify(a) === JSON.stringify(b); }
+    catch { return false; }
+  };
+
+  // Whenever the view or category changes, push the *previous* state onto
+  // the history stack — unless the change came from goBack / goForward,
+  // in which case we've already updated the stack ourselves.
+  useEffect(() => {
+    const prev = prevSnapshotRef.current;
+    const snap: ViewSnapshot = { view: activeView, categoryId: activeCategoryId };
+    const suppressed = suppressHistoryRef.current;
+    suppressHistoryRef.current = false;
+
+    if (prev && !suppressed) {
+      const viewChanged = !viewsEqual(prev.view, activeView);
+      const catChanged = prev.categoryId !== activeCategoryId;
+      if (viewChanged || catChanged) {
+        historyRef.current.push(prev);
+        if (historyRef.current.length > 50) historyRef.current.shift();
+        forwardRef.current = [];
+      }
+    }
+    prevSnapshotRef.current = snap;
+  }, [activeView, activeCategoryId]);
+
+  const goBack = useCallback(() => {
+    const hist = historyRef.current;
+    if (hist.length === 0) return;
+    const target = hist.pop()!;
+    forwardRef.current.push({
+      view: activeViewRef.current,
+      categoryId: activeCategoryRef.current,
+    });
+    suppressHistoryRef.current = true;
+    setActiveCategoryId(target.categoryId);
+    setActiveView(target.view);
+    if (target.view?.kind === "journal") setJournalNonce((n) => n + 1);
+  }, []);
+
+    const goForward = useCallback(() => {
+      const fwd = forwardRef.current;
+      if (fwd.length === 0) return;
+      const target = fwd.pop()!;
+      historyRef.current.push({
+        view: activeViewRef.current,
+        categoryId: activeCategoryRef.current,
+      });
+      suppressHistoryRef.current = true;
+      setActiveCategoryId(target.categoryId);
+      setActiveView(target.view);
+      if (target.view?.kind === "journal") setJournalNonce((n) => n + 1);
+    }, []);
+
+      // Mouse buttons 3 (back) and 4 (forward). Capture phase so we see them
+      // before ProseMirror, sidebar drag handlers, or anything else that might
+      // stop the event.
+      useEffect(() => {
+        const onMouseDown = (e: MouseEvent) => {
+          if (e.button === 3) {
+            e.preventDefault();
+            e.stopPropagation();
+            goBack();
+          } else if (e.button === 4) {
+            e.preventDefault();
+            e.stopPropagation();
+            goForward();
+          }
+        };
+        window.addEventListener("mousedown", onMouseDown, true);
+        return () => window.removeEventListener("mousedown", onMouseDown, true);
+      }, [goBack, goForward]);
+
+      // ── Keep the history snapshot's journal date in sync ─────────────────
+      // JournalView manages its own `date` state internally (arrow keys,
+      // month/year clicks). App's `activeView.focus` never sees those
+      // changes, so when the user clicks away, the pushed history snapshot
+      // would carry whatever `focus` was at the time the journal was opened
+      // — usually `undefined`, which makes the back button land on "today".
+      //
+      // JournalView already fires `journal-date-changed` on every date
+      // change. We listen for it and mutate the pending history snapshot so
+      // the date it carries always matches what the user is actually
+      // looking at. No re-render, no remount of JournalView — just keeping
+      // the not-yet-committed snapshot honest.
+      useEffect(() => {
+        const onDateChanged = (e: Event) => {
+          const d = (e as CustomEvent).detail;
+          if (!d) return;
+          const prev = prevSnapshotRef.current;
+          if (!prev) return;
+          const pv: any = prev.view;
+          if (!pv || pv.kind !== "journal") return;
+
+          const normDir = (s: string) =>
+          s.replace(/\\/g, "/").replace(/\/+$/, "");
+          if (normDir(pv.dir) !== normDir(d.dir)) return;
+
+          if (
+            pv.focus &&
+            pv.focus.year === d.year &&
+            pv.focus.month === d.month &&
+            pv.focus.day === d.day
+          ) return;
+
+          prevSnapshotRef.current = {
+            ...prev,
+            view: {
+              ...pv,
+              focus: { year: d.year, month: d.month, day: d.day },
+              focusMode: "day",
+            },
+          };
+        };
+        window.addEventListener("journal-date-changed", onDateChanged);
+        return () => window.removeEventListener("journal-date-changed", onDateChanged);
+      }, []);
+
+      // Alt+← / Alt+→ as a keyboard fallback for machines without side
+      // buttons.
+      useEffect(() => {
+        const onKey = (e: KeyboardEvent) => {
+          if (!e.altKey) return;
+          if (e.key === "ArrowLeft") { e.preventDefault(); goBack(); }
+          else if (e.key === "ArrowRight") { e.preventDefault(); goForward(); }
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+      }, [goBack, goForward]);
+
   const handleSelectVault = async () => {
     const selected = await open({
       directory: true,
@@ -194,10 +367,34 @@ export default function App() {
     const normalized = path.replace(/\\/g, "/");
     const name = normalized.split("/").pop() || "note.selah";
 
+    // ── Which category owns this file? ────────────────────────────────
+    // Walk the category list and find the one whose directory is a
+    // prefix of the file's path. If nothing matches, the file lives at
+    // the vault root (or in an orphan folder) and gets the plain editor.
+    const normVault = vaultPath.replace(/\\/g, "/").replace(/\/+$/, "");
+    let owner: typeof vaultCategories[number] | null = null;
+    let relPath = "";
+    for (const cat of vaultCategories) {
+      if (!cat.dirName) continue;
+      const prefix = `${normVault}/${cat.dirName}/`;
+      if (normalized.startsWith(prefix)) {
+        owner = cat;
+        relPath = normalized.slice(prefix.length);
+        break;
+      }
+    }
+
+    // ── Journal categories ────────────────────────────────────────────
+    // A day file is named like "January 1, 2024.selah" — that shape is
+    // what routes it to the journal view. We accept it either when the
+    // owning category is explicitly a journal, or when there's no owner
+    // at all (legacy vaults, or files at the vault root).
     const dayInfo = parseJournalDayFilename(name);
-    if (dayInfo) {
-      const parts = normalized.split("/");
-      const journalDir = parts.slice(0, -3).join("/");
+    if (dayInfo && (!owner || owner.mode === "journal")) {
+      const journalDir = owner
+      ? `${vaultPath}/${owner.dirName}`
+      : normalized.split("/").slice(0, -3).join("/");
+      if (owner) setActiveCategoryId(owner.id);
       setJournalNonce((n) => n + 1);
       setActiveView({
         kind: "journal",
@@ -208,6 +405,43 @@ export default function App() {
       return;
     }
 
+    // ── Abba categories ───────────────────────────────────────────────
+    // Abba files live as `<section>/<id>.selah`, so the first path
+    // segment is the tab to open and the filename is the entry to focus.
+    if (owner?.mode === "abba") {
+      const relParts = relPath.split("/");
+      if (relParts.length >= 2) {
+        const section = relParts[0];
+        const fileName = relParts[relParts.length - 1];
+        const noteId = fileName.replace(/\.selah$/i, "");
+        setActiveCategoryId(owner.id);
+        setActiveView({
+          kind: "abba",
+          dir: `${vaultPath}/${owner.dirName}`,
+          name: owner.name,
+          icon: owner.icon,
+          focusSection: section,
+          focusNoteId: noteId,
+        });
+        return;
+      }
+    }
+
+    // ── Notes categories ──────────────────────────────────────────────
+    // A note category's files are plain .selah documents. Open the one
+    // the user clicked in the regular editor, but point the sidebar at
+    // the owning category so the tree on the left is showing the right
+    // folder.
+    if (owner?.mode === "notes") {
+      setActiveCategoryId(owner.id);
+      setActiveView({ kind: "note", path, name });
+      return;
+    }
+
+    // ── Fallback ──────────────────────────────────────────────────────
+    // Unknown mode, gallery (shouldn't happen — no .selah files), or a
+    // file at the vault root. Just open the editor.
+    if (owner) setActiveCategoryId(owner.id);
     setActiveView({ kind: "note", path, name });
   };
 
@@ -233,9 +467,10 @@ export default function App() {
   };
 
   return (
-    <div className="w-screen h-screen overflow-hidden bg-[#0f1315] text-gray-200 flex flex-row font-sans">
+    <div className="app-shell w-screen h-screen overflow-hidden bg-[#0f1315] text-gray-200 flex flex-row font-sans">
+      <ThemeBackground />
       <div
-        className={`h-full bg-[#161a1d] border-r border-[#2a3136] flex-shrink-0 flex flex-col overflow-hidden transition-all duration-200 ${
+        className={`sidebar-shell h-full bg-[#161a1d] border-r border-[#2a3136] flex-shrink-0 flex flex-col overflow-hidden transition-all duration-200 ${
           sidebarHidden ? "w-0 border-r-0" : "w-72"
         }`}
       >
@@ -332,7 +567,7 @@ export default function App() {
         )}
       </div>
 
-      <div className="flex-grow h-full overflow-hidden relative">
+      <div className="content-shell flex-grow h-full overflow-hidden relative">
         {!focusMode && sidebarCollapsed && (
           <button
             onClick={() => setSidebarCollapsed(false)}
@@ -378,9 +613,11 @@ export default function App() {
           <GalleryView sectionDir={activeView.dir} sectionName={activeView.name} />
         ) : activeView.kind === "abba" ? (
           <AbbaView
-            abbaDir={activeView.dir}
-            name={activeView.name}
-            icon={activeView.icon}
+          abbaDir={activeView.dir}
+          name={activeView.name}
+          icon={activeView.icon}
+          focusSection={activeView.focusSection}
+          focusNoteId={activeView.focusNoteId}
           />
         ) : (
           <NotesView

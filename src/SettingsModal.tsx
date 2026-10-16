@@ -15,6 +15,7 @@ import {
   DEFAULT_HOME_SETTINGS,
   type HomeSettings,
 } from "./HomeSettings";
+import AppearancePanel from "./AppearancePanel";
 
 type SectionId = "home" | "general" | "appearance" | "about";
 
@@ -82,7 +83,15 @@ export default function SettingsModal({
     } | null
   >(null);
 
+  // True only while the user is pressing on the backdrop itself. Reset on
+  // release. This is what stops a slider drag that ends outside the modal
+  // from being mistaken for "click the backdrop to close".
   const modalRef = useRef<HTMLDivElement>(null);
+
+  // True only while the user is pressing on the backdrop itself. Reset on
+  // release. This is what stops a slider drag that ends outside the modal
+  // from being mistaken for "click the backdrop to close".
+  const backdropPressRef = useRef(false);
 
   // Load vault metadata (categories + home settings) each time we open.
   useEffect(() => {
@@ -251,10 +260,20 @@ export default function SettingsModal({
           ? "bg-black/70 pointer-events-auto"
           : "bg-transparent pointer-events-none"
       }`}
-      onClick={backdropOn ? onClose : undefined}
+      onMouseDown={(e) => {
+        backdropPressRef.current =
+          backdropOn && e.target === e.currentTarget;
+      }}
+      onMouseUp={(e) => {
+        if (backdropPressRef.current && e.target === e.currentTarget) {
+          onClose();
+        }
+        backdropPressRef.current = false;
+      }}
     >
       <div
         ref={modalRef}
+        data-opaque
         className="absolute bg-[#1e2327] border border-[#2a3136] rounded-xl shadow-2xl overflow-hidden flex pointer-events-auto"
         onClick={(e) => e.stopPropagation()}
         style={{
@@ -375,10 +394,7 @@ export default function SettingsModal({
             ) : section === "general" ? (
               <GeneralPanel vaultPath={vaultPath} />
             ) : section === "appearance" ? (
-              <ComingSoon
-                title="Appearance"
-                hint="Light mode, theme colors, and a custom CSS editor will live here."
-              />
+              <AppearancePanel />
             ) : (
               <AboutPanel />
             )}

@@ -74,6 +74,7 @@ import { createScripture } from "./ScriptureBlock";
 import { createDmArchive } from "./DmArchive";
 import { isReliablyEmbeddable } from "./embeds";
 import { useNoteMode } from "./useNoteMode";
+import { useTheme } from "./theme";
 import { NoteContext } from "./NoteContext";
 import {
   noteBodyToBlocks,
@@ -129,7 +130,19 @@ export interface NoteBodyHandle {
   rearm: () => void;
 }
 
-type NoteEntry = { path: string; name: string; icon: string };
+type NoteEntry = {
+  path: string;
+  /** File basename without extension — the target of `[[wiki links]]`. */
+  name: string;
+  /** Display title (frontmatter.title || name). */
+  title: string;
+  icon: string;
+  tags: string[];
+  /** Folder path relative to the category root (e.g. "2024/09", "sermons"). */
+  folderLabel: string;
+  /** The category directory name (first path segment from the vault root). */
+  categoryName: string;
+};
 
 function noteDirOf(notePath: string): string {
   const lastSlash = Math.max(notePath.lastIndexOf("/"), notePath.lastIndexOf("\\"));
@@ -161,7 +174,8 @@ function collectImageUrls(blocks: any[]): string[] {
 async function collectNoteFiles(
   dir: string,
   out: NoteEntry[],
-  depth = 0
+  rootDir: string,
+  depth = 0,
 ): Promise<void> {
   if (depth > 8) return;
   try {
@@ -171,18 +185,46 @@ async function collectNoteFiles(
       if (e.name.startsWith(".") || e.name === "assets" || e.name === "_attachments") continue;
       const full = await join(dir, e.name);
       if (e.isDirectory) {
-        await collectNoteFiles(full, out, depth + 1);
+        await collectNoteFiles(full, out, rootDir, depth + 1);
       } else if (e.name.endsWith(".selah")) {
         let icon = "";
+        let title = e.name.replace(/\.selah$/, "");
+        let tags: string[] = [];
         try {
           const raw = await readTextFile(full);
           const { frontmatter } = parseNoteFile(raw);
           icon = (frontmatter.icon as string) || "";
+          const fmTitle = (frontmatter.title as string) || "";
+          if (fmTitle) title = fmTitle;
+          if (Array.isArray(frontmatter.tags)) {
+            tags = (frontmatter.tags as any[]).filter(
+              (t): t is string => typeof t === "string" && t.length > 0
+            );
+          }
         } catch {}
+
+        // Derive category + folder from the path relative to the vault root.
+        const normFull = full.replace(/\\/g, "/");
+        const normRoot = rootDir.replace(/\\/g, "/").replace(/\/+$/, "");
+        let categoryName = "";
+        let folderLabel = "";
+        if (normFull.startsWith(normRoot + "/")) {
+          const rel = normFull.slice(normRoot.length + 1);
+          const parts = rel.split("/");
+          if (parts.length >= 2) {
+            categoryName = parts[0];
+            folderLabel = parts.slice(1, -1).join("/");
+          }
+        }
+
         out.push({
           path: full,
           name: e.name.replace(/\.selah$/, ""),
-          icon,
+                 title,
+                 icon,
+                 tags,
+                 folderLabel,
+                 categoryName,
         });
       }
     }
@@ -336,7 +378,11 @@ const VIDEO_EXT_RE = /\.(mp4|webm|mov|mkv|m4v|avi|ogv)$/i;
 const URL_RE = /^https?:\/\/\S+$/i;
 const DEBOUNCE_MS = 150;
 const MAX_DEBOUNCE_MS = 2000;
-
+// Module-level lookup of note basename → icon emoji. Populated by the
+// active NoteBody instance whenever `allNotes` refreshes. There's only
+// one editor visible at a time, so a shared map is safe and avoids
+// threading state through the plugin's props.
+const noteIconMap: Map<string, string> = new Map();
 const NOTE_LINK_KEY = new PluginKey("note-links");
 
 function buildNoteLinkDecorations(doc: any): DecorationSet {
@@ -356,22 +402,60 @@ function buildNoteLinkDecorationsUnsafe(doc: any): DecorationSet {
     const re = /\[\[([^\]\n]+)\]\]/g;
     let m: RegExpExecArray | null;
     while ((m = re.exec(text)) !== null) {
+      const inner = m[1];
+      const pipeIdx = inner.indexOf("|");
+      const target = pipeIdx >= 0 ? inner.slice(0, pipeIdx) : inner;
+      const display = pipeIdx >= 0 ? inner.slice(pipeIdx + 1) : inner;
+
       const openFrom = pos + m.index;
       const openTo = openFrom + 2;
-      const nameFrom = openTo;
-      const nameTo = nameFrom + m[1].length;
-      const closeFrom = nameTo;
+      const targetFrom = openTo;
+      const targetTo = targetFrom + target.length;
+      const pipeTo = targetTo + (pipeIdx >= 0 ? 1 : 0);
+      const displayFrom = pipeTo;
+      const displayTo = displayFrom + display.length;
+      const closeFrom = displayTo;
       const closeTo = closeFrom + 2;
 
       decos.push(
         Decoration.inline(openFrom, openTo, { class: "note-link-bracket" } as any)
       );
+
+      if (pipeIdx >= 0) {
+        decos.push(
+          Decoration.inline(targetFrom, pipeTo, { class: "note-link-bracket" } as any)
+        );
+      }
+
+      // Icon widget — placed just before the display text, after the
+      // hidden `target|` prefix. Only emitted when the target note has
+      // an icon set.
+      const icon = noteIconMap.get(target);
+      if (icon) {
+        decos.push(
+          Decoration.widget(
+            displayFrom,
+            () => {
+              const span = document.createElement("span");
+              span.className = "note-link-icon";
+              span.textContent = icon;
+              span.setAttribute("data-note-link-icon", "1");
+              span.setAttribute("data-note-name", target);
+              span.title = target;
+              return span;
+            },
+            { side: -1 }
+          )
+        );
+      }
+
       decos.push(
-        Decoration.inline(nameFrom, nameTo, {
+        Decoration.inline(displayFrom, displayTo, {
           class: "note-link",
-          "data-note-name": m[1],
+          "data-note-name": target,
         } as any)
       );
+
       decos.push(
         Decoration.inline(closeFrom, closeTo, { class: "note-link-bracket" } as any)
       );
@@ -450,6 +534,10 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
     const [isLoading, setIsLoading] = useState(true);
     const [linkPickerOpen, setLinkPickerOpen] = useState(false);
     const [linkQuery, setLinkQuery] = useState("");
+    const [resolveLink, setResolveLink] = useState<{
+      targetName: string;
+      displayText: string;
+    } | null>(null);
     const [allNotes, setAllNotes] = useState<NoteEntry[]>([]);
     const [loadingNotes, setLoadingNotes] = useState(false);
     const [pendingImageDelete, setPendingImageDelete] = useState<string[]>([]);
@@ -506,6 +594,8 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
     const loadedDocFingerprintRef = useRef<string | null>(null);
 
     const { mode } = useNoteMode();
+    const { theme } = useTheme();
+    const bnTheme: "light" | "dark" = theme.mode === "light" ? "light" : "dark";
 
 
 
@@ -2764,7 +2854,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       if (!vaultPath) return;
       setLoadingNotes(true);
       const out: NoteEntry[] = [];
-      await collectNoteFiles(vaultPath, out);
+      await collectNoteFiles(vaultPath, out, vaultPath);
       out.sort((a, b) => a.name.localeCompare(b.name));
       setAllNotes(out);
       setLoadingNotes(false);
@@ -2783,10 +2873,69 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
     const closeLinkPicker = () => {
       bracketTriggerRef.current = false;
       setLinkPickerOpen(false);
+      setResolveLink(null);
     };
+    const rewriteAmbiguousLink = (
+      oldTarget: string,
+      oldDisplay: string,
+      newTarget: string,
+    ): boolean => {
+      try {
+        const tiptap: any = (editor as any)._tiptapEditor;
+        if (!tiptap) return false;
+        const { state } = tiptap;
+        let replaced = false;
 
+        const oldWithPipe = `[[${oldTarget}|${oldDisplay}]]`;
+        const oldBare = `[[${oldTarget}]]`;
+        const newText = oldDisplay
+        ? `[[${newTarget}|${oldDisplay}]]`
+        : `[[${newTarget}]]`;
+
+        state.doc.descendants((node: any, pos: number) => {
+          if (replaced) return false;
+          if (!node.isText) return;
+          const text: string = node.text || "";
+          let idx = text.indexOf(oldWithPipe);
+          let len = oldWithPipe.length;
+          if (idx === -1) {
+            idx = text.indexOf(oldBare);
+            len = oldBare.length;
+          }
+          if (idx === -1) return;
+          const from = pos + idx;
+          const to = from + len;
+          const tr = state.tr.insertText(newText, from, to);
+          tiptap.view.dispatch(tr);
+          replaced = true;
+          return false;
+        });
+
+        return replaced;
+      } catch (e) {
+        console.warn("[link] rewrite failed:", e);
+        return false;
+      }
+    };
     const insertNoteLink = (entry: NoteEntry) => {
       try {
+        // If we got here via the ambiguous-link picker, rewrite the
+        // source text in place and navigate — don't insert a new link.
+        if (resolveLink) {
+          const newTarget = entry.categoryName
+          ? `${entry.categoryName}/${entry.name}`
+          : entry.name;
+          rewriteAmbiguousLink(
+            resolveLink.targetName,
+            resolveLink.displayText,
+            newTarget,
+          );
+          setResolveLink(null);
+          onOpenNoteByPath?.(entry.path);
+          bracketTriggerRef.current = false;
+          setLinkPickerOpen(false);
+          return;
+        }
         const fromBracket = bracketTriggerRef.current;
         if (fromBracket) {
           const tiptap: any = (editor as any)._tiptapEditor;
@@ -2800,8 +2949,23 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
             }
           }
         }
+
+        // If more than one note shares this basename (e.g. "October 10,
+        // 2026" exists in both Daily Journal and Dreams), prefix with the
+        // category so clicking the link resolves unambiguously.
+        const sameName = allNotes.filter((x) => x.name === entry.name);
+        const target =
+        sameName.length > 1 && entry.categoryName
+        ? `${entry.categoryName}/${entry.name}`
+        : entry.name;
+
+        const linkText =
+        entry.title && entry.title !== entry.name
+        ? `[[${target}|${entry.title}]]`
+        : `[[${target}]]`;
+
         editor.insertInlineContent([
-          { type: "text", text: `[[${entry.name}]]`, styles: {} },
+          { type: "text", text: linkText, styles: {} },
         ]);
       } catch (e) {
         console.error("[link] insert failed:", e);
@@ -3107,8 +3271,9 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
           }
         }
 
-        const noteLinkEl = target.closest(".note-link") as HTMLElement | null;
-        if (!noteLinkEl) return;
+                const noteLinkEl = target.closest(
+          ".note-link, [data-note-link-icon]"
+        ) as HTMLElement | null;        if (!noteLinkEl) return;
         const name = noteLinkEl.getAttribute("data-note-name");
         if (!name) return;
 
@@ -3117,22 +3282,42 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         e.preventDefault();
         e.stopPropagation();
 
-        const matches = allNotes.filter((n) => n.name === name);
+        // Target may be a bare basename (legacy links) or a disambiguated
+        // "Category/name" form (new links). Handle both.
+        const slashIdx = name.indexOf("/");
+        const catPart = slashIdx > 0 ? name.slice(0, slashIdx) : null;
+        const basePart = slashIdx > 0 ? name.slice(slashIdx + 1) : name;
+
+        const matches = catPart
+        ? allNotes.filter(
+          (n) => n.categoryName === catPart && n.name === basePart
+        )
+        : allNotes.filter((n) => n.name === basePart);
+
         if (matches.length === 1) {
           onOpenNoteByPath?.(matches[0].path);
           return;
         }
         if (matches.length > 1) {
-          setLinkQuery(name);
+          // Legacy ambiguous link — show the picker so the user can
+          // choose. Remember which link was clicked so we can rewrite
+          // the source text once they pick.
+          setResolveLink({
+            targetName: name,
+            displayText: (noteLinkEl.textContent || basePart).trim(),
+          });
+          setLinkQuery(basePart);
           bracketTriggerRef.current = false;
           setLinkPickerOpen(true);
           return;
         }
         if (vaultPath) {
           const out: NoteEntry[] = [];
-          collectNoteFiles(vaultPath, out).then(() => {
+          collectNoteFiles(vaultPath, out, vaultPath).then(() => {
             setAllNotes(out);
-            const found = out.find((n) => n.name === name);
+            const found = catPart
+            ? out.find((n) => n.categoryName === catPart && n.name === basePart)
+            : out.find((n) => n.name === basePart);
             if (found) onOpenNoteByPath?.(found.path);
           });
         }
@@ -3142,21 +3327,59 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       return () => el.removeEventListener("click", handler, true);
     }, [mode, allNotes, vaultPath, onOpenNoteByPath, onImageClick]);
 
+    // Keep the note-icon map in sync with the current allNotes list, and
+    // force a decoration rebuild so existing wiki links pick up new icons.
+    useEffect(() => {
+      noteIconMap.clear();
+
+      // Count basenames so we only store a bare-basename key when it's
+      // unique across the vault. Ambiguous basenames get a Category/name
+      // key instead, matching what insertNoteLink writes.
+      const counts = new Map<string, number>();
+      for (const n of allNotes) {
+        counts.set(n.name, (counts.get(n.name) || 0) + 1);
+      }
+
+      for (const n of allNotes) {
+        if (!n.icon) continue;
+        if (n.categoryName) {
+          noteIconMap.set(`${n.categoryName}/${n.name}`, n.icon);
+        }
+        if (counts.get(n.name) === 1) {
+          noteIconMap.set(n.name, n.icon);
+        }
+      }
+
+      try {
+        const tiptap: any = (editor as any)._tiptapEditor;
+        if (tiptap?.view) tiptap.view.dispatch(tiptap.state.tr);
+      } catch {}
+    }, [allNotes, editor]);
+
     useEffect(() => {
       if (!vaultPath) return;
       const out: NoteEntry[] = [];
-      collectNoteFiles(vaultPath, out).then(() => {
-        out.sort((a, b) => a.name.localeCompare(b.name));
+      collectNoteFiles(vaultPath, out, vaultPath).then(() => {
+        out.sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: "base" }));
         setAllNotes(out);
       });
     }, [vaultPath]);
 
     const filteredNotes = useMemo(() => {
       const q = linkQuery.trim().toLowerCase();
-      if (!q) return allNotes.slice(0, 60);
-      return allNotes
-        .filter((n) => n.name.toLowerCase().includes(q))
-        .slice(0, 60);
+      const sorted = [...allNotes].sort((a, b) =>
+      a.title.localeCompare(b.title, undefined, { sensitivity: "base" })
+      );
+      if (!q) return sorted.slice(0, 60);
+      return sorted
+      .filter((n) =>
+      n.title.toLowerCase().includes(q) ||
+      n.name.toLowerCase().includes(q) ||
+      n.tags.some((t) => t.toLowerCase().includes(q)) ||
+      n.folderLabel.toLowerCase().includes(q) ||
+      n.categoryName.toLowerCase().includes(q)
+      )
+      .slice(0, 60);
     }, [linkQuery, allNotes]);
 
     const pendingImageUrl = pendingImageDelete[0] || null;
@@ -3199,7 +3422,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         >
           <BlockNoteView
             editor={editor}
-            theme="dark"
+            theme={bnTheme}
             slashMenu={false}
             onChange={handleContentChange}
           >
@@ -3582,7 +3805,15 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
                       <span className="flex-shrink-0 w-5 text-center">
                         {n.icon || "📄"}
                       </span>
-                      <span className="truncate">{n.name}</span>
+                      <span className="flex-1 min-w-0">
+                        <span className="block truncate">{n.title}</span>
+                        {(n.categoryName || n.folderLabel) && (
+                          <span className="block text-[10px] text-gray-500 truncate">
+                            {n.categoryName}
+                            {n.folderLabel ? ` · ${n.folderLabel}` : ""}
+                          </span>
+                        )}
+                      </span>
                     </button>
                   ))}
                 </div>

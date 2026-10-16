@@ -11,6 +11,7 @@ import {
   ArrowUpDown, Filter, Pin, Tag, Check, Smile,
 } from "lucide-react";
 import EmojiPicker, { Theme, EmojiStyle } from "emoji-picker-react";
+import { currentEmojiTheme } from "./emojiTheme";
 import { useModal } from "./Modal";
 import { parseNoteFile, serializeNoteFile } from "./noteFormat";
 import { moveToTrash } from "./trash";

@@ -15,6 +15,7 @@ import {
   Sparkles, ExternalLink, Loader2, GitBranch, ListChecks,
 } from "lucide-react";
 import EmojiPicker, { Theme, EmojiStyle } from "emoji-picker-react";
+import { currentEmojiTheme } from "./emojiTheme";
 import { useModal } from "./Modal";
 import { useNoteMode } from "./useNoteMode";
 import { moveToTrash } from "./trash";
@@ -86,6 +87,8 @@ interface SectionMeta {
   coverBlur?: number;
   coverRadius?: number;
   coverTextShadow?: boolean;
+  /** Hex color for the section title. Empty = default green. */
+  titleColor?: string;
 }
 
 const DEFAULT_META: SectionMeta = {
@@ -792,11 +795,31 @@ export default function GalleryView({ sectionDir, sectionName }: GalleryViewProp
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
   const [coverPickerOpen, setCoverPickerOpen] = useState(false);
   const [coverUrlDraft, setCoverUrlDraft] = useState("");
+  const [titleColorMenuOpen, setTitleColorMenuOpen] = useState(false);
+  const titleColorMenuRef = useRef<HTMLDivElement>(null);
   const [coverReady, setCoverReady] = useState(false);
   const coverPickerRef = useRef<HTMLDivElement>(null);
-  const iconPickerRef = useRef<HTMLDivElement>(null);
+    const iconPickerRef = useRef<HTMLDivElement>(null);
 
-  const [query, setQuery] = useState("");
+  const [iconCtxMenu, setIconCtxMenu] = useState<{ x: number; y: number } | null>(null);
+  const iconCtxMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!iconCtxMenu) return;
+    const onDown = (e: MouseEvent) => {
+      if (iconCtxMenuRef.current?.contains(e.target as Node)) return;
+      setIconCtxMenu(null);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setIconCtxMenu(null);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [iconCtxMenu]);  const [query, setQuery] = useState("");
   const [activeYear, setActiveYear] = useState<string | null>(null);
   const [activeTag, setActiveTag] = useState<string | null>(null);
   const [filterOpen, setFilterOpen] = useState(false);
@@ -821,6 +844,10 @@ export default function GalleryView({ sectionDir, sectionName }: GalleryViewProp
       return "grid";
     } catch { return "grid"; }
   });
+
+    useEffect(() => {
+    if (!isEdit && titleColorMenuOpen) setTitleColorMenuOpen(false);
+  }, [isEdit, titleColorMenuOpen]);
 
   const updateViewMode = (next: GalleryViewMode) => {
     setViewMode(next);
@@ -903,18 +930,21 @@ export default function GalleryView({ sectionDir, sectionName }: GalleryViewProp
   }, [sectionDir]);
 
   useEffect(() => {
-    if (!iconPickerOpen && !coverPickerOpen) return;
+    if (!iconPickerOpen && !coverPickerOpen && !titleColorMenuOpen) return;
     const onDown = (e: MouseEvent) => {
       const t = e.target as Node;
       if (iconPickerRef.current?.contains(t)) return;
       if (coverPickerRef.current?.contains(t)) return;
+      if (titleColorMenuRef.current?.contains(t)) return;
       setIconPickerOpen(false);
       setCoverPickerOpen(false);
+      setTitleColorMenuOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         setIconPickerOpen(false);
         setCoverPickerOpen(false);
+        setTitleColorMenuOpen(false);
       }
     };
     document.addEventListener("mousedown", onDown);
@@ -923,7 +953,7 @@ export default function GalleryView({ sectionDir, sectionName }: GalleryViewProp
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("keydown", onKey);
     };
-  }, [iconPickerOpen, coverPickerOpen]);
+  }, [iconPickerOpen, coverPickerOpen, titleColorMenuOpen]);
 
   const applyIcon = async (emoji: string) => {
     saveMeta({ icon: emoji });
@@ -2042,219 +2072,358 @@ export default function GalleryView({ sectionDir, sectionName }: GalleryViewProp
       <div className="max-w-6xl mx-auto px-8 py-8">
         <div
           className={`flex items-end justify-between gap-4 mb-6 ${
-            hasCover ? "-mt-16 relative z-10" : ""
+                                    hasCover ? "-mt-16 relative z-10" : ""
           }`}
+          data-on-cover={hasCover ? "" : undefined}
         >
           <div className="flex items-end gap-4 min-w-0">
-            <div className="relative flex-shrink-0" ref={iconPickerRef}>
+          {isEdit && (
+                        <div className="relative flex-shrink-0" ref={iconPickerRef} data-icon-slot>
+            <button
+            type="button"
+            onClick={() => setIconPickerOpen((o) => !o)}
+            className={`leading-none p-1 rounded transition-colors cursor-pointer hover:bg-white/10 flex items-center justify-center ${
+                            meta.icon ? "text-6xl" : (hasCover ? "text-3xl text-white/80 hover:text-white" : "text-3xl text-gray-500 hover:text-gray-300")
+            }`}
+            style={
+              hasCover && meta.coverTextShadow !== false
+              ? { filter: "drop-shadow(0 2px 8px rgba(0,0,0,0.7))" }
+              : undefined
+            }
+            title={meta.icon ? "Click to change icon" : "Add an icon"}
+            onContextMenu={(e) => {
+              if (!meta.icon) return;
+              e.preventDefault();
+              e.stopPropagation();
+              const W = 220;
+              const H = 90;
+              setIconCtxMenu({
+                x: Math.min(e.clientX, window.innerWidth - W - 8),
+                y: Math.min(e.clientY, window.innerHeight - H - 8),
+              });
+            }}
+            >
+            {meta.icon || (
+              <span               className={`flex items-center gap-1.5 px-2 py-1 text-xs rounded border border-dashed whitespace-nowrap ${hasCover ? "border-white/40 hover:border-white/70" : "border-[#30363d] hover:border-[#3a4147]"}`}>
+              <Smile size={12} /> Add icon
+              </span>
+            )}
+            </button>
+
+            {iconPickerOpen && (
+              <div className="absolute top-full left-0 mt-2 z-[200]">
+              <EmojiPicker
+              theme={Theme.DARK}
+              emojiStyle={EmojiStyle.NATIVE}
+              onEmojiClick={(d) => applyIcon(d.emoji)}
+              width={320}
+              height={400}
+              previewConfig={{ showPreview: false }}
+              />
+              </div>
+            )}
+            </div>
+          )}
+
+                    {iconCtxMenu && (
+            <div
+              ref={iconCtxMenuRef}
+              className="fixed z-[300] bg-[#1e2327] border border-[#2a3136] rounded-md shadow-2xl py-1 w-[200px]"
+              style={{ top: iconCtxMenu.y, left: iconCtxMenu.x }}
+              onMouseDown={(e) => e.stopPropagation()}
+              onContextMenu={(e) => e.preventDefault()}
+            >
+              <div className="px-3 pt-1.5 pb-1 text-[10px] uppercase tracking-wider text-gray-500 truncate">
+                Section icon
+              </div>
               <button
                 type="button"
-                onClick={() => setIconPickerOpen((o) => !o)}
-                className={`leading-none p-1 rounded transition-colors cursor-pointer hover:bg-white/10 flex items-center justify-center ${
-                  meta.icon ? "text-6xl" : "text-3xl text-gray-500 hover:text-gray-300"
-                }`}
-                style={
-                  hasCover && meta.coverTextShadow !== false
-                    ? { filter: "drop-shadow(0 2px 8px rgba(0,0,0,0.7))" }
-                    : undefined
-                }
-                title={meta.icon ? "Click to change icon" : "Add an icon"}
+                onClick={() => {
+                  setIconCtxMenu(null);
+                  setIconPickerOpen(true);
+                }}
+                className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
               >
-                {meta.icon || (
-                  <span className="flex items-center gap-1.5 px-2 py-1 text-xs rounded border border-dashed border-[#30363d] hover:border-[#3a4147] whitespace-nowrap">
-                    <Smile size={12} /> Add icon
-                  </span>
-                )}
+                <Smile size={13} /> <span>Replace icon…</span>
               </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setIconCtxMenu(null);
+                  saveMeta({ icon: "" });
+                }}
+                className="w-full text-left px-3 py-1.5 text-sm text-red-400 hover:bg-[#2a3136] flex items-center gap-2 border-t border-[#2a3136]"
+              >
+                <Trash2 size={13} /> <span>Delete icon</span>
+              </button>
+            </div>
+          )}
 
-              {iconPickerOpen && (
-                <div className="absolute top-full left-0 mt-2 z-[200]">
-                  <EmojiPicker
-                    theme={Theme.DARK}
-                    emojiStyle={EmojiStyle.NATIVE}
-                    onEmojiClick={(d) => applyIcon(d.emoji)}
-                    width={320}
-                    height={400}
-                    previewConfig={{ showPreview: false }}
-                  />
+          {!isEdit && meta.icon && (
+            <div className="flex-shrink-0">
+            <span
+            className="leading-none text-6xl select-none"
+            style={
+              hasCover && meta.coverTextShadow !== false
+              ? { filter: "drop-shadow(0 2px 8px rgba(0,0,0,0.7))" }
+              : undefined
+            }
+            >
+            {meta.icon}
+            </span>
+            </div>
+          )}
+
+          <h2
+          className="text-4xl font-bold truncate"
+          style={{
+            color: meta.titleColor || "#4ade80",
+            textShadow:
+            hasCover && meta.coverTextShadow !== false
+            ? "0 2px 12px rgba(0,0,0,0.8)"
+            : undefined,
+          }}
+          >
+          {sectionName}
+          </h2>
+          </div>
+
+                    <div className={`flex items-center gap-2 flex-shrink-0 ${hasCover ? "translate-y-16" : ""}`}>
+          {isEdit && (
+            <div className="relative flex-shrink-0" ref={titleColorMenuRef}>
+              <button
+                type="button"
+                onClick={() => setTitleColorMenuOpen((o) => !o)}
+                className={`flex items-center justify-center w-8 h-8 rounded transition-colors cursor-pointer ${
+                  titleColorMenuOpen
+                    ? "bg-[#2a3136] text-gray-100"
+                    : "text-gray-400 hover:text-gray-100 hover:bg-[#1e2327]"
+                }`}
+                title="Title color"
+              >
+                <Palette size={16} />
+              </button>
+              {titleColorMenuOpen && (
+                <div className="absolute right-0 top-full mt-2 z-[200] w-[260px] bg-[#1e2327] border border-[#2a3136] rounded-lg shadow-2xl p-3">
+                  <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-2 flex items-center gap-1.5">
+                    <Palette size={10} /> Title color
+                  </div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <label className="relative flex-shrink-0 w-8 h-8 rounded border border-[#30363d] overflow-hidden cursor-pointer hover:border-[#3a4147] transition-colors">
+                      <span
+                        className="absolute inset-0"
+                        style={{ backgroundColor: meta.titleColor || "#4ade80" }}
+                        aria-hidden="true"
+                      />
+                      <input
+                        type="color"
+                        value={meta.titleColor || "#4ade80"}
+                        onChange={(e) => saveMeta({ titleColor: e.target.value })}
+                        className="absolute inset-0 opacity-0 cursor-pointer"
+                      />
+                    </label>
+                    <input
+                      type="text"
+                      value={meta.titleColor || ""}
+                      onChange={(e) => {
+                        const v = e.target.value.trim();
+                        if (/^#?[0-9a-f]{0,6}$/i.test(v)) {
+                          saveMeta({ titleColor: v.startsWith("#") ? v : `#${v}` });
+                        }
+                      }}
+                      placeholder="Default (green)"
+                      spellCheck={false}
+                      className="flex-1 bg-[#0f1315] border border-[#30363d] rounded px-2 py-1 text-[11px] text-gray-200 outline-none focus:ring-1 focus:ring-blue-500 font-mono"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      saveMeta({ titleColor: "" });
+                      setTitleColorMenuOpen(false);
+                    }}
+                    className="w-full text-left text-[11px] text-gray-500 hover:text-gray-300 hover:bg-[#2a3136] px-2 py-1.5 rounded"
+                  >
+                    Reset to default green
+                  </button>
                 </div>
               )}
             </div>
+          )}
 
-            <h2
-              className="text-4xl font-bold truncate"
-              style={{
-                color: "#4ade80",
-                textShadow:
-                  hasCover && meta.coverTextShadow !== false
-                    ? "0 2px 12px rgba(0,0,0,0.8)"
-                    : undefined,
-              }}
-            >
-              {sectionName}
-            </h2>
-          </div>
-
-          <div className="flex items-center gap-2 flex-shrink-0">
+          {isEdit && (
             <div className="relative" ref={coverPickerRef}>
+            <button
+            type="button"
+            onClick={() => setCoverPickerOpen((o) => !o)}
+            className={`flex items-center justify-center h-8 rounded transition-colors cursor-pointer ${
+              hasCover
+              ? "w-8 text-gray-400 hover:text-gray-100 hover:bg-[#1e2327]"
+              : "px-3 text-xs gap-1.5 border border-dashed border-[#30363d] hover:border-[#3a4147] text-gray-500 hover:text-gray-300"
+            }`}
+            title="Cover settings"
+            >
+            {hasCover ? (
+              <ImageIcon size={16} />
+            ) : (
+              <>
+              <ImageIcon size={12} /> <span>Add cover</span>
+              </>
+            )}
+            </button>
+
+            {coverPickerOpen && (
+              <div className="absolute right-0 top-full mt-2 z-[200] w-[420px] max-h-[80vh] overflow-y-auto bg-[#1e2327] border border-[#2a3136] rounded-lg shadow-2xl">
+              <div className="flex items-center justify-between px-3 py-2 border-b border-[#2a3136] bg-[#1a1e21]">
+              <div className="flex items-center gap-2 text-sm font-medium text-gray-100">
+              <Sliders size={13} />
+              <span>Cover</span>
+              </div>
               <button
-                type="button"
-                onClick={() => setCoverPickerOpen((o) => !o)}
-                className={`flex items-center justify-center h-8 rounded transition-colors cursor-pointer ${
-                  hasCover
-                    ? "w-8 text-gray-400 hover:text-gray-100 hover:bg-[#1e2327]"
-                    : "px-3 text-xs gap-1.5 border border-dashed border-[#30363d] hover:border-[#3a4147] text-gray-500 hover:text-gray-300"
-                }`}
-                title="Cover settings"
+              type="button"
+              onClick={() => setCoverPickerOpen(false)}
+              className="text-gray-500 hover:text-gray-300 cursor-pointer"
+              title="Close"
               >
-                {hasCover ? (
-                  <Palette size={16} />
-                ) : (
+              <X size={14} />
+              </button>
+              </div>
+
+              <div className="p-4 space-y-4">
+              <div className="flex gap-2">
+              <button
+              onClick={uploadCover}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-[#2a3136] hover:bg-[#30363d] border border-[#30363d] rounded text-gray-200 whitespace-nowrap"
+              >
+              <Upload size={12} /> Upload
+              </button>
+              <div className="flex-1 flex gap-2">
+              <input
+              type="text"
+              value={coverUrlDraft}
+              onChange={(e) => setCoverUrlDraft(e.target.value)}
+              placeholder="or paste image URL…"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") applyCoverUrl(coverUrlDraft);
+              }}
+              className="flex-1 bg-[#0f1315] border border-[#30363d] rounded px-3 py-1.5 text-xs text-gray-100 outline-none focus:ring-1 focus:ring-blue-500"
+              />
+              <button
+              onClick={() => applyCoverUrl(coverUrlDraft)}
+              className="flex items-center gap-1 px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 text-white rounded whitespace-nowrap"
+              >
+              <LinkIcon size={12} /> Apply
+              </button>
+              </div>
+              </div>
+
+              <div>
+              <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-2">
+              Gradients
+              </div>
+              <div className="grid grid-cols-5 gap-2">
+              {COVER_GRADIENTS.map((g) => (
+                <button
+                key={g.id}
+                onClick={() => applyCoverGradient(g.id)}
+                className={`aspect-[3/2] rounded cursor-pointer hover:ring-2 hover:ring-blue-500 transition-all ${
+                  meta.coverType === "color" && meta.coverValue === g.id
+                  ? "ring-2 ring-blue-400"
+                  : ""
+                }`}
+                style={{ background: g.value }}
+                title={g.label}
+                />
+              ))}
+              </div>
+              </div>
+
+              {hasCover && (
+                <div className="space-y-3 pt-2 border-t border-[#2a3136]">
+                <div className="text-[10px] uppercase tracking-wider text-gray-500">
+                Style
+                </div>
+                {meta.coverType === "image" && (
                   <>
-                    <Palette size={12} /> <span>Add cover</span>
+                  <SliderRow
+                  label="Horizontal"
+                  value={meta.coverPosX ?? 50}
+                  min={0} max={100} unit="%"
+                  onChange={(v) => saveMeta({ coverPosX: v })}
+                  />
+                  <SliderRow
+                  label="Vertical"
+                  value={meta.coverPosY ?? 50}
+                  min={0} max={100} unit="%"
+                  onChange={(v) => saveMeta({ coverPosY: v })}
+                  />
                   </>
                 )}
-              </button>
+                <SliderRow
+                label="Opacity"
+                value={meta.coverOpacity ?? 100}
+                min={0} max={100} unit="%"
+                onChange={(v) => saveMeta({ coverOpacity: v })}
+                />
+                <SliderRow
+                label="Blur"
+                value={meta.coverBlur ?? 0}
+                min={0} max={20} unit="px"
+                onChange={(v) => saveMeta({ coverBlur: v })}
+                />
+                <SliderRow
+                label="Corner radius"
+                value={meta.coverRadius ?? 0}
+                min={0} max={40} unit="px"
+                onChange={(v) => saveMeta({ coverRadius: v })}
+                />
+                <label className="flex items-center justify-between text-[11px] text-gray-400 cursor-pointer">
+                <span className="flex items-center gap-1.5">
+                <Sparkles size={11} /> Text shadow
+                </span>
+                <input
+                type="checkbox"
+                checked={meta.coverTextShadow !== false}
+                onChange={(e) => saveMeta({ coverTextShadow: e.target.checked })}
+                className="accent-blue-500"
+                />
+                </label>
 
-              {coverPickerOpen && (
-                <div className="absolute right-0 top-full mt-2 z-[200] w-[420px] max-h-[80vh] overflow-y-auto bg-[#1e2327] border border-[#2a3136] rounded-lg shadow-2xl">
-                  <div className="flex items-center justify-between px-3 py-2 border-b border-[#2a3136] bg-[#1a1e21]">
-                    <div className="flex items-center gap-2 text-sm font-medium text-gray-100">
-                      <Sliders size={13} />
-                      <span>Cover</span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setCoverPickerOpen(false)}
-                      className="text-gray-500 hover:text-gray-300 cursor-pointer"
-                      title="Close"
-                    >
-                      <X size={14} />
-                    </button>
-                  </div>
-
-                  <div className="p-4 space-y-4">
-                    <div className="flex gap-2">
-                      <button
-                        onClick={uploadCover}
-                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-[#2a3136] hover:bg-[#30363d] border border-[#30363d] rounded text-gray-200 whitespace-nowrap"
-                      >
-                        <Upload size={12} /> Upload
-                      </button>
-                      <div className="flex-1 flex gap-2">
-                        <input
-                          type="text"
-                          value={coverUrlDraft}
-                          onChange={(e) => setCoverUrlDraft(e.target.value)}
-                          placeholder="or paste image URL…"
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") applyCoverUrl(coverUrlDraft);
-                          }}
-                          className="flex-1 bg-[#0f1315] border border-[#30363d] rounded px-3 py-1.5 text-xs text-gray-100 outline-none focus:ring-1 focus:ring-blue-500"
-                        />
-                        <button
-                          onClick={() => applyCoverUrl(coverUrlDraft)}
-                          className="flex items-center gap-1 px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 text-white rounded whitespace-nowrap"
-                        >
-                          <LinkIcon size={12} /> Apply
-                        </button>
-                      </div>
-                    </div>
-
-                    <div>
-                      <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-2">
-                        Gradients
-                      </div>
-                      <div className="grid grid-cols-5 gap-2">
-                        {COVER_GRADIENTS.map((g) => (
-                          <button
-                            key={g.id}
-                            onClick={() => applyCoverGradient(g.id)}
-                            className={`aspect-[3/2] rounded cursor-pointer hover:ring-2 hover:ring-blue-500 transition-all ${
-                              meta.coverType === "color" && meta.coverValue === g.id
-                                ? "ring-2 ring-blue-400"
-                                : ""
-                            }`}
-                            style={{ background: g.value }}
-                            title={g.label}
-                          />
-                        ))}
-                      </div>
-                    </div>
-
-                    {hasCover && (
-                      <div className="space-y-3 pt-2 border-t border-[#2a3136]">
-                        <div className="text-[10px] uppercase tracking-wider text-gray-500">
-                          Style
-                        </div>
-                        {meta.coverType === "image" && (
-                          <>
-                            <SliderRow
-                              label="Horizontal"
-                              value={meta.coverPosX ?? 50}
-                              min={0} max={100} unit="%"
-                              onChange={(v) => saveMeta({ coverPosX: v })}
-                            />
-                            <SliderRow
-                              label="Vertical"
-                              value={meta.coverPosY ?? 50}
-                              min={0} max={100} unit="%"
-                              onChange={(v) => saveMeta({ coverPosY: v })}
-                            />
-                          </>
-                        )}
-                        <SliderRow
-                          label="Opacity"
-                          value={meta.coverOpacity ?? 100}
-                          min={0} max={100} unit="%"
-                          onChange={(v) => saveMeta({ coverOpacity: v })}
-                        />
-                        <SliderRow
-                          label="Blur"
-                          value={meta.coverBlur ?? 0}
-                          min={0} max={20} unit="px"
-                          onChange={(v) => saveMeta({ coverBlur: v })}
-                        />
-                        <SliderRow
-                          label="Corner radius"
-                          value={meta.coverRadius ?? 0}
-                          min={0} max={40} unit="px"
-                          onChange={(v) => saveMeta({ coverRadius: v })}
-                        />
-                        <label className="flex items-center justify-between text-[11px] text-gray-400 cursor-pointer">
-                          <span className="flex items-center gap-1.5">
-                            <Sparkles size={11} /> Text shadow
-                          </span>
-                          <input
-                            type="checkbox"
-                            checked={meta.coverTextShadow !== false}
-                            onChange={(e) => saveMeta({ coverTextShadow: e.target.checked })}
-                            className="accent-blue-500"
-                          />
-                        </label>
-
-                        <button
-                          onClick={removeCover}
-                          className="w-full text-left text-xs text-red-400 hover:text-red-300 hover:bg-[#2a3136] px-2 py-1.5 rounded transition-colors flex items-center gap-1.5"
-                        >
-                          <Trash2 size={12} /> Remove cover
-                        </button>
-                      </div>
-                    )}
-                  </div>
+                <button
+                onClick={removeCover}
+                className="w-full text-left text-xs text-red-400 hover:text-red-300 hover:bg-[#2a3136] px-2 py-1.5 rounded transition-colors flex items-center gap-1.5"
+                >
+                <Trash2 size={12} /> Remove cover
+                </button>
                 </div>
               )}
+              </div>
+              </div>
+            )}
             </div>
+          )}
 
-            {viewToggle}
+          {viewToggle}
+
+          <button
+          type="button"
+          onClick={toggle}
+          className="flex items-center justify-center w-8 h-8 rounded text-gray-400 hover:text-gray-100 hover:bg-[#1e2327] transition-colors cursor-pointer flex-shrink-0"
+          title={isEdit ? "Switch to read mode (Ctrl+E)" : "Switch to edit mode (Ctrl+E)"}
+          >
+          {isEdit ? <BookOpen size={16} /> : <Pencil size={16} />}
+          </button>
+
+          {isEdit && (
             <button
-              onClick={createItem}
-              className="flex items-center gap-1.5 text-sm bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded transition-colors cursor-pointer font-medium"
+            onClick={createItem}
+            className="flex items-center gap-1.5 text-sm bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded transition-colors cursor-pointer font-medium"
             >
-              <Plus size={14} /> <span>Add Art</span>
+            <Plus size={14} /> <span>Add Art</span>
             </button>
+          )}
           </div>
-        </div>
+          </div>
 
         {items.length > 0 && (
           <div className="flex items-center gap-2 mb-3">

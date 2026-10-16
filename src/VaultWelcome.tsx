@@ -77,6 +77,12 @@ export default function VaultWelcome({
     <div className="w-screen h-screen bg-[#0f1315] flex flex-col items-center justify-center text-gray-200 px-6">
       <div className="w-full max-w-md">
         <div className="text-center mb-10">
+                    <img
+            src="/logo.png"
+            alt="Selah"
+            className="w-20 h-20 mx-auto mb-4 select-none"
+            draggable={false}
+          />
           <h1 className="text-4xl font-bold mb-2">Selah</h1>
           <p className="text-gray-500 text-sm">
             Pick a vault to continue, or open a new one.

@@ -13,6 +13,7 @@ import {
   Maximize2, Minimize2, List, Code2, Copy, Check, Plus, Zap,
 } from "lucide-react";
 import EmojiPicker, { Theme, EmojiStyle } from "emoji-picker-react";
+import { currentEmojiTheme } from "./emojiTheme";
 import NoteBody, { type NoteBodyHandle } from "./NoteBody";
 import PhotoLightbox from "./PhotoLightbox";
 import { useNoteMode } from "./useNoteMode";
@@ -150,6 +151,15 @@ export default function Editor({
   const [icon, setIcon] = useState("");
   const [showHeaderIcon, setShowHeaderIcon] = useState(true);
   const [coverType, setCoverType] = useState("");
+  const [coverOverlayColor, setCoverOverlayColor] = useState("#000000");
+  const [coverOverlayOpacity, setCoverOverlayOpacity] = useState(0);
+  const [titleColor, setTitleColor] = useState("");
+  const [pickerSize, setPickerSize] = useState<{ w: number; h: number | null }>({ w: 560, h: null });
+  const [pickerResizing, setPickerResizing] = useState<
+  | { startX: number; startY: number; startW: number; startH: number; edge: "right" | "bottom" | "corner" }
+  | null
+  >(null);
+  const coverPanelRef = useRef<HTMLDivElement>(null);
   const [coverValue, setCoverValue] = useState("");
   const [coverPosX, setCoverPosX] = useState(50);
   const [coverPosY, setCoverPosY] = useState(50);
@@ -285,6 +295,10 @@ export default function Editor({
     setCoverType(""); setCoverValue("");
     setCoverPosX(50); setCoverPosY(50); setCoverOpacity(100); setCoverBlur(0);
     setCoverRadius(0); setCoverFeather(0); setCoverTextShadow(true);
+    setCoverOverlayColor("#000000");
+    setCoverOverlayOpacity(0);
+    setTitleColor("");
+    setPickerSize({ w: 560, h: null });
     setIconAnchor("in"); setIconX(8); setIconY(50);
     setTitleAnchor("in"); setTitleX(50); setTitleY(50);
     setTitleFont("default"); setDocWidth("default");
@@ -303,6 +317,9 @@ export default function Editor({
         setShowHeaderIcon(frontmatter.showHeaderIcon !== false);
         setCoverType((frontmatter.coverType as string) || "");
         setCoverValue((frontmatter.coverValue as string) || "");
+        setCoverOverlayColor((frontmatter.coverOverlayColor as string) || "#000000");
+        setCoverOverlayOpacity(typeof frontmatter.coverOverlayOpacity === "number" ? frontmatter.coverOverlayOpacity : 0);
+        setTitleColor((frontmatter.titleColor as string) || "");
         setCoverPosX(typeof frontmatter.coverPosX === "number" ? frontmatter.coverPosX : 50);
         setCoverPosY(typeof frontmatter.coverPosY === "number" ? frontmatter.coverPosY : 50);
         setCoverOpacity(typeof frontmatter.coverOpacity === "number" ? frontmatter.coverOpacity : 100);
@@ -359,6 +376,9 @@ export default function Editor({
           setShowHeaderIcon(frontmatter.showHeaderIcon !== false);
           setCoverType((frontmatter.coverType as string) || "");
           setCoverValue((frontmatter.coverValue as string) || "");
+          setCoverOverlayColor((frontmatter.coverOverlayColor as string) || "#000000");
+          setCoverOverlayOpacity(typeof frontmatter.coverOverlayOpacity === "number" ? frontmatter.coverOverlayOpacity : 0);
+          setTitleColor((frontmatter.titleColor as string) || "");
           setTags(tagsFromFrontmatter(frontmatter));
         } catch {}
       })();
@@ -376,6 +396,9 @@ export default function Editor({
         setShowHeaderIcon(frontmatter.showHeaderIcon !== false);
         setCoverType((frontmatter.coverType as string) || "");
         setCoverValue((frontmatter.coverValue as string) || "");
+        setCoverOverlayColor((frontmatter.coverOverlayColor as string) || "#000000");
+        setCoverOverlayOpacity(typeof frontmatter.coverOverlayOpacity === "number" ? frontmatter.coverOverlayOpacity : 0);
+        setTitleColor((frontmatter.titleColor as string) || "");
         setTags(tagsFromFrontmatter(frontmatter));
       } catch {}
     };
@@ -393,6 +416,28 @@ export default function Editor({
     window.addEventListener("mouseup", onUp);
     return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
   }, [dragStart]);
+
+  useEffect(() => {
+    if (!pickerResizing) return;
+    const onMove = (e: MouseEvent) => {
+      const dx = e.clientX - pickerResizing.startX;
+      const dy = e.clientY - pickerResizing.startY;
+      const nextW = pickerResizing.edge === "bottom"
+      ? pickerResizing.startW
+      : Math.max(380, pickerResizing.startW + dx);
+      const nextH = pickerResizing.edge === "right"
+      ? pickerResizing.startH
+      : Math.max(280, pickerResizing.startH + dy);
+      setPickerSize({ w: nextW, h: nextH });
+    };
+    const onUp = () => setPickerResizing(null);
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [pickerResizing]);
 
   useEffect(() => {
     if (!coverPickerOpen) return;
@@ -576,6 +621,36 @@ export default function Editor({
     if (patch.posY !== undefined) fm.coverPosY = patch.posY;
     noteBodyRef.current?.updateFrontmatter(fm);
   };
+
+  const updateCoverOverlay = (patch: { color?: string; opacity?: number }) => {
+    if (patch.color !== undefined) setCoverOverlayColor(patch.color);
+    if (patch.opacity !== undefined) setCoverOverlayOpacity(patch.opacity);
+    const fm: Record<string, any> = {};
+    if (patch.color !== undefined) fm.coverOverlayColor = patch.color;
+    if (patch.opacity !== undefined) fm.coverOverlayOpacity = patch.opacity;
+    noteBodyRef.current?.updateFrontmatter(fm);
+  };
+
+  const applyTitleColor = async (color: string) => {
+    setTitleColor(color);
+    await noteBodyRef.current?.updateFrontmatter({ titleColor: color });
+  };
+
+  const startPanelResize =
+  (edge: "right" | "bottom" | "corner") => (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = coverPanelRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    setPickerResizing({
+      startX: e.clientX,
+      startY: e.clientY,
+      startW: rect.width,
+      startH: rect.height,
+      edge,
+    });
+  };
+
 
   const removeCover = async () => {
     setCoverType(""); setCoverValue("");
@@ -845,6 +920,7 @@ export default function Editor({
       } ${isYear || mode !== "edit" ? "cursor-default" : "focus:bg-white/5"}`}
       style={{
         fontFamily: fontStack,
+                color: titleColor || undefined,
         fontStyle: titleFont === "italic" ? "italic" : undefined,
         textShadow: hasCover && coverTextShadow && titleAnchor === "in" ? "0 2px 10px rgba(0,0,0,0.6)" : undefined,
       }}
@@ -1008,6 +1084,17 @@ export default function Editor({
                   }}
                 />
               </div>
+
+              {coverOverlayOpacity > 0 && (
+                <div
+                className="absolute inset-0 pointer-events-none"
+                style={{
+                  backgroundColor: coverOverlayColor,
+                  opacity: coverOverlayOpacity / 100,
+                  borderRadius: coverRadius > 0 ? `${coverRadius}px` : undefined,
+                }}
+                />
+              )}
               {coverTextShadow && <div className="absolute inset-0 bg-gradient-to-t from-black/50 via-black/10 to-transparent pointer-events-none" style={{ borderRadius: coverRadius > 0 ? `${coverRadius}px` : undefined }} />}
             </>
           )}
@@ -1079,6 +1166,9 @@ export default function Editor({
               setShowHeaderIcon(fm.showHeaderIcon !== false);
               setCoverType((fm.coverType as string) || "");
               setCoverValue((fm.coverValue as string) || "");
+              setCoverOverlayColor((fm.coverOverlayColor as string) || "#000000");
+              setCoverOverlayOpacity(typeof fm.coverOverlayOpacity === "number" ? fm.coverOverlayOpacity : 0);
+              setTitleColor((fm.titleColor as string) || "");
               setCoverPosX(typeof fm.coverPosX === "number" ? fm.coverPosX : 50);
               setCoverPosY(typeof fm.coverPosY === "number" ? fm.coverPosY : 50);
               setCoverOpacity(typeof fm.coverOpacity === "number" ? fm.coverOpacity : 100);
@@ -1103,7 +1193,34 @@ export default function Editor({
       </div>
 
       {coverPickerOpen && (
-        <div className="fixed z-[100] bg-[#1e2327] border border-[#2a3136] rounded-lg shadow-2xl w-[560px] max-h-[80vh] overflow-hidden flex flex-col" style={{ top: pickerPos.y, left: pickerPos.x }}>
+        <div
+          ref={coverPanelRef}
+          className="fixed z-[100] bg-[#1e2327] border border-[#2a3136] rounded-lg shadow-2xl overflow-hidden flex flex-col"
+          style={{
+            top: pickerPos.y,
+            left: pickerPos.x,
+            width: pickerSize.w,
+            maxHeight: "85vh",
+            ...(pickerSize.h !== null ? { height: pickerSize.h } : {}),
+          }}
+        >
+        <div
+        onMouseDown={startPanelResize("right")}
+        className="absolute top-0 right-0 w-1.5 cursor-ew-resize hover:bg-blue-500/40 transition-colors z-10"
+        style={{ bottom: 12 }}
+        title="Drag to resize"
+        />
+        <div
+        onMouseDown={startPanelResize("bottom")}
+        className="absolute bottom-0 left-0 h-1.5 cursor-ns-resize hover:bg-blue-500/40 transition-colors z-10"
+        style={{ right: 12 }}
+        title="Drag to resize"
+        />
+        <div
+        onMouseDown={startPanelResize("corner")}
+        className="absolute bottom-0 right-0 w-3 h-3 cursor-nwse-resize hover:bg-blue-500/60 transition-colors z-20"
+        title="Drag to resize"
+        />
           <div className="flex items-center justify-between px-3 py-2 border-b border-[#2a3136] cursor-move select-none bg-[#1a1e21]" onMouseDown={(e) => { if ((e.target as HTMLElement).closest("[data-no-drag]")) return; e.preventDefault(); setDragStart({ mx: e.clientX, my: e.clientY, px: pickerPos.x, py: pickerPos.y }); }}>
             <div className="flex items-center gap-2 text-sm font-medium text-gray-100">
               <GripHorizontal size={14} className="text-gray-500" />
@@ -1137,6 +1254,48 @@ export default function Editor({
               <div className="mt-3 space-y-2">
                 <SliderRow label="Horizontal" value={titleX} min={0} max={100} unit="%" onChange={(v) => updateTitlePos({ titleX: v })} />
                 <SliderRow label="Vertical" value={titleY} min={0} max={100} unit="%" onChange={(v) => updateTitlePos({ titleY: v })} />
+                <div className="mt-3">
+                <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1.5">
+                Title color
+                </div>
+                <div className="flex items-center gap-2">
+                <label className="relative flex-shrink-0 w-8 h-8 rounded border border-[#30363d] overflow-hidden cursor-pointer hover:border-[#3a4147] transition-colors">
+                <span
+                className="absolute inset-0"
+                style={{ backgroundColor: titleColor || "#f3f4f6" }}
+                aria-hidden="true"
+                />
+                <input
+                type="color"
+                value={titleColor || "#f3f4f6"}
+                onChange={(e) => applyTitleColor(e.target.value)}
+                className="absolute inset-0 opacity-0 cursor-pointer"
+                />
+                </label>
+                <input
+                type="text"
+                value={titleColor}
+                onChange={(e) => {
+                  const v = e.target.value.trim();
+                  if (/^#?[0-9a-f]{0,6}$/i.test(v)) {
+                    applyTitleColor(v.startsWith("#") ? v : `#${v}`);
+                  }
+                }}
+                placeholder="Auto (theme default)"
+                spellCheck={false}
+                className="flex-1 bg-[#0f1315] border border-[#30363d] rounded px-2 py-1 text-[11px] text-gray-200 outline-none focus:ring-1 focus:ring-blue-500 font-mono"
+                />
+                {titleColor && (
+                  <button
+                  type="button"
+                  onClick={() => applyTitleColor("")}
+                  className="text-[10px] text-gray-500 hover:text-gray-300 px-1.5 py-0.5 rounded hover:bg-[#2a3136] flex-shrink-0"
+                  >
+                  Auto
+                  </button>
+                )}
+                </div>
+                </div>
               </div>
             </div>
             <div className="border-t border-[#2a3136] pt-3">
@@ -1173,6 +1332,51 @@ export default function Editor({
                   <SliderRow label="Edge feather" value={coverFeather} min={0} max={40} unit="%" onChange={(v) => updateCoverStyle({ feather: v })} />
                 </div>
               )}
+            </div>
+            <div className="border-t border-[#2a3136] pt-3">
+            <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-2 flex items-center gap-1.5">
+            <Palette size={10} /> Overlay tint
+            </div>
+            <p className="text-[10px] text-gray-600 mb-3 leading-snug">
+            A translucent color layered over the header — useful for tinting a photo
+            or unifying a gradient with the rest of your notes.
+            </p>
+            <div className="flex items-center gap-2 mb-3">
+            <label className="relative flex-shrink-0 w-8 h-8 rounded border border-[#30363d] overflow-hidden cursor-pointer hover:border-[#3a4147] transition-colors">
+            <span className="absolute inset-0" style={{ backgroundColor: coverOverlayColor }} aria-hidden="true" />
+            <input
+            type="color"
+            value={coverOverlayColor}
+            onChange={(e) => updateCoverOverlay({ color: e.target.value })}
+            className="absolute inset-0 opacity-0 cursor-pointer"
+            />
+            </label>
+            <input
+            type="text"
+            value={coverOverlayColor}
+            onChange={(e) => {
+              const v = e.target.value.trim();
+              if (/^#?[0-9a-f]{0,6}$/i.test(v)) {
+                updateCoverOverlay({ color: v.startsWith("#") ? v : `#${v}` });
+              }
+            }}
+            spellCheck={false}
+            className="flex-1 bg-[#0f1315] border border-[#30363d] rounded px-2 py-1 text-[11px] text-gray-200 outline-none focus:ring-1 focus:ring-blue-500 font-mono"
+            />
+            <span
+            className="w-8 h-8 rounded border border-[#30363d] flex-shrink-0"
+            style={{ backgroundColor: coverOverlayColor, opacity: coverOverlayOpacity / 100 }}
+            title="Preview"
+            />
+            </div>
+            <SliderRow
+            label="Tint intensity"
+            value={coverOverlayOpacity}
+            min={0}
+            max={100}
+            unit="%"
+            onChange={(v) => updateCoverOverlay({ opacity: v })}
+            />
             </div>
 
             <div className="border-t border-[#2a3136] pt-3">

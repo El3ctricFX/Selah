@@ -13,16 +13,16 @@ export function makeFolderKey(categoryId: string, ...parts: string[]): string {
 }
 
 export const FOLDER_COLORS: Record<string, { label: string; text: string }> = {
-  default: { label: "Default", text: "#9ca3af" },
-  gray:    { label: "Gray",    text: "#9ca3af" },
-  brown:   { label: "Brown",   text: "#b08872" },
-  orange:  { label: "Orange",  text: "#e5a05e" },
-  yellow:  { label: "Yellow",  text: "#e5c95e" },
-  green:   { label: "Green",   text: "#6dbb8a" },
-  blue:    { label: "Blue",    text: "#5e9ee5" },
-  purple:  { label: "Purple",  text: "#b38ee5" },
-  pink:    { label: "Pink",    text: "#e58eb5" },
-  red:     { label: "Red",     text: "#e57a7a" },
+  default: { label: "Default", text: "var(--c-folder-default)" },
+  gray:    { label: "Gray",    text: "var(--c-folder-gray)" },
+  brown:   { label: "Brown",   text: "var(--c-folder-brown)" },
+  orange:  { label: "Orange",  text: "var(--c-folder-orange)" },
+  yellow:  { label: "Yellow",  text: "var(--c-folder-yellow)" },
+  green:   { label: "Green",   text: "var(--c-folder-green)" },
+  blue:    { label: "Blue",    text: "var(--c-folder-blue)" },
+  purple:  { label: "Purple",  text: "var(--c-folder-purple)" },
+  pink:    { label: "Pink",    text: "var(--c-folder-pink)" },
+  red:     { label: "Red",     text: "var(--c-folder-red)" },
 };
 
 export function colorForFolder(meta?: FolderMeta): string {

@@ -148,7 +148,7 @@ export default function HomeView({
       const out: NoteHit[] = [];
       for (const cat of categories) {
         if (!cat.dirName) continue;
-        if (cat.mode === "gallery" || cat.mode === "abba") continue;
+                if (cat.mode === "gallery") continue;
         const dir = await join(vaultPath, cat.dirName);
         await walkNotes(dir, cat.name, dir, out);
       }

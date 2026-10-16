@@ -1,13 +1,47 @@
 @import "tailwindcss";
 
+:root {
+  --c-bg: #0f1315;
+  --c-surface: #161a1d;
+  --c-surface-alt: #1a1e21;
+  --c-elevated: #1e2327;
+  --c-border: #2a3136;
+  --c-border-light: #30363d;
+  --c-border-lighter: #3a4147;
+  --c-text: #d1d5db;
+  --c-text-strong: #f3f4f6;
+  --c-text-muted: #9ca3af;
+  --c-text-dim: #6b7280;
+  --c-accent: #3b82f6;
+  --c-accent-hover: #60a5fa;
+  --c-accent-text: #93c5fd;
+  /* Folder label colors (years, months, tagged folders). Swapped per
+   * theme below so they stay legible on both dark and light surfaces. */
+  --c-folder-default: #9ca3af;
+  --c-folder-gray: #9ca3af;
+  --c-folder-brown: #b08872;
+  --c-folder-orange: #e5a05e;
+  --c-folder-yellow: #e5c95e;
+  --c-folder-green: #6dbb8a;
+  --c-folder-blue: #5e9ee5;
+  --c-folder-purple: #b38ee5;
+  --c-folder-pink: #e58eb5;
+  --c-folder-red: #e57a7a;
+  /* Overlay defaults — kept in sync by applyTheme() in theme.ts. */
+  --c-overlay-tint: transparent;
+  --c-overlay-intensity: 0%;
+  --c-overlay-alpha: 0;
+}
+
 html, body, #root {
-  background-color: #0f1315 !important;
-  color: #d1d5db !important;
+  background-color: var(--c-bg) !important;
+  color: var(--c-text) !important;
   margin: 0;
   padding: 0;
   width: 100vw;
   height: 100vh;
   overflow: hidden;
+  color-scheme: var(--c-scheme, dark);
 }
 
 /* TipTap Editor Typography & Elements */
@@ -79,6 +113,14 @@ html, body, #root {
   color: #60a5fa;
   cursor: pointer;
   border-bottom: 1px solid rgba(96, 165, 250, 0.35);
+}
+.note-link-icon {
+  display: inline-block;
+  margin-right: 0.2em;
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+  vertical-align: -0.1em;
 }
 
 .note-link:hover {
@@ -180,14 +222,14 @@ body.bn-hide-file-toolbar .bn-toolbar {
 }
 
 html, body, #root {
-  background-color: #0f1315 !important;
-  color: #d1d5db !important;
+  background-color: var(--c-bg) !important;
+  color: var(--c-text) !important;
   margin: 0;
   padding: 0;
   width: 100vw;
   height: 100vh;
   overflow: hidden;
-  color-scheme: dark;   /* ← add this one line */
+  color-scheme: var(--c-scheme, dark);
 }
 
 /* Disable native scroll anchoring everywhere in the app.
@@ -210,4 +252,628 @@ html, body, #root,
 
 #root * {
 overflow-anchor: none;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════
+ *  Theme system — remaps hardcoded Tailwind arbitrary values to CSS vars.
+ *  ═══════════════════════════════════════════════════════════════════════ */
+
+/* ── Backgrounds ────────────────────────────────────────────────────── */
+[class~="bg-[#0f1315]"] { background-color: var(--c-bg) !important; }
+
+[class~="bg-[#131819]"],
+[class~="bg-[#161a1d]"],
+[class~="bg-[#141819]"],
+[class~="bg-[#181c1f]"] { background-color: var(--c-surface) !important; }
+
+[class~="bg-[#1a1e21]"] { background-color: var(--c-surface-alt) !important; }
+
+[class~="bg-[#1e2327]"],
+[class~="bg-[#21262a]"] { background-color: var(--c-elevated) !important; }
+
+[class~="bg-[#2a3136]"] { background-color: var(--c-border) !important; }
+
+[class~="bg-[#30363d]"],
+[class~="bg-[#343c42]"] { background-color: var(--c-border-light) !important; }
+
+/* ── Borders ────────────────────────────────────────────────────────── */
+[class~="border-[#1e2327]"] { border-color: var(--c-elevated) !important; }
+[class~="border-[#232a2e]"] { border-color: var(--c-border) !important; }
+[class~="border-[#2a3136]"] { border-color: var(--c-border) !important; }
+[class~="border-[#30363d]"] { border-color: var(--c-border-light) !important; }
+[class~="border-[#3a4147]"] { border-color: var(--c-border-lighter) !important; }
+
+/* ── Dividers ───────────────────────────────────────────────────────── */
+[class~="divide-[#1a1e21]"] > :not([hidden]) ~ :not([hidden]) {
+  border-color: var(--c-surface-alt) !important;
+}
+[class~="divide-[#2a3136]"] > :not([hidden]) ~ :not([hidden]) {
+  border-color: var(--c-border) !important;
+}
+[class~="divide-[#30363d]"] > :not([hidden]) ~ :not([hidden]) {
+  border-color: var(--c-border-light) !important;
+}
+
+/* ── Hover: backgrounds ─────────────────────────────────────────────── */
+[class~="hover:bg-[#141819]"]:hover,
+[class~="hover:bg-[#181c1f]"]:hover,
+[class~="hover:bg-[#161a1d]"]:hover {
+  background-color: var(--c-surface) !important;
+}
+[class~="hover:bg-[#1a1e21]"]:hover {
+  background-color: var(--c-surface-alt) !important;
+}
+[class~="hover:bg-[#1e2327]"]:hover,
+[class~="hover:bg-[#21262a]"]:hover {
+  background-color: var(--c-elevated) !important;
+}
+[class~="hover:bg-[#2a3136]"]:hover {
+  background-color: var(--c-border) !important;
+}
+[class~="hover:bg-[#30363d]"]:hover,
+[class~="hover:bg-[#343c42]"]:hover {
+  background-color: var(--c-border-light) !important;
+}
+
+/* ── Hover: borders ─────────────────────────────────────────────────── */
+[class~="hover:border-[#3a4147]"]:hover {
+  border-color: var(--c-border-lighter) !important;
+}
+
+/* ── Tailwind gray text → theme text ────────────────────────────────── */
+[class~="text-gray-100"] { color: var(--c-text-strong) !important; }
+[class~="text-gray-200"],
+[class~="text-gray-300"] { color: var(--c-text) !important; }
+[class~="text-gray-400"],
+[class~="text-gray-500"] { color: var(--c-text-muted) !important; }
+
+/* Light-mode contrast boost. The "muted" gray reads as disabled on a
+ * white background — icons, labels, and secondary metadata look almost
+ * invisible. Promote text-gray-400/500 to the main body text color in
+ * light/custom themes so they stay clearly legible. */
+html[data-theme="light"] [class~="text-gray-400"],
+html[data-theme="light"] [class~="text-gray-500"],
+html[data-theme="custom"] [class~="text-gray-400"],
+html[data-theme="custom"] [class~="text-gray-500"] {
+  color: var(--c-text) !important;
+}
+html[data-theme="light"] [class~="hover:text-gray-300"]:hover,
+html[data-theme="light"] [class~="hover:text-gray-400"]:hover,
+html[data-theme="custom"] [class~="hover:text-gray-300"]:hover,
+html[data-theme="custom"] [class~="hover:text-gray-400"]:hover {
+  color: var(--c-text-strong) !important;
+}
+
+/* Gallery header on a cover image — light mode. When the gallery header
+ * sits on top of a dark cover strip, the light-mode contrast boost above
+ * makes the icons dark, which is invisible on the cover. Force them back
+ * to white inside any element marked with data-on-cover. */
+
+[class~="text-gray-600"],
+[class~="text-gray-700"] { color: var(--c-text-dim) !important; }
+
+[class~="hover:text-gray-100"]:hover,
+[class~="hover:text-gray-200"]:hover { color: var(--c-text-strong) !important; }
+[class~="hover:text-gray-300"]:hover { color: var(--c-text) !important; }
+[class~="hover:text-gray-400"]:hover { color: var(--c-text-muted) !important; }
+
+/* ── Input placeholders ─────────────────────────────────────────────── */
+[class~="placeholder-gray-500"]::placeholder,
+[class~="placeholder-gray-600"]::placeholder,
+[class~="placeholder-gray-700"]::placeholder { color: var(--c-text-dim) !important; }
+
+/* ── Accents ────────────────────────────────────────────────────────── */
+[class~="text-blue-400"] { color: var(--c-accent) !important; }
+[class~="text-blue-300"] { color: var(--c-accent-text) !important; }
+[class~="hover:text-blue-300"]:hover,
+[class~="hover:text-blue-400"]:hover { color: var(--c-accent-hover) !important; }
+
+/* ═══════════════════════════════════════════════════════════════════════
+ *  Semantic status colors — danger / warning / success
+ *  ═══════════════════════════════════════════════════════════════════════ */
+
+/* Danger — red family */
+[class~="text-red-300"] { color: color-mix(in srgb, var(--c-danger) 80%, white) !important; }
+[class~="text-red-400"] { color: var(--c-danger) !important; }
+[class~="text-red-500"] { color: var(--c-danger) !important; }
+[class~="text-red-400/70"] { color: color-mix(in srgb, var(--c-danger) 70%, transparent) !important; }
+[class~="hover:text-red-300"]:hover { color: color-mix(in srgb, var(--c-danger) 80%, white) !important; }
+[class~="hover:text-red-400"]:hover { color: var(--c-danger) !important; }
+
+[class~="bg-red-500/5"]  { background-color: color-mix(in srgb, var(--c-danger) 5%, transparent) !important; }
+[class~="bg-red-500/10"] { background-color: color-mix(in srgb, var(--c-danger) 10%, transparent) !important; }
+[class~="bg-red-500/30"] { background-color: color-mix(in srgb, var(--c-danger) 30%, transparent) !important; }
+[class~="bg-red-600"]    { background-color: var(--c-danger) !important; }
+[class~="bg-red-600/90"] { background-color: color-mix(in srgb, var(--c-danger) 90%, transparent) !important; }
+[class~="hover:bg-red-500"]:hover  { background-color: var(--c-danger) !important; }
+[class~="hover:bg-red-600"]:hover  { background-color: var(--c-danger) !important; }
+
+[class~="border-red-500/30"] { border-color: color-mix(in srgb, var(--c-danger) 30%, transparent) !important; }
+[class~="border-red-500/40"] { border-color: color-mix(in srgb, var(--c-danger) 40%, transparent) !important; }
+[class~="border-red-500/50"] { border-color: color-mix(in srgb, var(--c-danger) 50%, transparent) !important; }
+
+/* Warning — amber family */
+[class~="text-amber-300"] { color: color-mix(in srgb, var(--c-warning) 85%, white) !important; }
+[class~="text-amber-300/90"] { color: color-mix(in srgb, var(--c-warning) 90%, transparent) !important; }
+[class~="text-amber-400"] { color: var(--c-warning) !important; }
+[class~="text-amber-400/70"] { color: color-mix(in srgb, var(--c-warning) 70%, transparent) !important; }
+[class~="text-amber-400/80"] { color: color-mix(in srgb, var(--c-warning) 80%, transparent) !important; }
+[class~="hover:text-amber-300"]:hover { color: color-mix(in srgb, var(--c-warning) 85%, white) !important; }
+
+[class~="bg-amber-500/5"]  { background-color: color-mix(in srgb, var(--c-warning) 5%, transparent) !important; }
+[class~="bg-amber-500/10"] { background-color: color-mix(in srgb, var(--c-warning) 10%, transparent) !important; }
+
+[class~="border-amber-500/30"] { border-color: color-mix(in srgb, var(--c-warning) 30%, transparent) !important; }
+
+/* Success — green family */
+[class~="text-green-400"] { color: var(--c-success) !important; }
+[class~="text-emerald-300"] { color: color-mix(in srgb, var(--c-success) 85%, white) !important; }
+[class~="text-emerald-400"] { color: var(--c-success) !important; }
+[class~="text-emerald-500"] { color: var(--c-success) !important; }
+
+[class~="bg-emerald-500/80"] { background-color: color-mix(in srgb, var(--c-success) 80%, transparent) !important; }
+[class~="border-emerald-500/40"] { border-color: color-mix(in srgb, var(--c-success) 40%, transparent) !important; }
+[class~="bg-emerald-500/10"] { background-color: color-mix(in srgb, var(--c-success) 10%, transparent) !important; }
+
+/* Overlay — modal backdrops */
+[class~="bg-black/60"] { background-color: color-mix(in srgb, var(--c-overlay) 60%, transparent) !important; }
+[class~="bg-black/70"] { background-color: color-mix(in srgb, var(--c-overlay) 70%, transparent) !important; }
+[class~="bg-black/90"] { background-color: color-mix(in srgb, var(--c-overlay) 90%, transparent) !important; }
+[class~="bg-black/95"] { background-color: color-mix(in srgb, var(--c-overlay) 95%, transparent) !important; }
+
+/* ── BlockNote integration ──────────────────────────────────────────── */
+.bn-container,
+.bn-editor,
+.ProseMirror {
+  background-color: transparent !important;
+  color: var(--c-text) !important;
+}
+
+html[data-theme="light"] .bn-root,
+html[data-theme="custom"] .bn-root {
+  --bn-colors-editor-text: var(--c-text);
+  --bn-colors-editor-background: var(--c-bg);
+  --bn-colors-menu-text: var(--c-text);
+  --bn-colors-menu-background: var(--c-elevated);
+  --bn-colors-tooltip-text: var(--c-text);
+  --bn-colors-tooltip-background: var(--c-elevated);
+  --bn-colors-hovered-text: var(--c-text-strong);
+  --bn-colors-hovered-background: var(--c-surface);
+  --bn-colors-selected-text: var(--c-text-strong);
+  --bn-colors-selected-background: var(--c-border);
+  --bn-colors-border: var(--c-border);
+  --bn-colors-side-menu: var(--c-text-muted);
+}
+
+
+/* ── Alpha-suffixed backgrounds ────────────────────────────────────────
+ *  Tailwind compiles `bg-[#131819]/50` to a class token literally named
+ *  `bg-[#131819]/50` — the `[class~="…"]` rules above only match the
+ *  un-suffixed token, so every translucent variant needs its own rule.
+ *  `color-mix` keeps the translucency intact in both themes. */
+[class~="bg-[#131819]/50"] {
+  background-color: color-mix(in srgb, var(--c-surface) 50%, transparent) !important;
+}
+[class~="bg-[#131819]/70"] {
+  background-color: color-mix(in srgb, var(--c-surface) 70%, transparent) !important;
+}
+[class~="bg-[#161a1d]/50"] {
+  background-color: color-mix(in srgb, var(--c-surface) 50%, transparent) !important;
+}
+[class~="bg-[#161a1d]/70"] {
+  background-color: color-mix(in srgb, var(--c-surface) 70%, transparent) !important;
+}
+[class~="bg-[#0f1315]/70"] {
+  background-color: color-mix(in srgb, var(--c-bg) 70%, transparent) !important;
+}
+[class~="bg-[#1e2327]/50"] {
+  background-color: color-mix(in srgb, var(--c-elevated) 50%, transparent) !important;
+}
+[class~="bg-[#1e2327]/70"] {
+  background-color: color-mix(in srgb, var(--c-elevated) 70%, transparent) !important;
+}
+
+/* ── Group-hover text variants ─────────────────────────────────────────
+ *  `group-hover:text-gray-100` is a different class token from
+ *  `hover:text-gray-100`, so the earlier hover rules don't catch it.
+ *  This keeps text readable when hovering shortcut tiles and folder rows
+ *  in light mode. */
+[class~="group-hover:text-gray-100"]:hover,
+.group:hover [class~="group-hover:text-gray-100"] {
+  color: var(--c-text-strong) !important;
+}
+[class~="group-hover:text-gray-300"]:hover,
+.group:hover [class~="group-hover:text-gray-300"] {
+  color: var(--c-text) !important;
+}
+[class~="group-hover:text-gray-400"]:hover,
+.group:hover [class~="group-hover:text-gray-400"] {
+  color: var(--c-text-muted) !important;
+}
+
+
+/* ── Accent transparencies ─────────────────────────────────────────────
+ *  `bg-blue-500/25` and friends are separate class tokens from
+ *  `bg-blue-500`, so the earlier rules don't catch them. Alpha-suffixed
+ *  accent colors wash out badly on a light background — rebuild them with
+ *  color-mix so they stay visibly accent-colored in both themes. */
+[class~="bg-blue-500/15"] { background-color: color-mix(in srgb, var(--c-accent) 15%, transparent) !important; }
+[class~="bg-blue-500/25"] { background-color: color-mix(in srgb, var(--c-accent) 25%, transparent) !important; }
+[class~="bg-blue-500/35"] { background-color: color-mix(in srgb, var(--c-accent) 35%, transparent) !important; }
+[class~="bg-blue-600/15"] { background-color: color-mix(in srgb, var(--c-accent) 15%, transparent) !important; }
+[class~="bg-blue-600/20"] { background-color: color-mix(in srgb, var(--c-accent) 20%, transparent) !important; }
+
+[class~="hover:bg-blue-500/35"]:hover {
+  background-color: color-mix(in srgb, var(--c-accent) 35%, transparent) !important;
+}
+
+[class~="border-blue-500/40"] { border-color: color-mix(in srgb, var(--c-accent) 40%, transparent) !important; }
+[class~="border-blue-500/50"] { border-color: color-mix(in srgb, var(--c-accent) 50%, transparent) !important; }
+[class~="border-blue-500/60"] { border-color: color-mix(in srgb, var(--c-accent) 60%, transparent) !important; }
+
+/* ── Blue text lightness variants ──────────────────────────────────────
+ *  `text-blue-100` and `text-blue-200` are meant to be *light* blue — which
+ *  is unreadable on a light surface. Map them onto the accent-text token,
+ *  which is theme-aware. */
+[class~="text-blue-100"] { color: var(--c-accent-text) !important; }
+[class~="text-blue-200"] { color: var(--c-accent-text) !important; }
+
+[class~="hover:text-blue-100"]:hover,
+[class~="hover:text-blue-200"]:hover { color: var(--c-accent-hover) !important; }
+
+/* Alpha-suffixed accent text: keep the accent hue, fold the opacity in. */
+[class~="text-blue-400/80"] { color: color-mix(in srgb, var(--c-accent) 80%, transparent) !important; }
+[class~="text-blue-300/70"] { color: color-mix(in srgb, var(--c-accent-text) 70%, transparent) !important; }
+[class~="text-blue-300/60"] { color: color-mix(in srgb, var(--c-accent-text) 60%, transparent) !important; }
+
+/* ── Dark scrim tints on small pills ───────────────────────────────────
+ *  `bg-black/20` and `bg-black/30` are used as subtle darkener layers on
+ *  pills (scripture toggle, etc.). On a light surface they look like a
+ *  black smudge; make them a soft neutral instead. */
+[class~="bg-black/20"] {
+  background-color: color-mix(in srgb, var(--c-text-strong) 8%, transparent) !important;
+}
+[class~="bg-black/30"] {
+  background-color: color-mix(in srgb, var(--c-text-strong) 12%, transparent) !important;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════
+ *  emoji-picker-react theming
+ *  ─────────────────────────────────────────────────────────────────────
+ *  The library has no knowledge of our theme system. It reads its own set
+ *  of CSS variables (`--epr-*`) defined on `.EmojiPickerReact`. Overriding
+ *  those here makes every picker in the app follow the active theme — the
+ *  `theme` prop becomes a redundant hint rather than the source of truth.
+ *  ═══════════════════════════════════════════════════════════════════════ */
+
+.EmojiPickerReact {
+  --epr-bg-color:               var(--c-surface) !important;
+  --epr-text-color:             var(--c-text) !important;
+  --epr-search-input-bg-color:  var(--c-bg) !important;
+  --epr-search-input-text-color: var(--c-text) !important;
+  --epr-picker-border-color:    var(--c-border) !important;
+  --epr-hover-bg-color:         var(--c-elevated) !important;
+  --epr-focus-bg-color:         var(--c-elevated) !important;
+  --epr-category-label-bg-color: var(--c-surface) !important;
+  --epr-category-label-text-color: var(--c-text-muted) !important;
+  --epr-category-icon-active-color: var(--c-accent) !important;
+  --epr-highlight-color:        var(--c-accent) !important;
+  --epr-search-border-color:    var(--c-border) !important;
+  --epr-skin-tone-picker-menu-color: var(--c-elevated) !important;
+  color: var(--c-text) !important;
+}
+
+/* The outer wrapper the library draws around the picker. */
+.EmojiPickerReact.epr-main,
+.EmojiPickerReact .epr-body,
+.EmojiPickerReact .epr-header {
+  background-color: var(--c-surface) !important;
+  border-color: var(--c-border) !important;
+  color: var(--c-text) !important;
+}
+
+/* Search input — the library styles the inner <input> separately. */
+.EmojiPickerReact .epr-search-container input,
+.EmojiPickerReact input.epr-search {
+  background-color: var(--c-bg) !important;
+  color: var(--c-text) !important;
+  border-color: var(--c-border) !important;
+}
+.EmojiPickerReact .epr-search-container input::placeholder {
+  color: var(--c-text-dim) !important;
+}
+
+/* Category headers ("Frequently Used", "Smileys & People", …). */
+.EmojiPickerReact .epr-category-label {
+  background-color: var(--c-surface) !important;
+  color: var(--c-text-muted) !important;
+}
+
+/* Emoji hover / focus rings. */
+.EmojiPickerReact button.epr-emoji:hover,
+.EmojiPickerReact button.epr-emoji.epr-emoji-hovered {
+  background-color: var(--c-elevated) !important;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════
+ *  Light-mode selection contrast
+ *  ─────────────────────────────────────────────────────────────────────
+ *  In dark mode, `bg-[#2a3136]` (#2a3136) on the sidebar (#161a1d) reads
+ *  as a clear highlight. In light mode it maps to --c-border (#e2e8f0),
+ *  which is nearly the same value as the sidebar's own surface — so the
+ *  "current item" indicator disappears.
+ *
+ *  Give the sidebar's selected state an accent tint in light/custom mode.
+ *  Scoped to descendants of the sidebar root (bg-[#161a1d]) so it doesn't
+ *  affect the BlockNote toolbar or dividers elsewhere.
+ *  ═══════════════════════════════════════════════════════════════════════ */
+
+html[data-theme="light"] [class~="bg-[#161a1d]"] [class~="bg-[#2a3136]"]:not(.h-px),
+html[data-theme="custom"] [class~="bg-[#161a1d]"] [class~="bg-[#2a3136]"]:not(.h-px) {
+  background-color: color-mix(in srgb, var(--c-accent) 16%, transparent) !important;
+}
+
+/* ── Folder label colors — light surfaces ─────────────────────────────
+ * The default folder colors are tuned for dark backgrounds. Whenever
+ * the theme's own `bg` color is bright (any light theme, any bright
+ * custom theme like Glassy), swap each to a much darker, higher-contrast
+ * version of the same hue so year / month labels stay readable.
+ *
+ * `theme-light-surface` is set by applyTheme() in theme.ts based on the
+ * luminance of the active theme's background color — not the theme's
+ * name — so it works for every preset and every custom theme. */
+body.theme-light-surface {
+  --c-folder-default: #1f2937;
+  --c-folder-gray: #1f2937;
+  --c-folder-brown: #5b2c0e;
+  --c-folder-orange: #7c2d12;
+  --c-folder-yellow: #713f12;
+  --c-folder-green: #14532d;
+  --c-folder-blue: #1e3a8a;
+  --c-folder-purple: #4c1d95;
+  --c-folder-pink: #831843;
+  --c-folder-red: #7f1d1d;
+}
+
+
+
+/* ═══════════════════════════════════════════════════════════════════════
+ *  Theme background image
+ *  ─────────────────────────────────────────────────────────────────────
+ *  The image lives on a fixed, full-screen layer at z-index -1, behind
+ *  everything else. `#root` gets `isolation: isolate` so that negative
+ *  z-index stays contained within the app's own stacking context rather
+ *  than dropping behind the html element.
+ *  ═══════════════════════════════════════════════════════════════════════ */
+
+#root { isolation: isolate; }
+
+.theme-bg-layer,
+.theme-bg-overlay {
+  position: fixed;
+  inset: -60px; /* overshoot so blur never reveals transparent edges */
+  pointer-events: none;
+  z-index: -1;
+}
+
+.theme-bg-layer {
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+/* Make the outer shells transparent so the fixed layer beneath shows
+ *  through any translucent panel. Applies in BOTH scopes — the panel
+ *  rules below decide which panels actually become translucent. */
+body.theme-has-bg,
+body.theme-has-bg #root,
+body.theme-has-bg .app-shell {
+  background-color: transparent !important;
+}
+/* ── Content area — "whole app" scope, unified mode only ───────────────
+ *  `:not(.theme-separate-tints)` — this rule only runs when separate
+ *  tints is OFF. When it's on, the separate-tints block below takes over.
+ *  `.content-shell` — the rule only reaches into the content column,
+ *  never the sidebar and never any modal. */
+body:not(.theme-separate-tints).theme-scope-app.theme-has-bg .content-shell,
+body:not(.theme-separate-tints).theme-scope-app.theme-has-bg .content-shell [class~="bg-[#0f1315]"],
+body:not(.theme-separate-tints).theme-scope-app.theme-has-bg .content-shell [class~="bg-[#131819]"],
+body:not(.theme-separate-tints).theme-scope-app.theme-has-bg .content-shell [class~="bg-[#161a1d]"],
+body:not(.theme-separate-tints).theme-scope-app.theme-has-bg .content-shell [class~="bg-[#1a1e21]"],
+body:not(.theme-separate-tints).theme-scope-app.theme-has-bg .content-shell [class~="bg-[#1e2327]"] {
+  background-color: color-mix(
+    in srgb,
+    color-mix(
+      in srgb,
+      var(--c-content-tint) calc(100% - var(--c-overlay-intensity, 0%)),
+              var(--c-overlay-tint, transparent) var(--c-overlay-intensity, 0%)
+    ) var(--c-panel-opacity, 75%),
+                              transparent
+  ) !important;
+}
+
+/* ── Content area — sidebar-only scope, unified mode only ────────────── */
+body:not(.theme-separate-tints).theme-scope-sidebar.theme-has-bg .content-shell,
+body:not(.theme-separate-tints).theme-scope-sidebar.theme-has-bg .content-shell [class~="bg-[#0f1315]"] {
+  background-color: color-mix(
+    in srgb,
+    var(--c-bg) calc(100% - var(--c-overlay-intensity, 0%)),
+                              var(--c-overlay-tint, transparent) var(--c-overlay-intensity, 0%)
+  ) !important;
+}
+body:not(.theme-separate-tints).theme-scope-sidebar.theme-has-bg .content-shell [class~="bg-[#131819]"],
+body:not(.theme-separate-tints).theme-scope-sidebar.theme-has-bg .content-shell [class~="bg-[#161a1d]"] {
+  background-color: color-mix(
+    in srgb,
+    var(--c-surface) calc(100% - var(--c-overlay-intensity, 0%)),
+                              var(--c-overlay-tint, transparent) var(--c-overlay-intensity, 0%)
+  ) !important;
+}
+body:not(.theme-separate-tints).theme-scope-sidebar.theme-has-bg .content-shell [class~="bg-[#1a1e21]"] {
+  background-color: color-mix(
+    in srgb,
+    var(--c-surface-alt) calc(100% - var(--c-overlay-intensity, 0%)),
+                              var(--c-overlay-tint, transparent) var(--c-overlay-intensity, 0%)
+  ) !important;
+}
+body:not(.theme-separate-tints).theme-scope-sidebar.theme-has-bg .content-shell [class~="bg-[#1e2327]"] {
+  background-color: color-mix(
+    in srgb,
+    var(--c-elevated) calc(100% - var(--c-overlay-intensity, 0%)),
+                              var(--c-overlay-tint, transparent) var(--c-overlay-intensity, 0%)
+  ) !important;
+}
+
+/* ── Sidebar — unified mode only ─────────────────────────────────────── */
+body:not(.theme-separate-tints).theme-has-bg .sidebar-shell,
+body:not(.theme-separate-tints).theme-has-bg .sidebar-shell [class~="bg-[#131819]"],
+body:not(.theme-separate-tints).theme-has-bg .sidebar-shell [class~="bg-[#161a1d]"],
+body:not(.theme-separate-tints).theme-has-bg .sidebar-shell [class~="bg-[#1a1e21]"],
+body:not(.theme-separate-tints).theme-has-bg .sidebar-shell [class~="bg-[#1e2327]"],
+body:not(.theme-separate-tints).theme-has-bg .sidebar-shell [class~="bg-[#2a3136]"]:not(.h-px) {
+  background-color: color-mix(
+    in srgb,
+    color-mix(
+      in srgb,
+      var(--c-sidebar-tint) calc(100% - var(--c-overlay-intensity, 0%)),
+              var(--c-overlay-tint, transparent) var(--c-overlay-intensity, 0%)
+    ) var(--c-sidebar-opacity, 75%),
+                              transparent
+  ) !important;
+}
+
+/* Position anchor for the sidebar shell */
+body.theme-has-bg .sidebar-shell {
+  position: relative;
+}
+body.theme-has-bg .sidebar-shell > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+ *  Separate tints mode
+ *  ─────────────────────────────────────────────────────────────────────
+ *  The intensity sliders ARE the alpha of the tint color. 0 % = panel is
+ *  transparent, 100 % = solid tint color.
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+/* Sidebar tint — sidebar column only */
+body.theme-separate-tints.theme-has-bg .sidebar-shell,
+body.theme-separate-tints.theme-has-bg .sidebar-shell [class~="bg-[#131819]"],
+body.theme-separate-tints.theme-has-bg .sidebar-shell [class~="bg-[#161a1d]"],
+body.theme-separate-tints.theme-has-bg .sidebar-shell [class~="bg-[#1a1e21]"],
+body.theme-separate-tints.theme-has-bg .sidebar-shell [class~="bg-[#1e2327]"],
+body.theme-separate-tints.theme-has-bg .sidebar-shell [class~="bg-[#2a3136]"]:not(.h-px) {
+  background-color: color-mix(
+    in srgb,
+    var(--c-sidebar-tint) var(--c-sidebar-tint-intensity, 100%),
+                              transparent
+  ) !important;
+}
+
+/* Content tint — content column only, both scopes */
+body.theme-separate-tints.theme-scope-app.theme-has-bg .content-shell,
+body.theme-separate-tints.theme-scope-app.theme-has-bg .content-shell [class~="bg-[#0f1315]"],
+body.theme-separate-tints.theme-scope-app.theme-has-bg .content-shell [class~="bg-[#131819]"],
+body.theme-separate-tints.theme-scope-app.theme-has-bg .content-shell [class~="bg-[#161a1d]"],
+body.theme-separate-tints.theme-scope-app.theme-has-bg .content-shell [class~="bg-[#1a1e21]"],
+body.theme-separate-tints.theme-scope-app.theme-has-bg .content-shell [class~="bg-[#1e2327]"],
+body.theme-separate-tints.theme-scope-sidebar.theme-has-bg .content-shell,
+body.theme-separate-tints.theme-scope-sidebar.theme-has-bg .content-shell [class~="bg-[#0f1315]"],
+body.theme-separate-tints.theme-scope-sidebar.theme-has-bg .content-shell [class~="bg-[#131819]"],
+body.theme-separate-tints.theme-scope-sidebar.theme-has-bg .content-shell [class~="bg-[#161a1d]"],
+body.theme-separate-tints.theme-scope-sidebar.theme-has-bg .content-shell [class~="bg-[#1a1e21]"],
+body.theme-separate-tints.theme-scope-sidebar.theme-has-bg .content-shell [class~="bg-[#1e2327]"] {
+  background-color: color-mix(
+    in srgb,
+    var(--c-content-tint) var(--c-content-tint-intensity, 100%),
+                              transparent
+  ) !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+ *  Settings / dialogs — data-opaque
+ *  ─────────────────────────────────────────────────────────────────────
+ *  Dialogs get their own color and opacity. No tint rule above requires
+ *  an ancestor beyond `.content-shell` or `.sidebar-shell`, and modals
+ *  live outside both — so nothing here can reach them. The `[data-opaque]
+ *  *` rule is a belt-and-suspenders reset that scrubs the tint variables
+ *  inside the modal subtree.
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+[data-opaque] {
+  --c-panel-opacity: 100%;
+  --c-sidebar-opacity: 100%;
+  /* `--c-modal-opacity` is an *intensity*, not a panel alpha:
+   *   0 % → theme's normal `elevated` color
+   *   100 % → fully the chosen `--c-modal-color`
+   * The dialog stays fully opaque the whole time — the slider only
+   * changes how strongly the chosen color overrides the theme default. */
+  background-color: color-mix(
+    in srgb,
+    var(--c-elevated) calc(100% - var(--c-modal-opacity, 100%)),
+    var(--c-modal-color, var(--c-elevated)) var(--c-modal-opacity, 100%)
+  ) !important;
+}
+
+/* Inner panels — header bar, left nav, dividers, popovers, etc.
+ * Each blends from its OWN base theme color toward the chosen modal
+ * color by `--c-modal-opacity`, so the whole dialog shifts together. */
+[data-opaque] [class~="bg-[#1e2327]"],
+[data-opaque] [class~="bg-[#21262a]"] {
+  background-color: color-mix(
+    in srgb,
+    var(--c-elevated) calc(100% - var(--c-modal-opacity, 100%)),
+    var(--c-modal-color, var(--c-elevated)) var(--c-modal-opacity, 100%)
+  ) !important;
+}
+[data-opaque] [class~="bg-[#1a1e21]"] {
+  background-color: color-mix(
+    in srgb,
+    var(--c-surface-alt) calc(100% - var(--c-modal-opacity, 100%)),
+    var(--c-modal-color, var(--c-elevated)) var(--c-modal-opacity, 100%)
+  ) !important;
+}
+[data-opaque] [class~="bg-[#161a1d]"],
+[data-opaque] [class~="bg-[#131819]"],
+[data-opaque] [class~="bg-[#141819]"],
+[data-opaque] [class~="bg-[#181c1f]"] {
+  background-color: color-mix(
+    in srgb,
+    var(--c-surface) calc(100% - var(--c-modal-opacity, 100%)),
+    var(--c-modal-color, var(--c-elevated)) var(--c-modal-opacity, 100%)
+  ) !important;
+}
+[data-opaque] [class~="bg-[#0f1315]"] {
+  background-color: color-mix(
+    in srgb,
+    var(--c-bg) calc(100% - var(--c-modal-opacity, 100%)),
+    var(--c-modal-color, var(--c-elevated)) var(--c-modal-opacity, 100%)
+  ) !important;
+}
+[data-opaque] [class~="bg-[#2a3136]"]:not(.h-px) {
+  background-color: color-mix(
+    in srgb,
+    var(--c-border) calc(100% - var(--c-modal-opacity, 100%)),
+    var(--c-modal-color, var(--c-elevated)) var(--c-modal-opacity, 100%)
+  ) !important;
+}
+[data-opaque] [class~="bg-[#30363d]"],
+[data-opaque] [class~="bg-[#343c42]"] {
+  background-color: color-mix(
+    in srgb,
+    var(--c-border-light) calc(100% - var(--c-modal-opacity, 100%)),
+    var(--c-modal-color, var(--c-elevated)) var(--c-modal-opacity, 100%)
+  ) !important;
+}
+
+[data-opaque],
+[data-opaque] * {
+  --c-content-tint: transparent;
+  --c-sidebar-tint: transparent;
+  --c-overlay-tint: transparent;
 }

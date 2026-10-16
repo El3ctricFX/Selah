@@ -21,6 +21,9 @@ export interface Frontmatter {
   titleX?: number;
   titleY?: number;
   titleFont?: string;
+  coverOverlayColor?: string;
+  coverOverlayOpacity?: number;
+  titleColor?: string;
   docWidth?: string;
   created?: string;
   modified?: string;
@@ -31,7 +34,8 @@ export interface Frontmatter {
 
 const PLAIN_STRING_KEYS = new Set([
   "icon", "color", "coverType", "coverValue", "iconAnchor", "titleAnchor",
-  "titleFont", "docWidth", "mode", "created", "modified",
+    "titleFont", "docWidth", "mode", "created", "modified",
+  "coverOverlayColor", "titleColor",
 ]);
 
 function isRiskyString(v: string): boolean {
