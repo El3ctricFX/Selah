@@ -6,6 +6,7 @@
 [![Release](https://img.shields.io/github/v/release/El3ctricFX/Selah)](https://github.com/El3ctricFX/Selah/releases)
 [![Downloads](https://img.shields.io/github/downloads/El3ctricFX/Selah/total)](https://github.com/El3ctricFX/Selah/releases)
 [![Discord](https://img.shields.io/badge/Discord-Join%20the%20community-5865F2?logo=discord&logoColor=white)](https://discord.gg/JSQFShPTkD)
+[![Built with AI](https://img.shields.io/badge/Vibe%20coded%20with-AI-blueviolet)](https://github.com/El3ctricFX/Selah)
 
   **Pause. Reflect. Write. Grow.**
 
@@ -27,6 +28,10 @@ Selah aims to bring together a flexible writing experience, personal organizatio
 - **Local-first philosophy:** prioritize personal ownership and control of your writing.
 - **Selah documents (`.selah`):** a purpose-built file format inspired by Markdown's readability, with room for richer document structures and features.
 - **Calm interface:** a minimal workspace designed to help you focus on what you want to write.
+
+## 🤖 AI Disclosure
+
+Selah is vibe-coded and built using AI assistance for architecture, UI layout, and code generation.
 
 ## 🗂️ The `.selah` file format
 
