@@ -2396,7 +2396,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
                           editor.insertBlocks(
                             [{ type: "paragraph", content: [{ type: "text", text: "\u00A0", styles: {} }] }],
                             colId,
-                            "nested"
+                            "nested" as any
                           );
                         } catch (e) { console.warn("[drag] Failed to keep column alive", e); }
                       });
