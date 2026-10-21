@@ -19,7 +19,7 @@ import VaultWelcome from "./VaultWelcome";
 import { useRecentVaults } from "./useRecentVaults";
 import { flushAll } from "./flushRegistry";
 import { migrateVaultPaths } from "./vaultMigration";
-import { useTheme } from "./theme";
+import { useTheme, setThemeVaultPath } from "./theme";
 import ThemeBackground from "./ThemeBackground";
 
 type JournalFocus = { year: number; month: number; day: number };
@@ -68,6 +68,13 @@ export default function App() {
   // Applies the saved theme to :root and keeps it in sync with the
   // Appearance panel. The panel uses the same hook, so both stay in step.
   useTheme();
+
+  // Load the vault's theme whenever we switch vaults. Without this, the
+  // theme would stick to whatever was last saved (previously in
+  // localStorage, now in the currently-open vault's metadata).
+  useEffect(() => {
+    void setThemeVaultPath(vaultPath);
+  }, [vaultPath]);
 
   const {
     vaults: recentVaults,
@@ -342,6 +349,14 @@ export default function App() {
     setSidebarCollapsed(false);
   };
 
+  const handleReturnToWelcome = () => {
+    setVaultPath(null);
+    setActiveView(null);
+    setActiveCategoryId(null);
+    setFocusMode(false);
+    setSidebarCollapsed(false);
+  };
+
   if (!vaultPath) {
     return (
       <VaultWelcome
@@ -559,7 +574,7 @@ export default function App() {
                 categoryId: cat.id,
               });
             }}
-            onSwitchVault={handleSelectVault}
+            onSwitchVault={handleReturnToWelcome}
             onOpenSettings={() => setSettingsOpen(true)}
             onGoHome={() => setActiveView(null)}
             onCollapse={() => setSidebarCollapsed(true)}

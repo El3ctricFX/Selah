@@ -1,11 +1,12 @@
 // src/ScriptureBlock.tsx
 import { createReactBlockSpec } from "@blocknote/react";
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   BookOpen, Copy, Check, ExternalLink, Loader2, X, RefreshCw,
-  ChevronDown, ChevronRight,
+  ChevronDown, ChevronRight, Trash2,
 } from "lucide-react";
 import { useNoteMode } from "./useNoteMode";
 
@@ -22,7 +23,7 @@ function VerseText({ text }: { text: string }) {
   return (
     <div
       className="text-sm text-gray-200 leading-relaxed space-y-1.5"
-      style={{ fontFamily: "Georgia, 'Times New Roman', serif" }}
+      style={{ fontFamily: "Georgia, 'Times New Roman', serif", userSelect: "text" }}
     >
       {lines.map((line, i) => {
         const m = line.match(/^(\d+)\s+(.+)$/);
@@ -79,8 +80,20 @@ export const createScripture = createReactBlockSpec(
       const [loading, setLoading] = useState(false);
       const [error, setError] = useState<string | null>(null);
       const [copied, setCopied] = useState(false);
+      const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
 
       useEffect(() => { setDraft(reference); }, [reference]);
+
+      useEffect(() => {
+        if (!ctxMenu) return;
+        const close = () => setCtxMenu(null);
+        document.addEventListener("mousedown", close);
+        document.addEventListener("click", close);
+        return () => {
+          document.removeEventListener("mousedown", close);
+          document.removeEventListener("click", close);
+        };
+      }, [ctxMenu]);
 
       const update = (patch: Record<string, any>) => {
         try {
@@ -148,7 +161,17 @@ export const createScripture = createReactBlockSpec(
           <div
             className="my-3 w-full rounded-md border border-[#2a3136] bg-[#0f1315]"
             contentEditable={false}
-            onMouseDown={(e) => e.stopPropagation()}
+            onMouseDown={(e) => {
+              if (e.button === 2) {
+                e.stopPropagation();
+                e.nativeEvent.stopImmediatePropagation();
+              }
+            }}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setCtxMenu({ x: e.clientX, y: e.clientY });
+            }}
           >
             <div className="flex items-center gap-2 px-3 py-2 border-b border-[#2a3136] bg-[#1a1e21]">
               <BookOpen size={12} className="text-blue-400 flex-shrink-0" />
@@ -194,7 +217,17 @@ export const createScripture = createReactBlockSpec(
         <div
           className="my-3 w-full rounded-md border border-[#2a3136] bg-[#161a1d] overflow-hidden"
           contentEditable={false}
-          onMouseDown={(e) => e.stopPropagation()}
+          onMouseDown={(e) => {
+            if (e.button === 2) {
+              e.stopPropagation();
+              e.nativeEvent.stopImmediatePropagation();
+            }
+          }}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setCtxMenu({ x: e.clientX, y: e.clientY });
+          }}
         >
           <div className="flex items-center gap-1.5 px-2 py-1.5 border-b border-[#2a3136] bg-[#1a1e21]">
             <button
@@ -314,6 +347,30 @@ export const createScripture = createReactBlockSpec(
               </>
             )}
           </div>
+
+          {ctxMenu && createPortal(
+            <div
+              className="fixed z-[600] bg-[#1e2327] border border-[#2a3136] rounded-md shadow-2xl py-1 w-48"
+              style={{
+                top: Math.min(ctxMenu.y, window.innerHeight - 80),
+                left: Math.min(ctxMenu.x, window.innerWidth - 200),
+              }}
+              onMouseDown={(e) => { if (e.button === 2) { e.stopPropagation(); e.nativeEvent.stopImmediatePropagation(); } }}
+              onContextMenu={(e) => e.preventDefault()}
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  try { props.editor.removeBlocks([props.block.id]); } catch {}
+                  setCtxMenu(null);
+                }}
+                className="w-full text-left px-3 py-1.5 text-sm text-red-400 hover:bg-[#2a3136] flex items-center gap-2"
+              >
+                <Trash2 size={13} /> <span>Delete verse</span>
+              </button>
+            </div>,
+            document.body
+          )}
         </div>
       );
     },

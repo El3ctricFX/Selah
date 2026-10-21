@@ -1,7 +1,7 @@
 {
   "name": "selah",
   "private": true,
-  "version": "0.1.7",
+  "version": "0.1.8",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -29,6 +29,8 @@
     "node-emoji": "^2.2.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
+    "react-easy-crop": "^6.2.4",
+    "react-image-crop": "^11.1.2",
     "react-resizable-panels": "^4.14.0",
     "tauri-plugin-libmpv-api": "^0.3.2",
     "tiptap-markdown": "^0.8.10"

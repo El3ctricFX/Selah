@@ -332,7 +332,7 @@ export const createDmArchive = createReactBlockSpec(
           <div
             className="my-2 w-full rounded-lg border border-blue-500/40 bg-[#161a1d] overflow-hidden"
             contentEditable={false}
-            onMouseDown={(e) => e.stopPropagation()}
+            onMouseDown={(e) => { if (e.button === 2) { e.stopPropagation(); e.nativeEvent.stopImmediatePropagation(); } }}
           >
             <div className="px-3 py-2 border-b border-[#2a3136] bg-[#1a1e21]">
               <div className="text-xs text-gray-100 font-medium">
@@ -411,7 +411,7 @@ export const createDmArchive = createReactBlockSpec(
           <div
             className="my-2 w-full rounded-lg border border-dashed border-[#30363d] bg-[#0f1315] py-6 flex flex-col items-center justify-center gap-2"
             contentEditable={false}
-            onMouseDown={(e) => e.stopPropagation()}
+            onMouseDown={(e) => { if (e.button === 2) { e.stopPropagation(); e.nativeEvent.stopImmediatePropagation(); } }}
           >
             {isEdit ? (
               <button
@@ -443,7 +443,7 @@ export const createDmArchive = createReactBlockSpec(
           <div
             className="my-2 w-full rounded-lg overflow-hidden border border-[#2a3136] bg-[#161a1d]"
             contentEditable={false}
-            onMouseDown={(e) => e.stopPropagation()}
+            onMouseDown={(e) => { if (e.button === 2) { e.stopPropagation(); e.nativeEvent.stopImmediatePropagation(); } }}
           >
             <div
               className="flex items-center gap-2 px-2.5 py-1.5 select-none"
@@ -515,7 +515,7 @@ export const createDmArchive = createReactBlockSpec(
                     e.stopPropagation();
                     openLink();
                   }}
-                  onMouseDown={(e) => e.stopPropagation()}
+                  onMouseDown={(e) => { if (e.button === 2) { e.stopPropagation(); e.nativeEvent.stopImmediatePropagation(); } }}
                   className="text-xs text-blue-300 hover:text-blue-200 truncate flex-1 min-w-0 underline decoration-blue-400/40 hover:decoration-blue-300 cursor-pointer"
                   title={link}
                 >

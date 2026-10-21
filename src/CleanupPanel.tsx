@@ -7,7 +7,7 @@ import {
   Wrench, FolderOpen, ShieldOff, RefreshCw, ArrowRight, HelpCircle,
 } from "lucide-react";
 import { auditVault, type VaultReport, type BrokenRef, type MissingProxiesForNote, type MissingThumbForNote, type ProxiesOffNote } from "./mediaVault";
-import { fixBrokenRef, fixAllBrokenRefsForNote, deleteUnusedFile, keepUnusedFile, fixOldLayout, buildProxiesForNote, buildThumbsForNote, removeProxiesForNote } from "./mediaFix";
+import { fixBrokenRef, fixAllBrokenRefsForNote, deleteUnusedFile, keepUnusedFile, fixOldLayout, buildProxiesForNote, buildThumbsForNote, removeProxiesForNote, removeBrokenRefFromNote } from "./mediaFix";
 import { basename } from "./mediaVault";
 
 type Phase = "scanning" | "results" | "working" | "done" | "error";
@@ -159,6 +159,15 @@ export default function CleanupPanel({ open, onClose, vaultPath }: Props) {
       for (const b of items) {
         if (b.fix.kind === "unfixable") continue;
         await fixBrokenRef(b);
+      }
+    });
+
+  const removeSelectedBroken = () =>
+    run("Removing broken references", async () => {
+      if (!report) return;
+      const items = report.brokenRefs.filter((b) => selected.has(`b:${b.notePath}:${b.raw}`));
+      for (const b of items) {
+        await removeBrokenRefFromNote(b.notePath, b.raw);
       }
     });
 
@@ -614,13 +623,22 @@ export default function CleanupPanel({ open, onClose, vaultPath }: Props) {
                   onFixAll={fixAllBroken}
                   fixAllLabel="Repair all fixable"
                   extraActions={
-                    <button
-                      onClick={fixSelectedBroken}
-                      disabled={working !== null || selected.size === 0}
-                      className="flex items-center gap-1 px-2.5 py-1 text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white rounded"
-                    >
-                      <Wrench size={11} /> Repair selected
-                    </button>
+                    <>
+                      <button
+                        onClick={fixSelectedBroken}
+                        disabled={working !== null || selected.size === 0}
+                        className="flex items-center gap-1 px-2.5 py-1 text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white rounded"
+                      >
+                        <Wrench size={11} /> Repair selected
+                      </button>
+                      <button
+                        onClick={removeSelectedBroken}
+                        disabled={working !== null || selected.size === 0}
+                        className="flex items-center gap-1 px-2.5 py-1 text-xs bg-red-600 hover:bg-red-500 disabled:opacity-40 text-white rounded"
+                      >
+                        <Trash2 size={11} /> Remove selected
+                      </button>
+                    </>
                   }
                   working={working}
                 >
@@ -732,7 +750,7 @@ function FixBadge({ fix }: { fix: BrokenRef["fix"] }) {
   if (fix.kind === "unfixable") {
     return (
       <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border border-red-500/40 bg-red-500/10 text-red-300">
-        <HelpCircle size={9} /> Cannot fix — file not found anywhere
+        <HelpCircle size={9} /> Cannot fix — file not found anywhere. You can remove it.
       </span>
     );
   }

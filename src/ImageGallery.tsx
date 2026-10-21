@@ -6,7 +6,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import {
   Plus, Loader2, Trash2, Maximize2, MoveRight, X,
-  Merge, SplitSquareHorizontal, RotateCcw,
+  Merge, SplitSquareHorizontal, RotateCcw, GripVertical,
 } from "lucide-react";
 import { useNoteMode } from "./useNoteMode";
 import { useNoteContext } from "./NoteContext";
@@ -359,23 +359,42 @@ function EmptyCell({
   onContextMenu: (e: React.MouseEvent, r: number, c: number) => void;
 }) {
   const [dragOver, setDragOver] = useState(false);
+
+  // In read mode, empty cells should take up space but be completely invisible.
+  if (!isEdit) {
+    return (
+      <div
+        style={{
+          gridColumn: `${col + 1} / span ${colspan}`,
+          gridRow: `${row + 1} / span ${rowspan}`,
+        }}
+        className="pointer-events-none"
+      />
+    );
+  }
+
   return (
     <div
       data-gallery-block-id={blockId}
       data-gallery-row={row}
       data-gallery-col={col}
-      className={`relative rounded-md overflow-hidden transition-all bg-[#0f1315] border-2 border-dashed ${
+      onMouseDown={(e) => {
+        if (e.button === 2) {
+          e.stopPropagation();
+          e.nativeEvent.stopImmediatePropagation();
+        }
+      }}
+      className={`relative rounded-md overflow-hidden transition-all bg-[#0f1315] border-2 border-dashed cursor-pointer ${
         dragOver
           ? "border-blue-400 ring-2 ring-blue-400/60"
           : "border-[#2a3136] hover:border-[#3a4147]"
-      } ${isEdit ? "cursor-pointer" : "cursor-default"}`}
+      }`}
       style={{
         gridColumn: `${col + 1} / span ${colspan}`,
         gridRow: `${row + 1} / span ${rowspan}`,
       }}
-      onContextMenu={(e) => { if (isEdit) onContextMenu(e, row, col); }}
+      onContextMenu={(e) => { onContextMenu(e, row, col); }}
       onDragOver={(e) => {
-        if (!isEdit) return;
         if (!e.dataTransfer.types.includes("text/x-gallery-cell")) return;
         e.preventDefault();
         e.dataTransfer.dropEffect = "move";
@@ -383,7 +402,6 @@ function EmptyCell({
       }}
       onDragLeave={() => setDragOver(false)}
       onDrop={(e) => {
-        if (!isEdit) return;
         e.preventDefault();
         e.stopPropagation();
         setDragOver(false);
@@ -404,26 +422,24 @@ function EmptyCell({
           );
         } catch {}
       }}
-      onClick={() => { if (isEdit && !busy) onImport(row, col); }}
-      title={isEdit ? "Click to import a photo" : "Empty slot"}
+      onClick={() => { if (!busy) onImport(row, col); }}
+      title="Click to import a photo"
     >
       <div className="absolute inset-0 flex items-center justify-center text-gray-600 pointer-events-none">
-      {busy
-        ? <Loader2 size={20} className="animate-spin text-gray-400" />
-        : <Plus size={22} />}
-        </div>
-        {isEdit && (
-          <ResizeHandles
-          showLeft={canResizeLeft}
-          showRight={canResizeCol}
-          showTop={canResizeTop}
-          showBottom={canResizeRow}
-          onStartColLeft={onResizeColLeftStart}
-          onStartColRight={onResizeColStart}
-          onStartRowTop={onResizeRowTopStart}
-          onStartRowBottom={onResizeRowStart}
-          />
-        )}
+        {busy
+          ? <Loader2 size={20} className="animate-spin text-gray-400" />
+          : <Plus size={22} />}
+      </div>
+      <ResizeHandles
+        showLeft={canResizeLeft}
+        showRight={canResizeCol}
+        showTop={canResizeTop}
+        showBottom={canResizeRow}
+        onStartColLeft={onResizeColLeftStart}
+        onStartColRight={onResizeColStart}
+        onStartRowTop={onResizeRowTopStart}
+        onStartRowBottom={onResizeRowStart}
+      />
     </div>
   );
 }
@@ -457,6 +473,12 @@ function FilledCell({
       data-gallery-block-id={blockId}
       data-gallery-row={row}
       data-gallery-col={col}
+      onMouseDown={(e) => {
+        if (e.button === 2) {
+          e.stopPropagation();
+          e.nativeEvent.stopImmediatePropagation();
+        }
+      }}
       className={`relative overflow-hidden group ${
         cell.fit === "cover"
           ? "rounded-none border-0 bg-transparent"
@@ -469,16 +491,6 @@ function FilledCell({
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       onContextMenu={(e) => { if (isEdit) onContextMenu(e, row, col); }}
-      draggable={isEdit}
-      onDragStart={(e) => {
-        if (!isEdit) return;
-        e.stopPropagation();
-        e.dataTransfer.effectAllowed = "move";
-        e.dataTransfer.setData(
-          "text/x-gallery-cell",
-          JSON.stringify({ blockId, row, col, src: cell.src })
-        );
-      }}
       onDragEnd={() => setDragOver(false)}
       onDragOver={(e) => {
         if (!isEdit) return;
@@ -528,6 +540,21 @@ function FilledCell({
     />
       {isEdit && hover && (
         <div className="absolute inset-0 bg-black/45 flex items-center justify-center gap-2">
+          <div
+            className="absolute top-2 left-2 p-1.5 rounded bg-black/70 hover:bg-black text-white cursor-grab active:cursor-grabbing"
+            draggable={true}
+            onDragStart={(e) => {
+              e.stopPropagation();
+              e.dataTransfer.effectAllowed = "move";
+              e.dataTransfer.setData(
+                "text/x-gallery-cell",
+                JSON.stringify({ blockId, row, col, src: cell.src })
+              );
+            }}
+            title="Drag to reorder"
+          >
+            <GripVertical size={13} />
+          </div>
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); onClear(row, col); }}
@@ -1320,7 +1347,12 @@ export const createImageGallery = createReactBlockSpec(
         <div
         className="my-4 w-full relative"
         contentEditable={false}
-        onMouseDown={(e) => e.stopPropagation()}
+        onMouseDown={(e) => {
+          if (e.button === 2) {
+            e.stopPropagation();
+            e.nativeEvent.stopImmediatePropagation();
+          }
+        }}
         onContextMenu={(e) => {
           // The cell's own onContextMenu (if any) has already fired
           // by the time this runs. Stop the event here so ProseMirror
@@ -1437,7 +1469,7 @@ export const createImageGallery = createReactBlockSpec(
             <div
               className="fixed z-[600] bg-[#1e2327] border border-[#2a3136] rounded-md shadow-2xl py-1 w-64"
               style={{ top: cellCtx.y, left: cellCtx.x }}
-              onMouseDown={(e) => e.stopPropagation()}
+              onMouseDown={(e) => { if (e.button === 2) { e.stopPropagation(); e.nativeEvent.stopImmediatePropagation(); } }}
               onContextMenu={(e) => e.preventDefault()}
             >
               {ctxReal?.src && (

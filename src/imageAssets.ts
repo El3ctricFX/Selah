@@ -86,6 +86,10 @@ export async function encodeImageToWebP(
 ): Promise<Uint8Array | null> {
   try {
     const bytes = await readFile(absPath);
+    if (bytes.length === 0) {
+      console.warn("[image] webp encode skipped: file is empty (0 bytes):", absPath);
+      return null;
+    }
     const blob = new Blob([bytes as any]);
     const bitmap = await createImageBitmap(blob);
     try {

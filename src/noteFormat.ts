@@ -675,9 +675,50 @@ async function parseBodyToBlocks(
   for (const seg of segments) {
     if (seg.kind === "md") {
       if (!seg.text?.trim()) continue;
-      const parsed = await editor.tryParseMarkdownToBlocks(seg.text);
-      const decoded = decodeColorsInBlocks(parsed);
-      blocks.push(...extractImageWidths(decoded));
+
+      const text = seg.text;
+      const divRegex = /<div\s+align="(center|right|left|justify)">([\s\S]*?)<\/div>/g;
+      let match;
+      let lastIndex = 0;
+
+      while ((match = divRegex.exec(text)) !== null) {
+        // Parse any text before the div
+        if (match.index > lastIndex) {
+          const prevText = text.slice(lastIndex, match.index);
+          if (prevText.trim()) {
+            const parsed = await editor.tryParseMarkdownToBlocks(prevText);
+            const decoded = decodeColorsInBlocks(parsed);
+            blocks.push(...extractImageWidths(decoded));
+          }
+        }
+
+        // Parse the text inside the aligned div
+        const align = match[1];
+        const innerText = match[2];
+        if (innerText.trim()) {
+          const parsed = await editor.tryParseMarkdownToBlocks(innerText);
+          const decoded = decodeColorsInBlocks(parsed);
+
+          // Apply the alignment to all resulting blocks
+          const aligned = decoded.map((b) => ({
+            ...b,
+            props: { ...b.props, textAlignment: align },
+          }));
+
+          blocks.push(...extractImageWidths(aligned));
+        }
+        lastIndex = divRegex.lastIndex;
+      }
+
+      // Parse any remaining text after the div
+      if (lastIndex < text.length) {
+        const restText = text.slice(lastIndex);
+        if (restText.trim()) {
+          const parsed = await editor.tryParseMarkdownToBlocks(restText);
+          const decoded = decodeColorsInBlocks(parsed);
+          blocks.push(...extractImageWidths(decoded));
+        }
+      }
     } else if (seg.kind === "columns") {
       const columnChildren = await Promise.all(
         (seg.columns || []).map(async (col) => {
@@ -793,8 +834,33 @@ async function serializeBlockList(
 
   const flush = async () => {
     if (!pending.length) return;
-    const md = await editor.blocksToMarkdownLossy(encodeColorsInBlocks(pending));
-    if (md.trim()) chunks.push(md.trim());
+
+    let currentAlign = pending[0].props?.textAlignment || "left";
+    let currentChunk: any[] = [];
+
+    const pushChunk = async (chunk: any[], align: string) => {
+      if (!chunk.length) return;
+      const md = await editor.blocksToMarkdownLossy(encodeColorsInBlocks(chunk));
+      if (md.trim()) {
+        if (align !== "left") {
+          chunks.push(`<div align="${align}">\n\n${md.trim()}\n\n</div>`);
+        } else {
+          chunks.push(md.trim());
+        }
+      }
+    };
+
+    for (const b of pending) {
+      const align = b.props?.textAlignment || "left";
+      if (align !== currentAlign) {
+        await pushChunk(currentChunk, currentAlign);
+        currentChunk = [b];
+        currentAlign = align;
+      } else {
+        currentChunk.push(b);
+      }
+    }
+    await pushChunk(currentChunk, currentAlign);
     pending = [];
   };
 

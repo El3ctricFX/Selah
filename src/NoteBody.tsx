@@ -22,12 +22,12 @@ import {
 } from "@blocknote/xl-multi-column";
 import {
   forwardRef,
-  useCallback,
-  useEffect,
-  useImperativeHandle,
-  useMemo,
-  useRef,
-  useState,
+    useCallback,
+    useEffect,
+    useImperativeHandle,
+    useMemo,
+    useRef,
+    useState,
 } from "react";
 import {
   readTextFile,
@@ -64,6 +64,9 @@ import {
   Eye,
   EyeOff,
   FileText,
+  ChevronUp,
+  ChevronDown,
+  Maximize2,
 } from "lucide-react";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
@@ -76,6 +79,8 @@ import { isReliablyEmbeddable } from "./embeds";
 import { useNoteMode } from "./useNoteMode";
 import { useTheme } from "./theme";
 import { NoteContext } from "./NoteContext";
+import ImageEditorModal from "./ImageEditorModal";
+
 import {
   noteBodyToBlocks,
   blocksToNoteBody,
@@ -233,13 +238,13 @@ async function collectNoteFiles(
 
 function countWords(markdown: string): number {
   const plain = markdown
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/`[^`]*`/g, " ")
-    .replace(/!\[.*?\]\(.*?\)/g, " ")
-    .replace(/\[([^\]]*)\]\(.*?\)/g, "$1")
-    .replace(/[#*_>`~\-|]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  .replace(/```[\s\S]*?```/g, " ")
+  .replace(/`[^`]*`/g, " ")
+  .replace(/!\[.*?\]\(.*?\)/g, " ")
+  .replace(/\[([^\]]*)\]\(.*?\)/g, "$1")
+  .replace(/[#*_>`~\-|]+/g, " ")
+  .replace(/\s+/g, " ")
+  .trim();
   if (!plain) return 0;
   return plain.split(" ").filter(Boolean).length;
 }
@@ -251,7 +256,7 @@ function isEmptyParagraph(block: any): boolean {
   if (content.length === 0) return true;
   return content.every(
     (c: any) =>
-      !c || (c.type === "text" && !String(c.text ?? "").trim())
+    !c || (c.type === "text" && !String(c.text ?? "").trim())
   );
 }
 
@@ -481,6 +486,41 @@ const noteLinkPlugin = new Plugin({
   },
 });
 
+// --- Search & Replace Plugin ---
+const SearchPluginKey = new PluginKey("search-replace");
+
+function getSearchDecorations(doc: any, matches: { from: number; to: number }[], currentIndex: number) {
+  const decos: Decoration[] = [];
+  matches.forEach((match, idx) => {
+    const isCurrent = idx === currentIndex;
+    decos.push(
+      Decoration.inline(match.from, match.to, {
+        class: isCurrent ? "search-match-current" : "search-match",
+      })
+    );
+  });
+  return DecorationSet.create(doc, decos);
+}
+
+const searchPlugin = new Plugin({
+  key: SearchPluginKey,
+  state: {
+    init: () => DecorationSet.empty,
+                                apply: (tr, oldState, oldEditorState, newState) => {
+                                  const meta = tr.getMeta(SearchPluginKey);
+                                  if (meta) {
+                                    return getSearchDecorations(newState.doc, meta.matches, meta.currentIndex);
+                                  }
+                                  return oldState.map(tr.mapping, tr.doc);
+                                },
+  },
+  props: {
+    decorations(state) {
+      return this.getState(state);
+    },
+  },
+});
+
 const insertCallout = (editor: any) => ({
   title: "Callout",
   subtext: "Callout for emphasizing text",
@@ -511,6 +551,9 @@ interface ImageMenuState {
   y: number;
   blockId: string;
   url: string;
+  originalUrl: string;
+  lastCrop?: any;
+  lastRotation?: number;
   caption: string;
   textAlignment: string;
   previewWidth: number | undefined;
@@ -529,9 +572,14 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       onOpenNoteByPath,
       onImageClick,
     },
-    ref
+   ref
   ) => {
     const [isLoading, setIsLoading] = useState(true);
+    const [findOpen, setFindOpen] = useState(false);
+    const [findText, setFindText] = useState("");
+    const [replaceText, setReplaceText] = useState("");
+    const [matches, setMatches] = useState<{ from: number; to: number }[]>([]);
+    const [currentIndex, setCurrentIndex] = useState(0);
     const [linkPickerOpen, setLinkPickerOpen] = useState(false);
     const [linkQuery, setLinkQuery] = useState("");
     const [resolveLink, setResolveLink] = useState<{
@@ -549,12 +597,28 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
     const pasteMenuRef = useRef<HTMLDivElement>(null);
 
     const [imageMenu, setImageMenu] = useState<ImageMenuState | null>(null);
+    const [editingImage, setEditingImage] = useState<{
+      blockId: string;
+      url: string;
+      originalUrl: string;
+      lastCrop?: any;
+      lastRotation?: number;
+    } | null>(null);
+    const [selectionMenu, setSelectionMenu] = useState<{ x: number; y: number } | null>(null);
+
+    // ── Notion-style block multi-select (marquee) ──────────────────────
+    const [selectedIds, setSelectedIds] = useState<string[]>([]);
+    const selectedRef = useRef<string[]>([]);
+    const applySelection = useCallback((ids: string[]) => {
+      selectedRef.current = ids;
+      setSelectedIds(ids);
+    }, []);
     const imageMenuRef = useRef<HTMLDivElement>(null);
     const captionInputRef = useRef<HTMLInputElement>(null);
     const renameInputRef = useRef<HTMLInputElement>(null);
 
     const [captionDraft, setCaptionDraft] = useState("");
-        const [dragOverlay, setDragOverlay] = useState<{
+    const [dragOverlay, setDragOverlay] = useState<{
       x: number;
       y: number;
       target: DropTarget;
@@ -604,11 +668,11 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         BlockNoteSchema.create().extend({
           blockSpecs: {
             callout: createCallout(),
-            bookmark: createBookmark(),
-            video: createVideo(),
-            scripture: createScripture(),
-            dmarchive: createDmArchive(),
-            imagegallery: createImageGallery(),
+                                        bookmark: createBookmark(),
+                                        video: createVideo(),
+                                        scripture: createScripture(),
+                                        dmarchive: createDmArchive(),
+                                        imagegallery: createImageGallery(),
           },
         })
       ),
@@ -658,8 +722,8 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         while (node) {
           const style = window.getComputedStyle(node);
           const scrollable =
-            (style.overflowY === "auto" || style.overflowY === "scroll") &&
-            node.scrollHeight > node.clientHeight;
+          (style.overflowY === "auto" || style.overflowY === "scroll") &&
+          node.scrollHeight > node.clientHeight;
           if (scrollable) {
             targets.push({ el: node, saved: node.scrollTop });
           }
@@ -746,9 +810,9 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
                 // Third repetition: typing `-` after `--`, etc.
                 const two = state.doc.textBetween(
                   Math.max(0, from - 2),
-                  from,
-                  "",
-                  ""
+                                                  from,
+                                                  "",
+                                                  ""
                 );
                 if (two === e.key + e.key) preserveScroll();
               } else if (e.key === " " || e.key === "Enter") {
@@ -757,9 +821,9 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
                 // to require a space).
                 const three = state.doc.textBetween(
                   Math.max(0, from - 3),
-                  from,
-                  "",
-                  ""
+                                                    from,
+                                                    "",
+                                                    ""
                 );
                 if (
                   three === "---" ||
@@ -863,8 +927,8 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
     const insertBlocksSmart = useCallback(
       (
         blocksToInsert: any[],
-        explicitRefId?: string | null,
-        explicitPlacement?: "before" | "after" | "nested"
+       explicitRefId?: string | null,
+       explicitPlacement?: "before" | "after" | "nested"
       ): any[] => {
         if (!editor || blocksToInsert.length === 0) return [];
         try {
@@ -1008,6 +1072,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       if (!tiptap) return;
       try {
         tiptap.registerPlugin(noteLinkPlugin);
+        tiptap.registerPlugin(searchPlugin);
       } catch (e) {
         console.warn("[note-links] registerPlugin failed:", e);
       }
@@ -1018,47 +1083,6 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       // initial load and unload the note. The editor instance is thrown
       // away when this component unmounts anyway, so there's nothing to
       // clean up.
-    }, [editor]);
-
-    // ── Force deselect of an image when clicking anywhere else ──────────
-    useEffect(() => {
-      if (!editor) return;
-
-      const onDown = (e: MouseEvent) => {
-        const t = e.target as HTMLElement | null;
-        if (!t) return;
-        if (t.closest('[data-content-type="image"]')) return;
-
-        setTimeout(() => {
-          try {
-            const tiptap: any = (editor as any)._tiptapEditor;
-            if (!tiptap) return;
-            const state = tiptap.state;
-            if (!state?.selection) return;
-            if (!state.selection.node) return;
-
-            const from = state.selection.from;
-            const to = state.selection.to;
-            const docSize = state.doc.content.size;
-            const candidates = [
-              Math.max(0, from - 1),
-              Math.min(docSize, to + 1),
-            ];
-            for (const pos of candidates) {
-              try {
-                tiptap.commands.setTextSelection(pos);
-                return;
-              } catch {}
-            }
-            try { tiptap.commands.blur(); } catch {}
-          } catch (err) {
-            console.warn("[deselect] failed:", err);
-          }
-        }, 0);
-      };
-
-      document.addEventListener("mousedown", onDown);
-      return () => document.removeEventListener("mousedown", onDown);
     }, [editor]);
 
     // ── Right-click menu helpers ────────────────────────────────────────
@@ -1097,8 +1121,8 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
     const togglePreview = () => {
       if (!imageMenu) return;
       const has =
-        typeof imageMenu.previewWidth === "number" &&
-        imageMenu.previewWidth > 0;
+      typeof imageMenu.previewWidth === "number" &&
+      imageMenu.previewWidth > 0;
       const next = has ? undefined : PREVIEW_WIDTH_PX;
       try {
         editor.updateBlock(imageMenu.blockId, {
@@ -1158,9 +1182,9 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       const dir = abs.substring(0, abs.length - oldName.length);
 
       const cleanBase = renameDraft
-        .trim()
-        .replace(/[\\/:*?"<>|]/g, "-")
-        .replace(/\.[^.]+$/, "");
+      .trim()
+      .replace(/[\\/:*?"<>|]/g, "-")
+      .replace(/\.[^.]+$/, "");
       if (!cleanBase) {
         setRenameError("Name can't be empty.");
         return;
@@ -1204,13 +1228,13 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       const abs = assetUrlToAbsolutePath(url);
       if (abs) {
         openPath(abs).catch((e) =>
-          console.error("[image-menu] openPath failed:", e)
+        console.error("[image-menu] openPath failed:", e)
         );
         return;
       }
       if (/^https?:/i.test(url)) {
         openUrl(url).catch((e) =>
-          console.error("[image-menu] openUrl failed:", e)
+        console.error("[image-menu] openUrl failed:", e)
         );
       }
     };
@@ -1230,14 +1254,14 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         const defaultName = guessImageFileName(url);
         const dest = await save({
           defaultPath: defaultName,
-          filters: [
-            {
-              name: "Image",
-              extensions: [
-                "png", "jpg", "jpeg", "webp", "gif", "bmp", "avif", "svg",
-              ],
-            },
-          ],
+            filters: [
+              {
+                name: "Image",
+                extensions: [
+                  "png", "jpg", "jpeg", "webp", "gif", "bmp", "avif", "svg",
+                ],
+              },
+            ],
         });
         if (!dest) return;
 
@@ -1466,6 +1490,9 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         let caption = "";
         let textAlignment = "left";
         let previewWidth: number | undefined;
+        let originalUrl = img.src;
+        let lastCrop = undefined;
+        let lastRotation = 0;
         try {
           const block = editor.getBlock(blockId);
           if (block) {
@@ -1474,20 +1501,36 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
             textAlignment = (bp?.textAlignment as string) || "left";
             const pw = bp?.previewWidth as number | undefined;
             if (typeof pw === "number" && pw > 0) previewWidth = pw;
+
+            if (typeof bp?.name === "string") {
+              try {
+                const parsed = JSON.parse(bp.name);
+                if (parsed.originalUrl) originalUrl = parsed.originalUrl;
+                if (parsed.lastCrop) lastCrop = parsed.lastCrop;
+                if (parsed.lastRotation) lastRotation = parsed.lastRotation;
+              } catch (e) {
+                // Legacy fallback for old images
+                if (bp.name.startsWith("asset://") || bp.name.startsWith("http")) {
+                  originalUrl = bp.name;
+                }
+              }
+            }
           }
         } catch {}
 
         const W = 232;
-        const H = 460;
         setImageMenu({
           x: Math.min(e.clientX, window.innerWidth - W - 8),
-                     y: Math.min(e.clientY, window.innerHeight - H - 8),
-                     blockId,
-                     url: img.src,
-                     caption,
-                     textAlignment,
-                     previewWidth,
-                     mode: "main",
+          y: e.clientY,
+          blockId,
+          url: img.src,
+          originalUrl,
+          lastCrop,
+          lastRotation,
+          caption,
+          textAlignment,
+          previewWidth,
+          mode: "main",
         });
       };
 
@@ -1655,13 +1698,23 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         const clearSelection = () => {
           try {
             const tiptap: any = (editor as any)._tiptapEditor;
-            const sel = tiptap?.state?.selection;
+            if (!tiptap) return;
+            const sel = tiptap.state.selection;
             if (sel?.node) {
-              const docSize = tiptap.state.doc.content.size;
-              const target = Math.min(docSize, Math.max(0, sel.to + 1));
-              tiptap.commands.setTextSelection(target);
+              let moved = false;
+              const $pos = tiptap.state.doc.resolve(sel.from);
+              for (let d = $pos.depth; d > 0; d--) {
+                if ($pos.node(d).isTextblock) {
+                  tiptap.commands.setTextSelection($pos.before(d) + 1);
+                  moved = true;
+                  break;
+                }
+              }
+              if (!moved) tiptap.commands.setTextSelection(1);
             }
-          } catch {}
+          } catch (err) {
+            try { (editor as any)._tiptapEditor?.commands?.setTextSelection(1); } catch {}
+          }
         };
 
         if (!editorRoot || !under || !editorRoot.contains(under)) {
@@ -1920,6 +1973,620 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       };
     }, [editor, mode]);
 
+    // ── Marquee (drag-to-select blocks) ─────────────────────────────────
+    // Drag from empty space (the gutters / between blocks) to draw a
+    // rectangle. Every top-level block it touches becomes selected.
+    // Dragging that STARTS on a block's content is left alone so normal
+    // text selection still works. Highlighting is done with an injected
+    // <style> (see JSX) so ProseMirror re-renders can't wipe it.
+    useEffect(() => {
+      if (!editor || mode !== "edit") {
+        if (selectedRef.current.length) applySelection([]);
+        return;
+      }
+
+      const findScroller = (start: HTMLElement | null): HTMLElement | null => {
+        let n: HTMLElement | null = start;
+        while (n) {
+          const oy = getComputedStyle(n).overflowY;
+          if (oy === "auto" || oy === "scroll") return n;
+          n = n.parentElement;
+        }
+        return null;
+      };
+
+      const blockEls = (): { id: string; el: HTMLElement }[] => {
+        const root = wrapperRef.current;
+        if (!root) return [];
+        const out: { id: string; el: HTMLElement }[] = [];
+
+        const walk = (blocks: any[]) => {
+          for (const b of blocks) {
+            const outer = root.querySelector(`.bn-block-outer[data-id="${b.id}"]`);
+            if (outer) {
+              const content = (outer.querySelector(".bn-block-content") as HTMLElement | null) || outer;
+              out.push({ id: b.id, el: b.type === "columnList" ? outer : content });
+            }
+            if (Array.isArray(b.children)) {
+              walk(b.children);
+            }
+          }
+        };
+
+        walk(editor.document as any[]);
+        return out;
+      };
+
+      const INTERACTIVE =
+      "input, textarea, select, button, a, .bn-block-content, .bn-side-menu, " +
+      ".bn-toolbar, .bn-formatting-toolbar, [role='menu'], [role='dialog'], [data-no-marquee]";
+
+      let drag: {
+        scroller: HTMLElement;
+        ax: number;
+        ay: number;
+        cx: number;
+        cy: number;
+        startCX: number;
+        startCY: number;
+        base: string[];
+        active: boolean;
+      } | null = null;
+
+      // ── Custom Block Drag State ──────────────────────────────────────
+      let blockDragPending: {
+        startX: number;
+        startY: number;
+        ids: string[];
+        blockEls: HTMLElement[];
+      } | null = null;
+      let blockGhostEl: HTMLDivElement | null = null;
+      let blockIndicatorEl: HTMLDivElement | null = null;
+
+      let box: HTMLDivElement | null = null;
+      let raf = 0;
+
+      const stopLoop = () => { if (raf) cancelAnimationFrame(raf); raf = 0; };
+
+      const rectClient = () => {
+        const d = drag!;
+        const sr = d.scroller.getBoundingClientRect();
+        const curX = d.cx + d.scroller.scrollLeft - sr.left;
+        const curY = d.cy + d.scroller.scrollTop - sr.top;
+        const aX = d.ax - sr.left;
+        const aY = d.ay - sr.top;
+        const x1 = Math.min(aX, curX) - d.scroller.scrollLeft + sr.left;
+        const x2 = Math.max(aX, curX) - d.scroller.scrollLeft + sr.left;
+        const y1 = Math.min(aY, curY) - d.scroller.scrollTop + sr.top;
+        const y2 = Math.max(aY, curY) - d.scroller.scrollTop + sr.top;
+        return {
+          left: Math.max(x1, sr.left),
+              right: Math.min(x2, sr.left + d.scroller.clientWidth),
+              top: Math.max(y1, sr.top),
+              bottom: Math.min(y2, sr.bottom),
+        };
+      };
+
+      const update = () => {
+        if (!drag || !drag.active) return;
+        const r = rectClient();
+        if (!box) {
+          box = document.createElement("div");
+          box.style.cssText =
+          "position:fixed;z-index:9990;pointer-events:none;border-radius:3px;" +
+          "background:color-mix(in srgb, var(--c-accent, #3b82f6) 14%, transparent);" +
+          "border:1px solid color-mix(in srgb, var(--c-accent, #3b82f6) 65%, transparent);";
+          document.body.appendChild(box);
+        }
+        box.style.left = `${r.left}px`;
+        box.style.top = `${r.top}px`;
+        box.style.width = `${Math.max(0, r.right - r.left)}px`;
+        box.style.height = `${Math.max(0, r.bottom - r.top)}px`;
+
+        const hit: string[] = [];
+        for (const { id, el } of blockEls()) {
+          const b = el.getBoundingClientRect();
+          if (b.right >= r.left && b.left <= r.right && b.bottom >= r.top && b.top <= r.bottom) {
+            hit.push(id);
+          }
+        }
+        const merged = drag.base.length ? Array.from(new Set([...drag.base, ...hit])) : hit;
+        const cur = selectedRef.current;
+        if (merged.length !== cur.length || merged.some((v, i) => v !== cur[i])) {
+          applySelection(merged);
+        }
+      };
+
+      const loop = () => {
+        if (!drag) return;
+        if (drag.active) {
+          const sr = drag.scroller.getBoundingClientRect();
+          const EDGE = 40;
+          let dy = 0;
+          if (drag.cy < sr.top + EDGE) dy = -Math.ceil((sr.top + EDGE - drag.cy) / 3);
+          else if (drag.cy > sr.bottom - EDGE) dy = Math.ceil((drag.cy - (sr.bottom - EDGE)) / 3);
+          if (dy) drag.scroller.scrollTop += Math.max(-30, Math.min(30, dy));
+          update();
+        }
+        raf = requestAnimationFrame(loop);
+      };
+
+      const finish = () => {
+        stopLoop();
+        if (box) { box.remove(); box = null; }
+        document.body.style.userSelect = "";
+        drag = null;
+      };
+
+      const onMouseDown = (e: MouseEvent) => {
+        if (e.button !== 0) return;
+        const root = wrapperRef.current;
+        const t = e.target as HTMLElement | null;
+        if (!root || !t) return;
+
+        if (t.closest("[data-no-marquee]")) return;
+
+        // ── Drag Handle Intercept ────────────────────────────────────────
+        if (t.closest(".bn-side-menu")) {
+          const blockOuter = t.closest(".bn-block-outer");
+          const blockId = blockOuter?.getAttribute("data-id");
+
+          let idsToDrag = [...selectedRef.current];
+          if (blockId && !idsToDrag.includes(blockId)) {
+            idsToDrag = [blockId];
+            applySelection([blockId]);
+          }
+
+          if (idsToDrag.length > 0) {
+            blockDragPending = {
+              startX: e.clientX,
+              startY: e.clientY,
+              ids: idsToDrag,
+              blockEls: idsToDrag
+              .map(id => document.querySelector(`.bn-block-outer[data-id="${id}"]`) as HTMLElement)
+              .filter(Boolean),
+            };
+
+            // CRITICAL: Stop ProseMirror's native drag from starting!
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+          }
+          return;
+        }
+
+        const scroller = findScroller(root);
+        const inScroller = !!scroller && scroller.contains(t);
+        const sr = scroller?.getBoundingClientRect();
+        const onScrollbar = !!(scroller && sr && e.clientX > sr.left + scroller.clientWidth);
+
+        const startsOnContent = !!t.closest(INTERACTIVE);
+
+        if (!scroller || !inScroller || onScrollbar || startsOnContent) {
+          if (selectedRef.current.length) applySelection([]);
+          return;
+        }
+
+        const additive = e.shiftKey || e.ctrlKey || e.metaKey;
+        drag = {
+          scroller,
+          ax: e.clientX + scroller.scrollLeft,
+          ay: e.clientY + scroller.scrollTop,
+          cx: e.clientX,
+          cy: e.clientY,
+          startCX: e.clientX,
+          startCY: e.clientY,
+          base: additive ? [...selectedRef.current] : [],
+          active: false,
+        };
+        if (!additive && selectedRef.current.length) applySelection([]);
+
+        e.preventDefault();
+        try { (document.activeElement as HTMLElement | null)?.blur?.(); } catch {}
+        raf = requestAnimationFrame(loop);
+      };
+
+      const onMouseMove = (e: MouseEvent) => {
+        // ── Custom Block Drag Logic ──────────────────────────────────────
+        if (blockDragPending) {
+          if (!blockGhostEl) {
+            const dx = e.clientX - blockDragPending.startX;
+            const dy = e.clientY - blockDragPending.startY;
+            if (Math.abs(dx) + Math.abs(dy) < 8) return;
+
+            blockGhostEl = document.createElement("div");
+            blockGhostEl.style.position = "fixed";
+            blockGhostEl.style.background = "rgba(59, 130, 246, 0.15)";
+            blockGhostEl.style.border = "2px solid #3b82f6";
+            blockGhostEl.style.borderRadius = "4px";
+            blockGhostEl.style.pointerEvents = "none";
+            blockGhostEl.style.zIndex = "9999";
+            blockGhostEl.style.opacity = "0.8";
+
+            let minTop = Infinity, minLeft = Infinity, maxBottom = -Infinity, maxRight = -Infinity;
+            for (const el of blockDragPending.blockEls) {
+              const r = el.getBoundingClientRect();
+              minTop = Math.min(minTop, r.top);
+              minLeft = Math.min(minLeft, r.left);
+              maxBottom = Math.max(maxBottom, r.bottom);
+              maxRight = Math.max(maxRight, r.right);
+            }
+            blockGhostEl.style.width = `${maxRight - minLeft}px`;
+            blockGhostEl.style.height = `${maxBottom - minTop}px`;
+
+            document.body.appendChild(blockGhostEl);
+            document.body.style.cursor = "grabbing";
+          }
+
+          blockGhostEl.style.left = `${e.clientX + 10}px`;
+          blockGhostEl.style.top = `${e.clientY + 10}px`;
+
+          if (blockIndicatorEl) {
+            blockIndicatorEl.remove();
+            blockIndicatorEl = null;
+          }
+
+          const under = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
+          if (!under) return;
+          const editorRoot = wrapperRef.current?.querySelector(".bn-editor") as HTMLElement;
+          if (!editorRoot || !editorRoot.contains(under)) return;
+
+          const targetBlockEl = under.closest("[data-id]") as HTMLElement | null;
+          if (targetBlockEl) {
+            const targetId = targetBlockEl.getAttribute("data-id");
+            if (targetId && !blockDragPending.ids.includes(targetId)) {
+              const rect = targetBlockEl.getBoundingClientRect();
+              const midY = rect.top + rect.height / 2;
+              const isAfter = e.clientY > midY;
+
+              blockIndicatorEl = document.createElement("div");
+              blockIndicatorEl.style.position = "fixed";
+              blockIndicatorEl.style.height = "2px";
+              blockIndicatorEl.style.background = "#3b82f6";
+              blockIndicatorEl.style.zIndex = "9998";
+              blockIndicatorEl.style.pointerEvents = "none";
+              blockIndicatorEl.style.left = `${rect.left}px`;
+              blockIndicatorEl.style.width = `${rect.width}px`;
+              blockIndicatorEl.style.top = isAfter ? `${rect.bottom - 1}px` : `${rect.top - 1}px`;
+              document.body.appendChild(blockIndicatorEl);
+            }
+          }
+          return;
+        }
+
+        // ── Marquee Drag Logic ──────────────────────────────────────────
+        if (!drag) return;
+        drag.cx = e.clientX;
+        drag.cy = e.clientY;
+        if (!drag.active) {
+          if (Math.abs(e.clientX - drag.startCX) + Math.abs(e.clientY - drag.startCY) < 5) return;
+          drag.active = true;
+          document.body.style.userSelect = "none";
+          try { window.getSelection()?.removeAllRanges(); } catch {}
+        }
+        e.preventDefault();
+        update();
+      };
+
+      const onMouseUp = (e: MouseEvent) => {
+        // ── Custom Block Drag Drop ──────────────────────────────────────
+        if (blockDragPending) {
+          const pending = blockDragPending;
+          blockDragPending = null;
+
+          if (blockGhostEl) {
+            blockGhostEl.remove();
+            blockGhostEl = null;
+            document.body.style.cursor = "";
+
+            const under = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
+            if (blockIndicatorEl) {
+              blockIndicatorEl.remove();
+              blockIndicatorEl = null;
+            }
+
+            if (under) {
+              const editorRoot = wrapperRef.current?.querySelector(".bn-editor") as HTMLElement;
+              if (editorRoot && editorRoot.contains(under)) {
+                const targetBlockEl = under.closest("[data-id]") as HTMLElement | null;
+
+                if (targetBlockEl) {
+                  let targetId = targetBlockEl.getAttribute("data-id");
+                  if (!targetId || pending.ids.includes(targetId)) return;
+
+                  let placement: "before" | "after" | "nested" = "after";
+
+                  const colEl = under.closest(".bn-block-column, [data-node-type='column']") as HTMLElement | null;
+
+                  if (colEl) {
+                    if (targetBlockEl === colEl) {
+                      // Dropped directly on the column background
+                      const rect = colEl.getBoundingClientRect();
+                      const midY = rect.top + rect.height / 2;
+                      placement = e.clientY > midY ? "after" : "before";
+                      // If dropping in the middle, nest it inside the column
+                      if (e.clientY > rect.top + 20 && e.clientY < rect.bottom - 20) {
+                        placement = "nested";
+                      }
+                    } else {
+                      // Dropped on a block inside a column
+                      const rect = targetBlockEl.getBoundingClientRect();
+                      const midY = rect.top + rect.height / 2;
+                      placement = e.clientY > midY ? "after" : "before";
+                    }
+                  } else {
+                    // Dropped on a normal block outside a column
+                    const rect = targetBlockEl.getBoundingClientRect();
+                    const midY = rect.top + rect.height / 2;
+                    placement = e.clientY > midY ? "after" : "before";
+                  }
+
+                  const targetNode = editor.getBlock(targetId);
+                  if (targetNode?.type === "column" && placement !== "nested") {
+                    const parentListEl = targetBlockEl.parentElement?.closest(".bn-block-outer[data-id]");
+                    if (parentListEl) {
+                      targetId = parentListEl.getAttribute("data-id") || targetId;
+                    }
+                  } else if (targetNode?.type === "columnList" && placement !== "nested") {
+                    // If trying to drop next to a column list, force it outside the list
+                    targetId = targetNode.id;
+                  }
+
+                  const selectedBlocks = pending.ids.map(id => editor.getBlock(id)).filter(Boolean);
+
+                  // Recursively strip IDs so BlockNote doesn't throw duplicate ID errors
+                  const stripIds = (blocks: any[]): any[] => {
+                    return blocks.map(b => {
+                      const next: any = { type: b.type, props: { ...b.props } };
+                      if (b.content !== undefined) next.content = b.content;
+                      if (b.children !== undefined) next.children = stripIds(b.children);
+                      return next;
+                    });
+                  };
+
+                  const blocksToInsert = stripIds(selectedBlocks);
+
+                  // Delay by 0ms to let the browser finish the mouseup event
+                  // before we mutate the editor state.
+                  setTimeout(() => {
+                    try {
+                      // CRITICAL FIX: Prevent columns from collapsing when emptied.
+                      // If a column is going to be left completely empty by this move,
+                      // insert an empty paragraph into it so BlockNote doesn't delete it.
+                      const columnsToKeep = new Set<string>();
+                      const blockToTargetForColumn: Record<string, string> = {};
+
+                      pending.ids.forEach(id => {
+                        const el = document.querySelector(`.bn-block-outer[data-id="${id}"]`);
+                        const colEl = el?.closest(".bn-block-column, [data-node-type='column']");
+                        if (colEl) {
+                          const colId = colEl.getAttribute("data-id") || colEl.closest("[data-id]")?.getAttribute("data-id");
+                          if (colId && !pending.ids.includes(colId)) {
+                            const colBlock = editor.getBlock(colId);
+                            if (colBlock && colBlock.children) {
+                              const remaining = colBlock.children.filter((c: any) => !pending.ids.includes(c.id));
+                              if (remaining.length === 0) {
+                                columnsToKeep.add(colId);
+                                blockToTargetForColumn[colId] = id; // Remember which block to insert before
+                              }
+                            }
+                          }
+                        }
+                      });
+
+                      columnsToKeep.forEach(colId => {
+                        const targetBlockId = blockToTargetForColumn[colId];
+                        if (targetBlockId) {
+                          try {
+                            // Use a Zero-Width Space (\u200B). Unlike \u00A0, the standard JS .trim()
+                            // function DOES NOT remove \u200B. This forces BlockNote to see
+                            // the column as "not empty" and prevents it from merging.
+                            editor.insertBlocks(
+                              [{ type: "paragraph", content: [{ type: "text", text: "\u200B", styles: {} }] }],
+                              targetBlockId,
+                              "before"
+                            );
+                          } catch (e) { console.warn("[drag] Failed to keep column alive", e); }
+                        }
+                      });
+
+                      columnsToKeep.forEach(colId => {
+                        try {
+                          // Insert a non-breaking space so the column isn't considered "empty"
+                          editor.insertBlocks(
+                            [{ type: "paragraph", content: [{ type: "text", text: "\u00A0", styles: {} }] }],
+                            colId,
+                            "nested"
+                          );
+                        } catch (e) { console.warn("[drag] Failed to keep column alive", e); }
+                      });
+
+                      const inserted = editor.insertBlocks(blocksToInsert, targetId, placement);
+
+                      // Place cursor in the first inserted block to clear the ProseMirror selection safely
+                      if (inserted && inserted.length > 0) {
+                        const first = inserted[0];
+                        if (first.id) {
+                          editor.setTextCursorPosition(first.id, "start");
+                        }
+                      }
+
+                      // Now safely remove the originals
+                      editor.removeBlocks(pending.ids);
+                      applySelection([]);
+                    } catch (err) {
+                      console.error("[drag] block move failed:", err);
+                    }
+                  }, 0);
+                }
+              }
+            }
+          }
+          return;
+        }
+
+        // ── Marquee Drag End ────────────────────────────────────────────
+        if (!drag) return;
+        const wasActive = drag.active;
+        finish();
+        if (wasActive) {
+          try { window.getSelection()?.removeAllRanges(); } catch {}
+        }
+      };
+
+      const onDragStart = (e: DragEvent) => {
+        if (blockDragPending || blockGhostEl) {
+          e.preventDefault();
+          e.stopPropagation();
+          e.stopImmediatePropagation();
+        }
+      };
+
+      const onKeyDown = (e: KeyboardEvent) => {
+        const ids = selectedRef.current;
+        if (!ids.length) return;
+        const ae = document.activeElement as HTMLElement | null;
+        if (ae && (ae.closest("input, textarea, [contenteditable='true']"))) return;
+
+        const ctrl = e.ctrlKey || e.metaKey;
+        const k = e.key.toLowerCase();
+
+        if (e.key === "Escape") {
+          e.preventDefault();
+          applySelection([]);
+          return;
+        }
+
+        const blocks = () =>
+        ids.map((id) => editor.getBlock(id)).filter(Boolean) as any[];
+
+        if (e.key === "Delete" || e.key === "Backspace") {
+          e.preventDefault();
+          e.stopPropagation();
+          try {
+            // Force the internal ProseMirror cursor to a safe position (start of doc)
+            const tiptap = (editor as any)._tiptapEditor;
+            if (tiptap) {
+              tiptap.commands.setTextSelection(1);
+            }
+            editor.removeBlocks(ids);
+          } catch (err) { console.error("[select] delete failed:", err); }
+          applySelection([]);
+          return;
+        }
+        if (ctrl && (k === "c" || k === "x")) {
+          e.preventDefault();
+          e.stopPropagation();
+          (async () => {
+            try {
+              const md = await editor.blocksToMarkdownLossy(blocks());
+              await navigator.clipboard.writeText(md);
+            } catch (err) { console.error("[select] copy failed:", err); }
+            if (k === "x") {
+              try { editor.removeBlocks(ids); } catch {}
+              applySelection([]);
+            }
+          })();
+        }
+      };
+
+      const onContextMenu = (e: MouseEvent) => {
+        if (selectedRef.current.length < 2) return;
+        const t = e.target as HTMLElement;
+        const blockOuter = t.closest('.bn-block-outer');
+        if (blockOuter && selectedRef.current.includes(blockOuter.getAttribute('data-id') || '')) {
+          e.preventDefault();
+          e.stopPropagation();
+          setSelectionMenu({ x: e.clientX, y: e.clientY });
+        }
+      };
+
+      document.addEventListener("mousedown", onMouseDown, true);
+      document.addEventListener("mousemove", onMouseMove, true);
+      document.addEventListener("mouseup", onMouseUp, true);
+      document.addEventListener("dragstart", onDragStart, true);
+      document.addEventListener("keydown", onKeyDown, true);
+      document.addEventListener("contextmenu", onContextMenu, true);
+
+      return () => {
+        document.removeEventListener("mousedown", onMouseDown, true);
+        document.removeEventListener("mousemove", onMouseMove, true);
+        document.removeEventListener("mouseup", onMouseUp, true);
+        document.removeEventListener("dragstart", onDragStart, true);
+        document.removeEventListener("keydown", onKeyDown, true);
+        document.removeEventListener("contextmenu", onContextMenu, true);
+
+        if (blockGhostEl) { blockGhostEl.remove(); blockGhostEl = null; }
+        if (blockIndicatorEl) { blockIndicatorEl.remove(); blockIndicatorEl = null; }
+
+        finish();
+      };
+    }, [editor, mode, applySelection]);
+
+    // Drop the selection when switching notes.
+    useEffect(() => { applySelection([]); }, [path, applySelection]);
+
+    // Close the right-click selection menu when clicking outside
+    useEffect(() => {
+      if (!selectionMenu) return;
+      const onDown = () => setSelectionMenu(null);
+      document.addEventListener("mousedown", onDown);
+      return () => document.removeEventListener("mousedown", onDown);
+    }, [selectionMenu]);
+
+    const selectionCSS = useMemo(() => {
+      if (selectedIds.length === 0) return "";
+      const bg = "background-color: color-mix(in srgb, var(--c-accent, #3b82f6) 22%, transparent) !important; border-radius: 4px;";
+      return selectedIds
+      .map((id) => {
+        const q = id.replace(/"/g, "");
+        return (
+          `.bn-block-outer[data-id="${q}"] > .bn-block > .bn-block-content,` +
+          `.bn-block-outer[data-id="${q}"] > .bn-block-content{${bg}}` +
+          `.bn-block-outer[data-id="${q}"]:has(> .bn-block > .bn-block-column-list),` +
+          `.bn-block-outer[data-id="${q}"]:has(> .bn-block-column-list){outline:2px solid color-mix(in srgb, var(--c-accent, #3b82f6) 60%, transparent);outline-offset:2px;border-radius:4px;}`
+        );
+      })
+      .join("\n");
+    }, [selectedIds]);
+
+    const deleteSelectedBlocks = () => {
+      const ids = selectedRef.current;
+      if (!ids.length) return;
+      try {
+        // Force the internal ProseMirror cursor to a safe position before deleting
+        const tiptap = (editor as any)._tiptapEditor;
+        if (tiptap) {
+          tiptap.commands.setTextSelection(1);
+        }
+        editor.removeBlocks(ids);
+        applySelection([]);
+      } catch (err) {
+        console.error("[select] delete failed:", err);
+      }
+    };
+
+    const copySelectedBlocks = async () => {
+      const blocks = selectedRef.current
+        .map((id) => editor.getBlock(id))
+        .filter(Boolean) as any[];
+      try {
+        await navigator.clipboard.writeText(await editor.blocksToMarkdownLossy(blocks));
+      } catch (err) {
+        console.error("[select] copy failed:", err);
+      }
+    };
+
+    const applyFitToSelected = (fit: "contain" | "cover") => {
+      const ids = selectedRef.current;
+      ids.forEach(id => {
+        const b = editor.getBlock(id);
+        if (b?.type === "image") {
+          editor.updateBlock(id, { props: { fit } });
+        }
+      });
+    };
+
     // ── Save plumbing ───────────────────────────────────────────────────
     // The debounce is trailing-edge (wait for a pause) but capped by
     // MAX_DEBOUNCE_MS: if the user has been typing continuously without
@@ -1929,7 +2596,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       const run = writeQueueRef.current.then(() => fn());
       writeQueueRef.current = run.then(
         () => undefined,
-        () => undefined
+                                       () => undefined
       );
       return run;
     };
@@ -2041,9 +2708,9 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
           try {
             const ext = mimeToExt(file.type);
             const name =
-              file.name && file.name !== "image.png" && file.name !== "blob"
-                ? file.name
-                : `pasted-${Date.now()}.${ext}`;
+            file.name && file.name !== "image.png" && file.name !== "blob"
+            ? file.name
+            : `pasted-${Date.now()}.${ext}`;
             const bytes = new Uint8Array(await file.arrayBuffer());
             const dest = await writeImageBytesToNoteAssets(path, bytes, name);
             urls.push(convertFileSrc(dest));
@@ -2065,9 +2732,9 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
           try {
             const ext = (file.name.split(".").pop() || "mp4").toLowerCase();
             const name =
-              file.name && file.name !== "blob" && !file.name.startsWith("image")
-                ? file.name
-                : `video-${Date.now()}.${ext}`;
+            file.name && file.name !== "blob" && !file.name.startsWith("image")
+            ? file.name
+            : `video-${Date.now()}.${ext}`;
             const bytes = new Uint8Array(await file.arrayBuffer());
             const dest = await writeImageBytesToNoteAssets(path, bytes, name);
             const url = convertFileSrc(dest);
@@ -2282,7 +2949,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
 
             if (item.kind !== "file") continue;
             if (!/^image\/|^video\//i.test(item.type)) continue;
-            const f = item.getAsFile();
+              const f = item.getAsFile();
             if (f) collected.push(f);
           }
         }
@@ -2365,7 +3032,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
               } catch {}
               setPasteMenu({
                 url: canonicalizeUrl(normalizedUrl),
-                x: Math.min(Math.max(8, coords.left), window.innerWidth - 260),
+                           x: Math.min(Math.max(8, coords.left), window.innerWidth - 260),
                            y: Math.min(coords.bottom + 6, window.innerHeight - 160),
               });
               return;
@@ -2448,23 +3115,23 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       document.addEventListener("paste", handler, true);
       return () => document.removeEventListener("paste", handler, true);
     }, [isLoading, saveAndInsertImageFiles, saveAndInsertVideoFiles,
-        saveAndInsertFilePaths, editor]);
+    saveAndInsertFilePaths, editor]);
 
     useEffect(() => {
       if (!pasteMenu) return;
       const onKey = (e: KeyboardEvent) => {
         if (e.key === "Escape") setPasteMenu(null);
       };
-      const onDown = (e: MouseEvent) => {
-        if (pasteMenuRef.current?.contains(e.target as Node)) return;
-        setPasteMenu(null);
-      };
-      document.addEventListener("keydown", onKey);
-      document.addEventListener("mousedown", onDown);
-      return () => {
-        document.removeEventListener("keydown", onKey);
-        document.removeEventListener("mousedown", onDown);
-      };
+        const onDown = (e: MouseEvent) => {
+          if (pasteMenuRef.current?.contains(e.target as Node)) return;
+          setPasteMenu(null);
+        };
+        document.addEventListener("keydown", onKey);
+        document.addEventListener("mousedown", onDown);
+        return () => {
+          document.removeEventListener("keydown", onKey);
+          document.removeEventListener("mousedown", onDown);
+        };
     }, [pasteMenu]);
 
     const pasteAsText = (url: string) => {
@@ -2551,7 +3218,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
 
           const withImgs = markdownImagesToAssetUrls(body, noteDirOf(path));
           const withVideos = videoSrcsToAssetUrls(withImgs, noteDirOf(path));
-                    const withDmArchives = dmarchiveSrcsToAssetUrls(
+          const withDmArchives = dmarchiveSrcsToAssetUrls(
             withVideos,
             noteDirOf(path)
           );
@@ -2705,6 +3372,131 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         }
       } catch {}
     }, [pendingImageDelete, path]);
+
+    // 1. Ctrl+F (Find) & Ctrl+R (Replace) listener
+    useEffect(() => {
+      const handleKeyDown = (e: KeyboardEvent) => {
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+          e.preventDefault();
+          e.stopPropagation();
+          setFindOpen(true);
+          setTimeout(() => {
+            document.getElementById('find-input')?.focus();
+            (document.getElementById('find-input') as HTMLInputElement)?.select();
+          }, 50);
+        }
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'r') {
+          e.preventDefault();
+          e.stopPropagation();
+          setFindOpen(true);
+          setTimeout(() => {
+            document.getElementById('replace-input')?.focus();
+            (document.getElementById('replace-input') as HTMLInputElement)?.select();
+          }, 50);
+        }
+        if (e.key === 'Escape' && findOpen) {
+          setFindOpen(false);
+        }
+      };
+      window.addEventListener('keydown', handleKeyDown, true);
+      return () => window.removeEventListener('keydown', handleKeyDown, true);
+    }, [findOpen]);
+
+    // 2. Search logic
+    useEffect(() => {
+      if (!editor || !findOpen) return;
+      if (!findText) {
+        setMatches([]);
+        return;
+      }
+      const state = editor._tiptapEditor.state;
+      const results: { from: number; to: number }[] = [];
+
+      state.doc.descendants((node: any, pos: number) => {
+        if (node.isText) {
+          const text = node.text;
+          let index = text.indexOf(findText);
+          while (index !== -1) {
+            results.push({
+              from: pos + index,
+              to: pos + index + findText.length,
+            });
+            index = text.indexOf(findText, index + 1);
+          }
+        }
+      });
+
+      setMatches(results);
+      if (results.length > 0) {
+        setCurrentIndex(0);
+        scrollToMatch(results[0]);
+      } else {
+        setCurrentIndex(-1);
+      }
+    }, [findText, findOpen, editor]);
+
+    // 3. Update Decorations
+    useEffect(() => {
+      if (!editor || !findOpen) return;
+      const tiptap: any = editor._tiptapEditor;
+      const tr = tiptap.state.tr.setMeta(SearchPluginKey, {
+        matches,
+        currentIndex,
+      });
+      tiptap.view.dispatch(tr);
+    }, [matches, currentIndex, findOpen, editor]);
+
+    // 4. Clear Highlights when closed
+    useEffect(() => {
+      if (!editor) return;
+      if (!findOpen) {
+        const tiptap: any = editor._tiptapEditor;
+        const tr = tiptap.state.tr.setMeta(SearchPluginKey, { matches: [], currentIndex: -1 });
+        tiptap.view.dispatch(tr);
+      }
+    }, [findOpen, editor]);
+
+    const scrollToMatch = (match: { from: number; to: number }) => {
+      if (!editor) return;
+      const tiptap: any = editor._tiptapEditor;
+      try {
+        const view = tiptap.view;
+        const coords = view.coordsAtPos(match.from);
+
+        let container = view.dom.parentElement;
+        while (container) {
+          const style = window.getComputedStyle(container);
+          if (style.overflowY === 'auto' || style.overflowY === 'scroll') break;
+          container = container.parentElement;
+        }
+        if (!container) container = document.documentElement;
+
+        const containerRect = container.getBoundingClientRect();
+        if (coords.top < containerRect.top || coords.bottom > containerRect.bottom) {
+          const scrollOffset = coords.top - containerRect.top - (containerRect.height / 2);
+          container.scrollBy({ top: scrollOffset, behavior: 'smooth' });
+        }
+      } catch (e) {}
+    };
+
+    const replaceCurrent = () => {
+      if (matches.length === 0 || currentIndex < 0 || currentIndex >= matches.length) return;
+      const match = matches[currentIndex];
+      const tiptap: any = editor._tiptapEditor;
+      tiptap.chain().focus().insertContentAt({ from: match.from, to: match.to }, replaceText).run();
+    };
+
+    const replaceAll = () => {
+      if (matches.length === 0) return;
+      const tiptap: any = editor._tiptapEditor;
+      // Replace from back to front to avoid shifting indices
+      const sortedMatches = [...matches].sort((a, b) => b.from - a.from);
+      let chain = tiptap.chain();
+      for (const match of sortedMatches) {
+        chain = chain.insertContentAt({ from: match.from, to: match.to }, replaceText);
+      }
+      chain.run();
+    };
 
     useImperativeHandle(ref, () => ({
       flush,
@@ -2978,9 +3770,9 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       title: "Link to note",
       subtext: "Insert a link to another note",
       onItemClick: () => openLinkPicker(false),
-      aliases: ["link", "ref", "note", "wiki"],
-      group: "Basic blocks",
-      icon: <span className="text-base">🔗</span>,
+                                          aliases: ["link", "ref", "note", "wiki"],
+                                          group: "Basic blocks",
+                                          icon: <span className="text-base">🔗</span>,
     });
 
     const insertImageMenuItem = useCallback(
@@ -3158,7 +3950,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
                 type: "imagegallery",
                 props: {
                   grid: JSON.stringify([[null]]),
-                  gap: 8,
+                            gap: 8,
                 },
               } as any,
             ],
@@ -3183,12 +3975,12 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         );
         const extra = [
           insertCallout(editor),
-          insertDmArchiveMenuItem(),
-          insertNoteLinkMenuItem(),
-          insertImageMenuItem(),
-          insertVideoMenuItem(),
-          insertScriptureMenuItem(),
-          insertImageGalleryMenuItem(),
+                                      insertDmArchiveMenuItem(),
+                                      insertNoteLinkMenuItem(),
+                                      insertImageMenuItem(),
+                                      insertVideoMenuItem(),
+                                      insertScriptureMenuItem(),
+                                      insertImageGalleryMenuItem(),
 
         ];
         if (lastBasicBlockIndex !== -1) {
@@ -3198,7 +3990,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         }
         return filterSuggestionItems(
           combineByGroup(defaultItems, getMultiColumnSlashMenuItems(editor)),
-          query
+                                     query
         );
       };
       // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -3244,7 +4036,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
             e.preventDefault();
             e.stopPropagation();
             openUrl(href).catch((err) =>
-              console.error("[note] open link failed:", err)
+            console.error("[note] open link failed:", err)
             );
             return;
           }
@@ -3253,8 +4045,8 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         const img = target.closest("img") as HTMLImageElement | null;
         if (img && !target.closest("a") && onImageClick) {
           const editorRoot =
-            (el.querySelector(".bn-editor") as HTMLElement | null) ||
-            (el.querySelector(".ProseMirror") as HTMLElement | null);
+          (el.querySelector(".bn-editor") as HTMLElement | null) ||
+          (el.querySelector(".ProseMirror") as HTMLElement | null);
           if (editorRoot && editorRoot.contains(img)) {
             const allImgs = Array.from(
               editorRoot.querySelectorAll('[data-content-type="image"] img')
@@ -3271,7 +4063,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
           }
         }
 
-                const noteLinkEl = target.closest(
+        const noteLinkEl = target.closest(
           ".note-link, [data-note-link-icon]"
         ) as HTMLElement | null;        if (!noteLinkEl) return;
         const name = noteLinkEl.getAttribute("data-note-name");
@@ -3384,518 +4176,714 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
 
     const pendingImageUrl = pendingImageDelete[0] || null;
     const pendingImageAbs = pendingImageUrl
-      ? assetUrlToAbsolutePath(pendingImageUrl)
-      : null;
+    ? assetUrlToAbsolutePath(pendingImageUrl)
+    : null;
     const canDeleteFromDisk = pendingImageAbs
-      ? isInsideNoteAssets(pendingImageAbs, path)
-      : false;
+    ? isInsideNoteAssets(pendingImageAbs, path)
+    : false;
 
     const pasteMenuCanEmbed = pasteMenu
-      ? isReliablyEmbeddable(pasteMenu.url)
-      : false;
+    ? isReliablyEmbeddable(pasteMenu.url)
+    : false;
 
     const noteContextValue = useMemo(
       () => ({ notePath: path, noteDir: noteDirOf(path) }),
-      [path]
+                                     [path]
     );
 
     const alignBtnClass = (active: boolean) =>
-      `flex-1 flex items-center justify-center py-1.5 rounded transition-colors ${
-        active
-          ? "bg-blue-600/25 text-blue-200"
-          : "text-gray-400 hover:text-gray-100 hover:bg-[#2a3136]"
-      }`;
+    `flex-1 flex items-center justify-center py-1.5 rounded transition-colors ${
+      active
+      ? "bg-blue-600/25 text-blue-200"
+      : "text-gray-400 hover:text-gray-100 hover:bg-[#2a3136]"
+    }`;
 
     const imageIsLocal = imageMenu
-      ? !!assetUrlToAbsolutePath(imageMenu.url)
-      : false;
+    ? !!assetUrlToAbsolutePath(imageMenu.url)
+    : false;
     const previewOn =
-      !!imageMenu &&
-      typeof imageMenu.previewWidth === "number" &&
-      imageMenu.previewWidth > 0;
+    !!imageMenu &&
+    typeof imageMenu.previewWidth === "number" &&
+    imageMenu.previewWidth > 0;
 
     return (
       <NoteContext.Provider value={noteContextValue}>
-        <div
-          ref={wrapperRef}
-          className={mode === "read" ? "note-read-mode" : ""}
-        >
-          <BlockNoteView
-            editor={editor}
-            theme={bnTheme}
-            slashMenu={false}
-            onChange={handleContentChange}
-          >
-            <SuggestionMenuController
-              triggerCharacter="/"
-              getItems={getSlashMenuItems}
+      <div
+      ref={wrapperRef}
+      className={mode === "read" ? "note-read-mode" : ""}
+      >
+      {/* ── Find & Replace UI ─────────────────────────────────────── */}
+      {findOpen && (
+        <div className="fixed top-16 right-8 z-[600] bg-[#1e2327] border border-[#2a3136] rounded-lg shadow-2xl p-3 w-[340px] flex flex-col gap-2">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-xs font-medium text-gray-200">Find & Replace</span>
+            <button onClick={() => setFindOpen(false)} className="text-gray-500 hover:text-gray-300 p-0.5 cursor-pointer">
+              <X size={14} />
+            </button>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <input
+              id="find-input"
+              type="text"
+              placeholder="Find…"
+              value={findText}
+              onChange={(e) => setFindText(e.target.value)}
+              className="flex-1 bg-[#0f1315] border border-[#30363d] rounded px-2 py-1 text-xs text-gray-200 outline-none focus:ring-1 focus:ring-blue-500"
             />
-          </BlockNoteView>
-
-          {dragOverlay && (
-            <>
-            {/* Position indicator: a blue line for insert targets, a
-              highlighted border for gallery cells. */}
-              {dragOverlay.indicator && (
-                <div
-                className={
-                  dragOverlay.target?.kind === "gallery"
-                  ? "fixed z-[450] pointer-events-none rounded-md ring-2 ring-blue-400 bg-blue-500/15 transition-[top,left,width,height] duration-75"
-                  : dragOverlay.target?.kind === "insert" &&
-                  dragOverlay.target.placement === "nested"
-                  ? "fixed z-[450] pointer-events-none rounded-md ring-2 ring-blue-400/70 transition-[top,left,width,height] duration-75"
-                  : "fixed z-[450] pointer-events-none bg-blue-400 shadow-[0_0_8px_rgba(96,165,250,0.9)] rounded-sm transition-[top,left,width] duration-75"
-                }
-                style={{
-                  left: dragOverlay.indicator.left,
-                  top: dragOverlay.indicator.top,
-                  width: dragOverlay.indicator.width,
-                  height: dragOverlay.indicator.height,
+            <span className="text-[10px] text-gray-500 tabular-nums min-w-[40px] text-center">
+              {matches.length > 0 ? `${currentIndex + 1} of ${matches.length}` : "0 of 0"}
+            </span>
+            <div className="flex gap-1">
+              <button
+                onClick={() => {
+                  if (matches.length === 0) return;
+                  const prevIdx = (currentIndex - 1 + matches.length) % matches.length;
+                  setCurrentIndex(prevIdx);
+                  scrollToMatch(matches[prevIdx]);
                 }}
-                />
-              )}
-
-              {/* Floating badge that follows the cursor. */}
-              <div
-              className="fixed z-[451] pointer-events-none px-2.5 py-1 rounded-md bg-[#1e2327] border border-blue-500/60 text-[11px] text-blue-100 shadow-2xl whitespace-nowrap"
-              style={{
-                left: dragOverlay.x + 14,
-                top: dragOverlay.y + 14,
-              }}
+                disabled={matches.length === 0}
+                className="p-1 text-gray-400 hover:text-gray-100 disabled:opacity-30 cursor-pointer"
               >
-              Drop to add
-              </div>
-              </>
-          )}
-
-
-
-          {imageMenu && (
-            <div
-              ref={imageMenuRef}
-              className="fixed z-[500] bg-[#1e2327] border border-[#2a3136] rounded-md shadow-2xl py-1 w-[232px] max-h-[80vh] overflow-y-auto"
-              style={{ top: imageMenu.y, left: imageMenu.x }}
-              onMouseDown={(e) => e.stopPropagation()}
-              onContextMenu={(e) => e.preventDefault()}
-            >
-              {imageMenu.mode === "caption" ? (
-                <>
-                  <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
-                    <Pencil size={10} /> Image caption
-                  </div>
-                  <div className="px-2 pb-2">
-                    <input
-                      ref={captionInputRef}
-                      type="text"
-                      value={captionDraft}
-                      onChange={(e) => setCaptionDraft(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          saveCaptionInline();
-                        } else if (e.key === "Escape") {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          backToMainMenu();
-                        }
-                      }}
-                      placeholder="Describe this image…"
-                      className="w-full bg-[#0f1315] border border-[#30363d] rounded px-2 py-1.5 text-xs text-gray-100 outline-none focus:ring-1 focus:ring-blue-500"
-                    />
-                    <div className="flex gap-1.5 mt-2">
-                      <button
-                        onClick={backToMainMenu}
-                        className="flex-1 px-2 py-1 text-xs text-gray-400 hover:text-gray-200 hover:bg-[#2a3136] rounded transition-colors"
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        onClick={saveCaptionInline}
-                        className="flex-1 px-2 py-1 text-xs bg-blue-600 hover:bg-blue-500 text-white rounded transition-colors font-medium"
-                      >
-                        Save
-                      </button>
-                    </div>
-                  </div>
-                </>
-              ) : imageMenu.mode === "rename" ? (
-                <>
-                  <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
-                    <FileText size={10} /> Rename image
-                  </div>
-                  <div className="px-2 pb-2">
-                    <input
-                      ref={renameInputRef}
-                      type="text"
-                      value={renameDraft}
-                      onChange={(e) => {
-                        setRenameDraft(e.target.value);
-                        if (renameError) setRenameError(null);
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          void saveRename();
-                        } else if (e.key === "Escape") {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          backToMainMenu();
-                        }
-                      }}
-                      placeholder="new-filename"
-                      className="w-full bg-[#0f1315] border border-[#30363d] rounded px-2 py-1.5 text-xs text-gray-100 outline-none focus:ring-1 focus:ring-blue-500"
-                    />
-                    {renameError && (
-                      <div className="text-[10px] text-red-400 mt-1 break-words">
-                        {renameError}
-                      </div>
-                    )}
-                    <div className="flex gap-1.5 mt-2">
-                      <button
-                        onClick={backToMainMenu}
-                        className="flex-1 px-2 py-1 text-xs text-gray-400 hover:text-gray-200 hover:bg-[#2a3136] rounded transition-colors"
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        onClick={() => void saveRename()}
-                        className="flex-1 px-2 py-1 text-xs bg-blue-600 hover:bg-blue-500 text-white rounded transition-colors font-medium"
-                      >
-                        Rename
-                      </button>
-                    </div>
-                  </div>
-                </>
-              ) : (
-                <>
-                <div className="py-1">
-                {IMAGE_WIDTH_PRESETS.map((preset) => {
-                  const Icon = preset.icon;
-                  return (
-                    <button
-                    key={preset.label}
-                    onClick={() =>
-                      applyImageWidth(imageMenu.blockId, preset.px)
-                    }
-                    className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
-                    >
-                    <Icon size={13} />
-                    <span>{preset.label}</span>
-                    </button>
-                  );
-                })}
-                </div>
-
-                <div className="border-t border-[#2a3136] mt-1 pt-1 px-2 pb-1 flex items-center gap-1">
-                <button
-                onClick={() =>
-                  applyImageAlignment(imageMenu.blockId, "left")
-                }
-                className={alignBtnClass(
-                  imageMenu.textAlignment === "left"
-                )}
-                title="Align left"
-                >
-                <AlignLeft size={13} />
-                </button>
-                <button
-                onClick={() =>
-                  applyImageAlignment(imageMenu.blockId, "center")
-                }
-                className={alignBtnClass(
-                  imageMenu.textAlignment === "center"
-                )}
-                title="Align center"
-                >
-                <AlignCenter size={13} />
-                </button>
-                <button
-                onClick={() =>
-                  applyImageAlignment(imageMenu.blockId, "right")
-                }
-                className={alignBtnClass(
-                  imageMenu.textAlignment === "right"
-                )}
-                title="Align right"
-                >
-                <AlignRight size={13} />
-                </button>
-                </div>
-
-                  <div className="border-t border-[#2a3136] mt-1 pt-1">
-                    <button
-                      onClick={enterCaptionMode}
-                      className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
-                    >
-                      <Pencil size={13} />
-                      <span>
-                        {imageMenu.caption ? "Edit caption" : "Add caption"}
-                      </span>
-                    </button>
-                    <button
-                      onClick={togglePreview}
-                      className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
-                      title={
-                        previewOn
-                          ? "Switch back to full width"
-                          : `Shrink to ${PREVIEW_WIDTH_PX}px preview (same as BlockNote's default)`
-                      }
-                    >
-                      {previewOn ? <EyeOff size={13} /> : <Eye size={13} />}
-                      <span>Toggle preview</span>
-                    </button>
-                    {imageIsLocal && (
-                      <button
-                        onClick={enterRenameMode}
-                        className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
-                      >
-                        <FileText size={13} />
-                        <span>Rename image…</span>
-                      </button>
-                    )}
-                  </div>
-
-                  <div className="border-t border-[#2a3136] mt-1 pt-1">
-                    <button
-                      onClick={() => replaceImage(imageMenu.blockId)}
-                      className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
-                    >
-                      <Replace size={13} />
-                      <span>Replace image…</span>
-                    </button>
-                  </div>
-
-                  <div className="border-t border-[#2a3136] mt-1 pt-1">
-                    <button
-                      onClick={() => downloadImage(imageMenu.url)}
-                      className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
-                    >
-                      <Download size={13} />
-                      <span>Download image</span>
-                    </button>
-                    <button
-                      onClick={() => openImageExternal(imageMenu.url)}
-                      className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
-                    >
-                      <ExternalLink size={13} />
-                      <span>Open in system viewer</span>
-                    </button>
-                    <button
-                      onClick={() => copyImageUrl(imageMenu.url)}
-                      className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
-                    >
-                      <Copy size={13} />
-                      <span>Copy image URL</span>
-                    </button>
-                  </div>
-
-                  <div className="border-t border-[#2a3136] mt-1 pt-1">
-                    <button
-                      onClick={() => removeImageBlock(imageMenu.blockId)}
-                      className="w-full text-left px-3 py-1.5 text-sm text-red-400 hover:bg-[#2a3136] flex items-center gap-2"
-                    >
-                      <Trash2 size={13} />
-                      <span>Delete image</span>
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
-          )}
-
-          {pasteMenu && (() => {
-            const platform = detectPlatform(pasteMenu.url);
-            const preview = humanizeUrlTitle(pasteMenu.url);
-            return (
-              <div
-                ref={pasteMenuRef}
-                className="fixed z-[500] bg-[#1e2327] border border-[#2a3136] rounded-md shadow-2xl py-1 w-64"
-                style={{ top: pasteMenu.y, left: pasteMenu.x }}
-                onMouseDown={(e) => e.preventDefault()}
+                <ChevronUp size={12} />
+              </button>
+              <button
+                onClick={() => {
+                  if (matches.length === 0) return;
+                  const nextIdx = (currentIndex + 1) % matches.length;
+                  setCurrentIndex(nextIdx);
+                  scrollToMatch(matches[nextIdx]);
+                }}
+                disabled={matches.length === 0}
+                className="p-1 text-gray-400 hover:text-gray-100 disabled:opacity-30 cursor-pointer"
               >
-                {platform && (
-                  <div className="px-3 pt-1.5 pb-1.5 border-b border-[#2a3136] flex items-center gap-2">
-                    <span
-                      className="w-2 h-2 rounded-full flex-shrink-0"
-                      style={{ backgroundColor: platform.accent }}
-                    />
-                    <span className="text-[10px] uppercase tracking-wider text-gray-400 flex-shrink-0">
-                      {platform.label}
-                    </span>
-                    <span
-                      className="text-[10px] text-gray-500 truncate ml-auto"
-                      title={preview}
-                    >
-                      {preview}
-                    </span>
-                  </div>
-                )}
-                <button
-                  onClick={() => pasteAsText(pasteMenu.url)}
-                  className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
-                >
-                  <TypeIcon size={13} /> <span>Paste as text</span>
-                </button>
-                <button
-                  onClick={() => pasteAsLink(pasteMenu.url, "bookmark")}
-                  className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2 border-t border-[#2a3136]"
-                >
-                  <LinkIcon size={13} /> <span>Paste as bookmark</span>
-                </button>
-                {pasteMenuCanEmbed && (
-                  <button
-                    onClick={() => pasteAsLink(pasteMenu.url, "embed")}
-                    className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2 border-t border-[#2a3136]"
-                  >
-                    <PlayIcon size={13} /> <span>Embed</span>
-                  </button>
-                )}
-              </div>
-            );
-          })()}
+                <ChevronDown size={12} />
+              </button>
+            </div>
+          </div>
 
-          {linkPickerOpen && (
-            <div
-              className="fixed inset-0 z-[300] bg-black/60 flex items-start justify-center pt-24"
-              onClick={closeLinkPicker}
-            >
-              <div
-                className="bg-[#1e2327] border border-[#2a3136] rounded-lg shadow-2xl w-[480px] max-w-[92vw] flex flex-col overflow-hidden"
-                onClick={(e) => e.stopPropagation()}
+          <div className="flex items-center gap-2">
+            <input
+              id="replace-input"
+              type="text"
+              placeholder="Replace with…"
+              value={replaceText}
+              onChange={(e) => setReplaceText(e.target.value)}
+              className="flex-1 bg-[#0f1315] border border-[#30363d] rounded px-2 py-1 text-xs text-gray-200 outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            <div className="flex gap-1">
+              <button
+                onClick={replaceCurrent}
+                disabled={matches.length === 0}
+                className="px-2 py-1 text-xs bg-[#2a3136] hover:bg-[#30363d] disabled:opacity-30 rounded text-gray-200 cursor-pointer"
               >
-                <div className="px-3 py-2 border-b border-[#2a3136] bg-[#1a1e21]">
-                  <input
-                    autoFocus
-                    type="text"
-                    value={linkQuery}
-                    onChange={(e) => setLinkQuery(e.target.value)}
-                    placeholder="Search notes…"
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && filteredNotes[0]) {
-                        insertNoteLink(filteredNotes[0]);
-                      } else if (e.key === "Escape") {
-                        closeLinkPicker();
-                      }
-                    }}
-                    className="w-full bg-transparent border-none outline-none text-sm text-gray-100 placeholder-gray-500"
-                  />
-                </div>
-                <div className="max-h-[50vh] overflow-y-auto">
-                  {loadingNotes && (
-                    <div className="px-3 py-2 text-xs text-gray-500">
-                      Loading notes…
-                    </div>
-                  )}
-                  {!loadingNotes && filteredNotes.length === 0 && (
-                    <div className="px-3 py-2 text-xs text-gray-500 italic">
-                      No matches.
-                    </div>
-                  )}
-                  {filteredNotes.map((n) => (
-                    <button
-                      key={n.path}
-                      onMouseDown={(e) => {
-                        e.preventDefault();
-                        insertNoteLink(n);
-                      }}
-                      className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
-                    >
-                      <span className="flex-shrink-0 w-5 text-center">
-                        {n.icon || "📄"}
-                      </span>
-                      <span className="flex-1 min-w-0">
-                        <span className="block truncate">{n.title}</span>
-                        {(n.categoryName || n.folderLabel) && (
-                          <span className="block text-[10px] text-gray-500 truncate">
-                            {n.categoryName}
-                            {n.folderLabel ? ` · ${n.folderLabel}` : ""}
-                          </span>
-                        )}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </div>
+                Replace
+              </button>
+              <button
+                onClick={replaceAll}
+                disabled={matches.length === 0}
+                className="px-2 py-1 text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-30 text-white rounded cursor-pointer"
+              >
+                All
+              </button>
             </div>
-          )}
-
-          {pendingImageUrl && (
-            <div
-              className="fixed inset-0 z-[400] bg-black/70 flex items-center justify-center p-6"
-              onKeyDown={(e) => {
-                if (e.key === "Escape") resolveImageDelete("cancel");
-              }}
-            >
-              <div className="bg-[#1e2327] border border-[#2a3136] rounded-lg shadow-2xl w-[440px] max-w-[92vw] overflow-hidden">
-                <div className="px-4 py-3 border-b border-[#2a3136] flex items-center gap-2">
-                  <AlertTriangle size={14} className="text-amber-400" />
-                  <span className="text-sm font-medium text-gray-100">
-                    Delete this photo?
-                  </span>
-                  <button
-                    onClick={() => resolveImageDelete("cancel")}
-                    className="ml-auto text-gray-500 hover:text-gray-300 cursor-pointer p-0.5"
-                    title="Cancel"
-                  >
-                    <X size={14} />
-                  </button>
-                </div>
-
-                <div className="p-4">
-                  <div className="w-full h-44 bg-[#0f1315] rounded-md overflow-hidden flex items-center justify-center mb-4">
-                    <img
-                      src={pendingImageUrl}
-                      alt=""
-                      className="max-w-full max-h-full object-contain"
-                      onError={(e) => {
-                        (e.currentTarget as HTMLImageElement).style.display = "none";
-                      }}
-                    />
-                  </div>
-
-                  {pendingImageDelete.length > 1 && (
-                    <p className="text-[11px] text-gray-500 mb-2">
-                      1 of {pendingImageDelete.length} pending
-                    </p>
-                  )}
-
-                  <p className="text-xs text-gray-400 leading-relaxed">
-                    The image was removed from this note.
-                    {canDeleteFromDisk
-                      ? " Do you also want to delete the file from disk?"
-                      : " This image isn't stored in this note's folder, so it can only be removed from the note."}
-                  </p>
-
-                  <div className="flex flex-col gap-2 mt-4">
-                    <button
-                      onClick={() => resolveImageDelete("cancel")}
-                      className="w-full text-xs px-3 py-2 rounded text-gray-300 hover:text-gray-100 hover:bg-[#2a3136] border border-[#2a3136] transition-colors cursor-pointer"
-                    >
-                      Cancel — keep image in note
-                    </button>
-                    <button
-                      onClick={() => resolveImageDelete("note-only")}
-                      className="w-full text-xs px-3 py-2 rounded bg-[#2a3136] hover:bg-[#30363d] text-gray-100 transition-colors cursor-pointer"
-                    >
-                      Remove from note, keep file
-                    </button>
-                    {canDeleteFromDisk && (
-                      <button
-                        onClick={() => resolveImageDelete("note-and-disk")}
-                        className="w-full flex items-center justify-center gap-1.5 text-xs px-3 py-2 rounded bg-red-600/90 hover:bg-red-500 text-white transition-colors cursor-pointer"
-                      >
-                        <Trash2 size={12} />
-                        Remove from note &amp; move file to trash
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
+          </div>
         </div>
+      )}
+
+      <BlockNoteView
+      editor={editor}
+      theme={bnTheme}
+      slashMenu={false}
+      onChange={handleContentChange}
+      >
+      <SuggestionMenuController
+      triggerCharacter="/"
+      getItems={getSlashMenuItems}
+      />
+      </BlockNoteView>
+
+      {selectedIds.length > 0 && <style>{selectionCSS}</style>}
+
+
+
+      {selectionMenu && (
+        <div
+        className="fixed z-[600] bg-[#1e2327] border border-[#2a3136] rounded-md shadow-2xl py-1 w-48"
+        style={{ top: selectionMenu.y, left: selectionMenu.x }}
+        onMouseDown={(e) => e.stopPropagation()}
+        data-no-marquee onContextMenu={(e) => e.preventDefault()}
+        >
+        {selectedIds.some(id => editor.getBlock(id)?.type === "image") && (
+          <>
+          <button
+          type="button"
+          onClick={() => { applyFitToSelected("contain"); setSelectionMenu(null); }}
+          className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
+          >
+          <Square size={13} /> <span>Fit Images</span>
+          </button>
+          <button
+          type="button"
+          onClick={() => { applyFitToSelected("cover"); setSelectionMenu(null); }}
+          className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2 border-b border-[#2a3136]"
+          >
+          <Maximize2 size={13} /> <span>Fill Images</span>
+          </button>
+          </>
+        )}
+
+        <button
+        type="button"
+        onClick={() => { copySelectedBlocks(); setSelectionMenu(null); }}
+        className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
+        >
+        <Copy size={13} /> <span>Copy</span>
+        </button>
+
+        <button
+        type="button"
+        onClick={() => { deleteSelectedBlocks(); setSelectionMenu(null); }}
+        className="w-full text-left px-3 py-1.5 text-sm text-red-400 hover:bg-[#2a3136] flex items-center gap-2 border-t border-[#2a3136]"
+        >
+        <Trash2 size={13} /> <span>Delete</span>
+        </button>
+        </div>
+      )}
+
+      {dragOverlay && (
+        <>
+        {/* Position indicator: a blue line for insert targets, a
+          highlighted border for gallery cells. */}
+          {dragOverlay.indicator && (
+            <div
+            className={
+              dragOverlay.target?.kind === "gallery"
+              ? "fixed z-[450] pointer-events-none rounded-md ring-2 ring-blue-400 bg-blue-500/15 transition-[top,left,width,height] duration-75"
+              : dragOverlay.target?.kind === "insert" &&
+              dragOverlay.target.placement === "nested"
+              ? "fixed z-[450] pointer-events-none rounded-md ring-2 ring-blue-400/70 transition-[top,left,width,height] duration-75"
+              : "fixed z-[450] pointer-events-none bg-blue-400 shadow-[0_0_8px_rgba(96,165,250,0.9)] rounded-sm transition-[top,left,width] duration-75"
+            }
+            style={{
+              left: dragOverlay.indicator.left,
+              top: dragOverlay.indicator.top,
+              width: dragOverlay.indicator.width,
+              height: dragOverlay.indicator.height,
+            }}
+            />
+          )}
+
+          {/* Floating badge that follows the cursor. */}
+          <div
+          className="fixed z-[451] pointer-events-none px-2.5 py-1 rounded-md bg-[#1e2327] border border-blue-500/60 text-[11px] text-blue-100 shadow-2xl whitespace-nowrap"
+          style={{
+            left: dragOverlay.x + 14,
+            top: dragOverlay.y + 14,
+          }}
+          >
+          Drop to add
+          </div>
+          </>
+      )}
+
+
+
+      {imageMenu && (
+        <div
+        ref={imageMenuRef}
+        className="fixed z-[500] bg-[#1e2327] border border-[#2a3136] rounded-md shadow-2xl py-1 w-[232px] overflow-y-auto"
+        style={{
+          top: imageMenu.y,
+          left: imageMenu.x,
+          maxHeight: `calc(100vh - ${imageMenu.y + 16}px)`
+        }}
+        onMouseDown={(e) => { if (e.button === 2) { e.stopPropagation(); e.nativeEvent.stopImmediatePropagation(); } }}
+        onContextMenu={(e) => e.preventDefault()}
+        >
+        {imageMenu.mode === "caption" ? (
+          <>
+          <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
+          <Pencil size={10} /> Image caption
+          </div>
+          <div className="px-2 pb-2">
+          <input
+          ref={captionInputRef}
+          type="text"
+          value={captionDraft}
+          onChange={(e) => setCaptionDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              e.stopPropagation();
+              saveCaptionInline();
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              e.stopPropagation();
+              backToMainMenu();
+            }
+          }}
+          placeholder="Describe this image…"
+          className="w-full bg-[#0f1315] border border-[#30363d] rounded px-2 py-1.5 text-xs text-gray-100 outline-none focus:ring-1 focus:ring-blue-500"
+          />
+          <div className="flex gap-1.5 mt-2">
+          <button
+          onClick={backToMainMenu}
+          className="flex-1 px-2 py-1 text-xs text-gray-400 hover:text-gray-200 hover:bg-[#2a3136] rounded transition-colors"
+          >
+          Cancel
+          </button>
+          <button
+          onClick={saveCaptionInline}
+          className="flex-1 px-2 py-1 text-xs bg-blue-600 hover:bg-blue-500 text-white rounded transition-colors font-medium"
+          >
+          Save
+          </button>
+          </div>
+          </div>
+          </>
+        ) : imageMenu.mode === "rename" ? (
+          <>
+          <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
+          <FileText size={10} /> Rename image
+          </div>
+          <div className="px-2 pb-2">
+          <input
+          ref={renameInputRef}
+          type="text"
+          value={renameDraft}
+          onChange={(e) => {
+            setRenameDraft(e.target.value);
+            if (renameError) setRenameError(null);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              e.stopPropagation();
+              void saveRename();
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              e.stopPropagation();
+              backToMainMenu();
+            }
+          }}
+          placeholder="new-filename"
+          className="w-full bg-[#0f1315] border border-[#30363d] rounded px-2 py-1.5 text-xs text-gray-100 outline-none focus:ring-1 focus:ring-blue-500"
+          />
+          {renameError && (
+            <div className="text-[10px] text-red-400 mt-1 break-words">
+            {renameError}
+            </div>
+          )}
+          <div className="flex gap-1.5 mt-2">
+          <button
+          onClick={backToMainMenu}
+          className="flex-1 px-2 py-1 text-xs text-gray-400 hover:text-gray-200 hover:bg-[#2a3136] rounded transition-colors"
+          >
+          Cancel
+          </button>
+          <button
+          onClick={() => void saveRename()}
+          className="flex-1 px-2 py-1 text-xs bg-blue-600 hover:bg-blue-500 text-white rounded transition-colors font-medium"
+          >
+          Rename
+          </button>
+          </div>
+          </div>
+          </>
+        ) : (
+          <>
+          <div className="py-1">
+          {IMAGE_WIDTH_PRESETS.map((preset) => {
+            const Icon = preset.icon;
+            return (
+              <button
+              key={preset.label}
+              onClick={() =>
+                applyImageWidth(imageMenu.blockId, preset.px)
+              }
+              className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
+              >
+              <Icon size={13} />
+              <span>{preset.label}</span>
+              </button>
+            );
+          })}
+          </div>
+
+          <div className="border-t border-[#2a3136] mt-1 pt-1 px-2 pb-1 flex items-center gap-1">
+          <button
+          onClick={() =>
+            applyImageAlignment(imageMenu.blockId, "left")
+          }
+          className={alignBtnClass(
+            imageMenu.textAlignment === "left"
+          )}
+          title="Align left"
+          >
+          <AlignLeft size={13} />
+          </button>
+          <button
+          onClick={() =>
+            applyImageAlignment(imageMenu.blockId, "center")
+          }
+          className={alignBtnClass(
+            imageMenu.textAlignment === "center"
+          )}
+          title="Align center"
+          >
+          <AlignCenter size={13} />
+          </button>
+          <button
+          onClick={() =>
+            applyImageAlignment(imageMenu.blockId, "right")
+          }
+          className={alignBtnClass(
+            imageMenu.textAlignment === "right"
+          )}
+          title="Align right"
+          >
+          <AlignRight size={13} />
+          </button>
+          </div>
+
+          <div className="border-t border-[#2a3136] mt-1 pt-1">
+          <button
+          onClick={enterCaptionMode}
+          className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
+          >
+          <Pencil size={13} />
+          <span>
+          {imageMenu.caption ? "Edit caption" : "Add caption"}
+          </span>
+          </button>
+          <button
+          onClick={togglePreview}
+          className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
+          title={
+            previewOn
+            ? "Switch back to full width"
+            : `Shrink to ${PREVIEW_WIDTH_PX}px preview (same as BlockNote's default)`
+          }
+          >
+          {previewOn ? <EyeOff size={13} /> : <Eye size={13} />}
+          <span>Toggle preview</span>
+          </button>
+          {imageIsLocal && (
+            <button
+            onClick={enterRenameMode}
+            className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
+            >
+            <FileText size={13} />
+            <span>Rename image…</span>
+            </button>
+          )}
+          </div>
+
+          <div className="border-t border-[#2a3136] mt-1 pt-1">
+          <button
+          onClick={() => replaceImage(imageMenu.blockId)}
+          className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
+          >
+          <Replace size={13} />
+          <span>Replace image…</span>
+          </button>
+          </div>
+
+          <div className="border-t border-[#2a3136] mt-1 pt-1">
+          <button
+          onClick={() => downloadImage(imageMenu.url)}
+          className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
+          >
+          <Download size={13} />
+          <span>Download image</span>
+          </button>
+          <button
+          onClick={() => openImageExternal(imageMenu.url)}
+          className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
+          >
+          <ExternalLink size={13} />
+          <span>Open in system viewer</span>
+          </button>
+          <button
+          onClick={() => copyImageUrl(imageMenu.url)}
+          className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
+          >
+          <Copy size={13} />
+          <span>Copy image URL</span>
+          </button>
+          </div>
+
+          <div className="border-t border-[#2a3136] mt-1 pt-1">
+          <button
+          onClick={() => {
+            setEditingImage({
+              blockId: imageMenu.blockId,
+              url: imageMenu.url,
+              originalUrl: imageMenu.originalUrl,
+              lastCrop: imageMenu.lastCrop,
+              lastRotation: imageMenu.lastRotation
+            });
+            closeImageMenu();
+          }}
+          className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
+          >
+          <Pencil size={13} />
+          <span>Crop / Rotate Image…</span>
+          </button>
+
+          <button
+          onClick={() => removeImageBlock(imageMenu.blockId)}
+          className="w-full text-left px-3 py-1.5 text-sm text-red-400 hover:bg-[#2a3136] flex items-center gap-2"
+          >
+          <Trash2 size={13} />
+          <span>Delete image</span>
+          </button>
+          </div>
+          </>
+        )}
+        </div>
+      )}
+
+      {pasteMenu && (() => {
+        const platform = detectPlatform(pasteMenu.url);
+        const preview = humanizeUrlTitle(pasteMenu.url);
+        return (
+          <div
+          ref={pasteMenuRef}
+          className="fixed z-[500] bg-[#1e2327] border border-[#2a3136] rounded-md shadow-2xl py-1 w-64"
+          style={{ top: pasteMenu.y, left: pasteMenu.x }}
+          onMouseDown={(e) => e.preventDefault()}
+          >
+          {platform && (
+            <div className="px-3 pt-1.5 pb-1.5 border-b border-[#2a3136] flex items-center gap-2">
+            <span
+            className="w-2 h-2 rounded-full flex-shrink-0"
+            style={{ backgroundColor: platform.accent }}
+            />
+            <span className="text-[10px] uppercase tracking-wider text-gray-400 flex-shrink-0">
+            {platform.label}
+            </span>
+            <span
+            className="text-[10px] text-gray-500 truncate ml-auto"
+            title={preview}
+            >
+            {preview}
+            </span>
+            </div>
+          )}
+          <button
+          onClick={() => pasteAsText(pasteMenu.url)}
+          className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
+          >
+          <TypeIcon size={13} /> <span>Paste as text</span>
+          </button>
+          <button
+          onClick={() => pasteAsLink(pasteMenu.url, "bookmark")}
+          className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2 border-t border-[#2a3136]"
+          >
+          <LinkIcon size={13} /> <span>Paste as bookmark</span>
+          </button>
+          {pasteMenuCanEmbed && (
+            <button
+            onClick={() => pasteAsLink(pasteMenu.url, "embed")}
+            className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2 border-t border-[#2a3136]"
+            >
+            <PlayIcon size={13} /> <span>Embed</span>
+            </button>
+          )}
+          </div>
+        );
+      })()}
+
+      {linkPickerOpen && (
+        <div
+        className="fixed inset-0 z-[300] bg-black/60 flex items-start justify-center pt-24"
+        onClick={closeLinkPicker}
+        >
+        <div
+        className="bg-[#1e2327] border border-[#2a3136] rounded-lg shadow-2xl w-[480px] max-w-[92vw] flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+        >
+        <div className="px-3 py-2 border-b border-[#2a3136] bg-[#1a1e21]">
+        <input
+        autoFocus
+        type="text"
+        value={linkQuery}
+        onChange={(e) => setLinkQuery(e.target.value)}
+        placeholder="Search notes…"
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && filteredNotes[0]) {
+            insertNoteLink(filteredNotes[0]);
+          } else if (e.key === "Escape") {
+            closeLinkPicker();
+          }
+        }}
+        className="w-full bg-transparent border-none outline-none text-sm text-gray-100 placeholder-gray-500"
+        />
+        </div>
+        <div className="max-h-[50vh] overflow-y-auto">
+        {loadingNotes && (
+          <div className="px-3 py-2 text-xs text-gray-500">
+          Loading notes…
+          </div>
+        )}
+        {!loadingNotes && filteredNotes.length === 0 && (
+          <div className="px-3 py-2 text-xs text-gray-500 italic">
+          No matches.
+          </div>
+        )}
+        {filteredNotes.map((n) => (
+          <button
+          key={n.path}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            insertNoteLink(n);
+          }}
+          className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
+          >
+          <span className="flex-shrink-0 w-5 text-center">
+          {n.icon || "📄"}
+          </span>
+          <span className="flex-1 min-w-0">
+          <span className="block truncate">{n.title}</span>
+          {(n.categoryName || n.folderLabel) && (
+            <span className="block text-[10px] text-gray-500 truncate">
+            {n.categoryName}
+            {n.folderLabel ? ` · ${n.folderLabel}` : ""}
+            </span>
+          )}
+          </span>
+          </button>
+        ))}
+        </div>
+        </div>
+        </div>
+      )}
+
+      {pendingImageUrl && (
+        <div
+        className="fixed inset-0 z-[400] bg-black/70 flex items-center justify-center p-6"
+        onKeyDown={(e) => {
+          if (e.key === "Escape") resolveImageDelete("cancel");
+        }}
+        >
+        <div className="bg-[#1e2327] border border-[#2a3136] rounded-lg shadow-2xl w-[440px] max-w-[92vw] overflow-hidden">
+        <div className="px-4 py-3 border-b border-[#2a3136] flex items-center gap-2">
+        <AlertTriangle size={14} className="text-amber-400" />
+        <span className="text-sm font-medium text-gray-100">
+        Delete this photo?
+        </span>
+        <button
+        onClick={() => resolveImageDelete("cancel")}
+        className="ml-auto text-gray-500 hover:text-gray-300 cursor-pointer p-0.5"
+        title="Cancel"
+        >
+        <X size={14} />
+        </button>
+        </div>
+
+        <div className="p-4">
+        <div className="w-full h-44 bg-[#0f1315] rounded-md overflow-hidden flex items-center justify-center mb-4">
+        <img
+        src={pendingImageUrl}
+        alt=""
+        className="max-w-full max-h-full object-contain"
+        onError={(e) => {
+          (e.currentTarget as HTMLImageElement).style.display = "none";
+        }}
+        />
+        </div>
+
+        {pendingImageDelete.length > 1 && (
+          <p className="text-[11px] text-gray-500 mb-2">
+          1 of {pendingImageDelete.length} pending
+          </p>
+        )}
+
+        <p className="text-xs text-gray-400 leading-relaxed">
+        The image was removed from this note.
+        {canDeleteFromDisk
+          ? " Do you also want to delete the file from disk?"
+          : " This image isn't stored in this note's folder, so it can only be removed from the note."}
+          </p>
+
+          <div className="flex flex-col gap-2 mt-4">
+          <button
+          onClick={() => resolveImageDelete("cancel")}
+          className="w-full text-xs px-3 py-2 rounded text-gray-300 hover:text-gray-100 hover:bg-[#2a3136] border border-[#2a3136] transition-colors cursor-pointer"
+          >
+          Cancel — keep image in note
+          </button>
+          <button
+          onClick={() => resolveImageDelete("note-only")}
+          className="w-full text-xs px-3 py-2 rounded bg-[#2a3136] hover:bg-[#30363d] text-gray-100 transition-colors cursor-pointer"
+          >
+          Remove from note, keep file
+          </button>
+          {canDeleteFromDisk && (
+            <button
+            onClick={() => resolveImageDelete("note-and-disk")}
+            className="w-full flex items-center justify-center gap-1.5 text-xs px-3 py-2 rounded bg-red-600/90 hover:bg-red-500 text-white transition-colors cursor-pointer"
+            >
+            <Trash2 size={12} />
+            Remove from note &amp; move file to trash
+            </button>
+          )}
+          </div>
+          </div>
+          </div>
+          </div>
+      )}
+      </div>
+      {editingImage && (
+        <ImageEditorModal
+        imageUrl={editingImage.originalUrl || editingImage.url}
+        initialCrop={editingImage.lastCrop}
+        onClose={() => setEditingImage(null)}
+        onSave={async (blob, percentCrop) => {
+          try {
+            const buffer = await blob.arrayBuffer();
+            const bytes = new Uint8Array(buffer);
+            // Save the cropped image as a new file
+            const dest = await writeImageBytesToNoteAssets(path, bytes, `cropped-${Date.now()}.webp`);
+            const newUrl = convertFileSrc(dest);
+
+            // Delete the previous cropped image if it exists so we don't leave orphaned files
+            if (editingImage.url !== editingImage.originalUrl) {
+              const oldAbs = assetUrlToAbsolutePath(editingImage.url);
+              if (oldAbs) {
+                deleteImageFromNoteAssets(oldAbs, path).catch(console.error);
+              }
+            }
+
+            // Suppress the "delete this photo?" prompt during the replacement
+            handlingDeleteRef.current = true;
+
+            // Update the BlockNote block to use the new image and save the JSON data in `name`
+            editor.updateBlock(editingImage.blockId, {
+              props: {
+                url: newUrl,
+                name: JSON.stringify({
+                  originalUrl: editingImage.originalUrl || editingImage.url,
+                  lastCrop: percentCrop
+                })
+              } as any
+            });
+
+            // Re-snapshot the image URLs on the next frame, then re-enable detection
+            requestAnimationFrame(() => {
+              try {
+                prevImageUrlsRef.current = new Set(collectImageUrls(editor.document));
+              } catch {}
+              handlingDeleteRef.current = false;
+            });
+          } catch (err) {
+            console.error("Failed to save cropped image:", err);
+          }
+        }}
+        />
+      )}
       </NoteContext.Provider>
     );
   }

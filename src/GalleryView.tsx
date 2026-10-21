@@ -2130,7 +2130,7 @@ export default function GalleryView({ sectionDir, sectionName }: GalleryViewProp
               ref={iconCtxMenuRef}
               className="fixed z-[300] bg-[#1e2327] border border-[#2a3136] rounded-md shadow-2xl py-1 w-[200px]"
               style={{ top: iconCtxMenu.y, left: iconCtxMenu.x }}
-              onMouseDown={(e) => e.stopPropagation()}
+              onMouseDown={(e) => { if (e.button === 2) { e.stopPropagation(); e.nativeEvent.stopImmediatePropagation(); } }}
               onContextMenu={(e) => e.preventDefault()}
             >
               <div className="px-3 pt-1.5 pb-1 text-[10px] uppercase tracking-wider text-gray-500 truncate">

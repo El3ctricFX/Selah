@@ -135,7 +135,7 @@ export const createBookmark = createReactBlockSpec(
         ref={ctxMenuRef}
         className="fixed z-[600] bg-[#1e2327] border border-[#2a3136] rounded-md shadow-2xl py-1 w-56"
         style={{ top: ctxMenu.y, left: ctxMenu.x }}
-        onMouseDown={(e) => e.stopPropagation()}
+        onMouseDown={(e) => { if (e.button === 2) { e.stopPropagation(); e.nativeEvent.stopImmediatePropagation(); } }}
         onContextMenu={(e) => e.preventDefault()}
         >
         <div
@@ -200,7 +200,7 @@ export const createBookmark = createReactBlockSpec(
           <div
             className="my-2 w-full"
             contentEditable={false}
-            onMouseDown={(e) => e.stopPropagation()}
+            onMouseDown={(e) => { if (e.button === 2) { e.stopPropagation(); e.nativeEvent.stopImmediatePropagation(); } }}
             onContextMenu={handleContextMenu}
           >
             <div className="rounded-md overflow-hidden border border-[#2a3136] bg-[#0f1315] group">
@@ -263,7 +263,7 @@ export const createBookmark = createReactBlockSpec(
         <div
           className="my-2 w-full flex group"
           contentEditable={false}
-          onMouseDown={(e) => e.stopPropagation()}
+          onMouseDown={(e) => { if (e.button === 2) { e.stopPropagation(); e.nativeEvent.stopImmediatePropagation(); } }}
           onContextMenu={handleContextMenu}
         >
           <div

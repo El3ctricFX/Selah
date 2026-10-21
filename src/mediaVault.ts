@@ -474,6 +474,7 @@ async function auditNote(
   const missing: MissingProxiesForNote["sources"] = [];
   for (const [name, size] of topFiles) {
     if (!IMAGE_CONVERTIBLE_RE.test(name)) continue;
+    if (size === 0) continue; // Ignore 0-byte corrupt files
     const proxyName = `${name}.webp`;
     const hasProxy = proxyFiles.has(proxyName);
     const hasThumb = thumbFiles.has(proxyName);
@@ -534,8 +535,9 @@ async function auditNote(
     const missingThumbsForNote: MissingThumbForNote["sources"] = [];
 
     // Images the note references by original name.
-    for (const [name] of topFiles) {
+    for (const [name, size] of topFiles) {
       if (!IMAGE_CONVERTIBLE_RE.test(name)) continue;
+      if (size === 0) continue; // Ignore 0-byte corrupt files
       if (!referencedTop.has(name)) continue;
       if (thumbFiles.has(`${name}.webp`)) continue;
       missingThumbsForNote.push({

@@ -1,5 +1,8 @@
 // src/theme.ts
 import { useCallback, useEffect, useState } from "react";
+import { readTextFile } from "@tauri-apps/plugin-fs";
+import { join } from "@tauri-apps/api/path";
+import { writeFileAtomic } from "./safeWrite";
 
 export interface ThemeColors {
   bg: string;
@@ -1826,27 +1829,131 @@ const CSS_VAR_MAP: Record<keyof ThemeColors, string> = {
   overlay: "--c-overlay",
 };
 
-export function loadTheme(): Theme {
+// ── Vault-aware theme storage ──────────────────────────────────────────
+// Themes live inside each vault's .vault_metadata.json, so switching
+// vaults switches themes. localStorage is kept only as a seed for
+// brand-new vaults and for migrating the old global behavior.
+
+let currentVaultPath: string | null = null;
+// Initialize from localStorage so the very first paint (welcome screen,
+// or the app before setThemeVaultPath runs) shows the last-used theme
+// instead of snapping to dark. readLegacyLocalTheme is a hoisted
+// function declaration, and DARK_THEME/LIGHT_THEME/DEFAULT_BACKGROUND/
+// STORAGE_KEY are all declared earlier in the file — so this runs safely.
+let cachedTheme: Theme = readLegacyLocalTheme() ?? DARK_THEME;
+let saveQueue: Promise<void> = Promise.resolve();
+
+/** Sync read of the currently-active theme (used by useTheme). */
+export function getCurrentTheme(): Theme {
+  return cachedTheme;
+}
+
+function parseTheme(raw: any): Theme {
+  const base = raw?.mode === "light" ? LIGHT_THEME : DARK_THEME;
+  return {
+    mode: raw?.mode ?? "dark",
+    colors: { ...base.colors, ...(raw?.colors || {}) },
+    background: { ...DEFAULT_BACKGROUND, ...(raw?.background || {}) },
+  };
+}
+
+function readLegacyLocalTheme(): Theme | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return DARK_THEME;
-    const parsed = JSON.parse(raw);
-    const base = parsed.mode === "light" ? LIGHT_THEME : DARK_THEME;
-    return {
-      mode: parsed.mode ?? "dark",
-      colors: { ...base.colors, ...(parsed.colors || {}) },
-      background: { ...DEFAULT_BACKGROUND, ...(parsed.background || {}) },
-    };
+    if (!raw) return null;
+    return parseTheme(JSON.parse(raw));
   } catch {
-    return DARK_THEME;
+    return null;
   }
 }
 
-export function saveTheme(theme: Theme): void {
+async function readVaultMeta(vaultPath: string): Promise<any> {
+  try {
+    const raw = await readTextFile(await join(vaultPath, ".vault_metadata.json"));
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
+async function writeVaultMeta(vaultPath: string, meta: any): Promise<void> {
+  const path = await join(vaultPath, ".vault_metadata.json");
+  await writeFileAtomic(path, JSON.stringify(meta, null, 2));
+}
+
+/**
+ * Tell the theme system which vault is currently open. Loads that vault's
+ * theme from disk (falling back to a seed for new vaults) and broadcasts
+ * the change so every useTheme() hook re-renders.
+ *
+ * Call this from App.tsx whenever `vaultPath` changes.
+ */
+export async function setThemeVaultPath(vaultPath: string | null): Promise<void> {
+  if (currentVaultPath === vaultPath) return;
+  currentVaultPath = vaultPath;
+
+  if (!vaultPath) {
+    // Welcome screen: show the last-used theme from localStorage, not dark.
+    cachedTheme = readLegacyLocalTheme() ?? DARK_THEME;
+    window.dispatchEvent(new Event("theme-changed"));
+    return;
+  }
+
+  try {
+    const meta = await readVaultMeta(vaultPath);
+    if (meta.theme) {
+      // Vault already has a theme — use it.
+      cachedTheme = parseTheme(meta.theme);
+    } else {
+      // New vault: seed from localStorage (the user's last-used theme)
+      // or fall back to dark, then persist so this vault owns its copy.
+      cachedTheme = readLegacyLocalTheme() || DARK_THEME;
+      meta.theme = cachedTheme;
+      try {
+        await writeVaultMeta(vaultPath, meta);
+      } catch (e) {
+        console.error("[theme] could not seed vault theme:", e);
+      }
+    }
+    // Mirror to localStorage so the NEXT new vault inherits this theme.
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(cachedTheme));
+    } catch {}
+  } catch (e) {
+    console.error("[theme] failed to load theme for vault:", e);
+    cachedTheme = DARK_THEME;
+  }
+
+  window.dispatchEvent(new Event("theme-changed"));
+}
+
+export function loadTheme(): Theme {
+  return cachedTheme;
+}
+
+export async function saveTheme(theme: Theme): Promise<void> {
+  cachedTheme = theme;
+  window.dispatchEvent(new Event("theme-changed"));
+
+  // Mirror to localStorage so new vaults default to this theme.
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(theme));
-    window.dispatchEvent(new Event("theme-changed"));
   } catch {}
+
+  if (!currentVaultPath) return;
+
+  // Serialize saves so rapid theme tweaks don't clobber each other.
+  const vaultPath = currentVaultPath;
+  saveQueue = saveQueue.then(async () => {
+    try {
+      const meta = await readVaultMeta(vaultPath);
+      meta.theme = theme;
+      await writeVaultMeta(vaultPath, meta);
+    } catch (e) {
+      console.error("[theme] failed to save theme:", e);
+    }
+  });
+  return saveQueue;
 }
 
 /** Perceptual luminance check (Rec. 601). Returns true when a hex color
@@ -2030,21 +2137,21 @@ export function themeFromCSS(css: string): Theme | null {
 }
 
 export function useTheme() {
-  const [theme, setThemeState] = useState<Theme>(() => loadTheme());
+  const [theme, setThemeState] = useState<Theme>(() => getCurrentTheme());
 
   useEffect(() => {
     applyTheme(theme);
   }, [theme]);
 
   useEffect(() => {
-    const handler = () => setThemeState(loadTheme());
+    const handler = () => setThemeState(getCurrentTheme());
     window.addEventListener("theme-changed", handler);
     return () => window.removeEventListener("theme-changed", handler);
   }, []);
 
   const setTheme = useCallback((next: Theme) => {
     setThemeState(next);
-    saveTheme(next);
+    void saveTheme(next);
   }, []);
 
   return { theme, setTheme };

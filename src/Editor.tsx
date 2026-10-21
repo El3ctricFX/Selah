@@ -1005,7 +1005,7 @@ export default function Editor({
           <div className="relative" ref={widthMenuRef}>
             <button
               type="button"
-              onMouseDown={(e) => e.stopPropagation()}
+              onMouseDown={(e) => { if (e.button === 2) { e.stopPropagation(); e.nativeEvent.stopImmediatePropagation(); } }}
               onClick={() => setWidthMenuOpen((o) => !o)}
               className="flex items-center gap-1.5 px-2 h-8 rounded text-xs text-gray-400 hover:text-gray-100 hover:bg-[#1e2327] transition-colors cursor-pointer"
               title="Document width"

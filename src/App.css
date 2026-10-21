@@ -877,3 +877,175 @@ body.theme-separate-tints.theme-scope-sidebar.theme-has-bg .content-shell [class
   --c-sidebar-tint: transparent;
   --c-overlay-tint: transparent;
 }
+
+/* Make the block drag handle (⋮⋮) larger and always visible so it's easier to click */
+.bn-side-menu {
+  opacity: 1 !important;
+  padding-right: 8px !important;
+}
+
+.bn-side-menu button {
+  width: 24px !important;
+  height: 24px !important;
+  cursor: grab !important;
+}
+
+.bn-side-menu button:active {
+  cursor: grabbing !important;
+}
+
+/* react-easy-crop styles */
+.reactEasyCrop_Container {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  overflow: hidden;
+  user-select: none;
+  touch-action: none;
+  cursor: move;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+.reactEasyCrop_Image,
+.reactEasyCrop_Video {
+  will-change: transform;
+}
+.reactEasyCrop_Contain {
+  max-width: 100%;
+  max-height: 100%;
+  margin: auto;
+  position: absolute;
+  top: 0; bottom: 0; left: 0; right: 0;
+}
+.reactEasyCrop_Cover_Horizontal {
+  width: 100%;
+  height: auto;
+}
+.reactEasyCrop_Cover_Vertical {
+  width: auto;
+  height: 100%;
+}
+.reactEasyCrop_CropArea {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  box-sizing: border-box;
+  box-shadow: 0 0 0 9999em rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+/* react-image-crop styles */
+.ReactCrop {
+  position: relative;
+  display: inline-flex;
+  flex-direction: column;
+  cursor: crosshair;
+  overflow: hidden;
+  max-width: 100%;
+  max-height: 100%;
+  height: fit-content;
+  margin: auto;
+}
+.ReactCrop--disabled {
+  cursor: inherit;
+}
+.ReactCrop__child-wrapper {
+  display: flex;
+  overflow: hidden;
+  max-height: inherit;
+  width: fit-content;
+  height: fit-content;
+  margin: auto;
+}
+.ReactCrop__child-wrapper > img,
+.ReactCrop__child-wrapper > video {
+  display: block;
+  max-width: 100%;
+  max-height: inherit;
+  object-fit: contain;
+}
+.ReactCrop__crop-selection {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform: translate3d(0, 0, 0);
+  cursor: move;
+  box-shadow: 0 0 0 9999em rgba(0, 0, 0, 0.5);
+  touch-action: none;
+  border: 1px dashed #fff;
+}
+.ReactCrop__drag-handle {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  background-color: #fff;
+  border: 1px solid #000;
+  border-radius: 50%;
+}
+.ReactCrop__drag-handle::after {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  content: "";
+}
+.ReactCrop__drag-handle.ord-nw {
+  top: -5px;
+  left: -5px;
+  cursor: nw-resize;
+}
+.ReactCrop__drag-handle.ord-n {
+  top: -5px;
+  left: 50%;
+  margin-left: -5px;
+  cursor: n-resize;
+}
+.ReactCrop__drag-handle.ord-ne {
+  top: -5px;
+  right: -5px;
+  cursor: ne-resize;
+}
+.ReactCrop__drag-handle.ord-e {
+  top: 50%;
+  right: -5px;
+  margin-top: -5px;
+  cursor: e-resize;
+}
+.ReactCrop__drag-handle.ord-se {
+  bottom: -5px;
+  right: -5px;
+  cursor: se-resize;
+}
+.ReactCrop__drag-handle.ord-s {
+  bottom: -5px;
+  left: 50%;
+  margin-left: -5px;
+  cursor: s-resize;
+}
+.ReactCrop__drag-handle.ord-sw {
+  bottom: -5px;
+  left: -5px;
+  cursor: sw-resize;
+}
+.ReactCrop__drag-handle.ord-w {
+  top: 50%;
+  left: -5px;
+  margin-top: -5px;
+  cursor: w-resize;
+}
+
+/* Find and Replace Highlights */
+.search-match {
+  background-color: rgba(59, 130, 246, 0.3);
+  border-radius: 2px;
+  color: inherit;
+}
+
+.search-match-current {
+  background-color: rgba(249, 115, 22, 0.6); /* Orange */
+  border-radius: 2px;
+  color: inherit;
+}

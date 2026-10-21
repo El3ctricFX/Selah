@@ -409,7 +409,7 @@ export const createVideo = createReactBlockSpec(
           <div
             className="my-2 w-full rounded-md border border-dashed border-[#30363d] bg-[#0f1315] py-10 flex flex-col items-center justify-center text-gray-500 gap-2 text-xs"
             contentEditable={false}
-            onMouseDown={(e) => e.stopPropagation()}
+            onMouseDown={(e) => { if (e.button === 2) { e.stopPropagation(); e.nativeEvent.stopImmediatePropagation(); } }}
           >
             <VideoIcon size={22} className="opacity-50" />
             <span>Empty video block — upload a file from the / menu</span>
@@ -423,7 +423,7 @@ export const createVideo = createReactBlockSpec(
         <div
           className="my-2 w-full rounded-md border border-[#2a3136] bg-[#0f1315] overflow-hidden relative group"
           contentEditable={false}
-          onMouseDown={(e) => e.stopPropagation()}
+          onMouseDown={(e) => { if (e.button === 2) { e.stopPropagation(); e.nativeEvent.stopImmediatePropagation(); } }}
         >
           {phase === "loading" && (
             <div className="w-full h-40 bg-black/40 flex items-center justify-center">

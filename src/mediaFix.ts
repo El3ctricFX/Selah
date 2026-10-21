@@ -55,6 +55,43 @@ async function replaceRefInNote(
   return true;
 }
 
+export async function removeBrokenRefFromNote(
+  notePath: string,
+  rawRef: string,
+): Promise<boolean> {
+  let raw: string;
+  try { raw = await readTextFile(notePath); } catch { return false; }
+  const { frontmatter, body } = parseNoteFile(raw);
+
+  const escaped = rawRef.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  // Remove markdown image ![alt](url)
+  const mdRe = new RegExp(`!\\[[^\\]]*\\]\\(${escaped}[^)]*\\)`, "g");
+
+  // Remove HTML img <img src="url">
+  const htmlRe = new RegExp(`<img\\b[^>]*\\bsrc="${escaped}"[^>]*>`, "g");
+
+  // Remove any bare text match (just in case)
+  const textRe = new RegExp(escaped, "g");
+
+  let next = body.replace(mdRe, "").replace(htmlRe, "").replace(textRe, "");
+
+  let fmChanged = false;
+  if (frontmatter.coverValue === rawRef) {
+    frontmatter.coverValue = "";
+    fmChanged = true;
+  }
+
+  if (next === body && !fmChanged) return false;
+
+  // Clean up extra blank lines left behind
+  next = next.replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
+
+  await writeFileAtomic(notePath, serializeNoteFile(frontmatter, next));
+  notifyRewritten(notePath);
+  return true;
+}
+
 export async function fixBrokenRef(item: BrokenRef): Promise<boolean> {
   const { notePath, raw, absPath, fix } = item;
   if (fix.kind === "unfixable") return false;

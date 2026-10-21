@@ -162,7 +162,7 @@ export default function VaultWelcome({
         <div
           className="fixed z-50 bg-[#1e2327] border border-[#2a3136] rounded-md shadow-xl py-1 w-52"
           style={{ top: ctxMenu.y, left: ctxMenu.x }}
-          onMouseDown={(e) => e.stopPropagation()}
+          onMouseDown={(e) => { if (e.button === 2) { e.stopPropagation(); e.nativeEvent.stopImmediatePropagation(); } }}
         >
           <button
             onClick={() => {
