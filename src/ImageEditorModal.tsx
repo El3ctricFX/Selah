@@ -3,6 +3,18 @@ import ReactCrop, { type Crop, type PixelCrop } from "react-image-crop";
 import { X, Check, RotateCw, Loader2 } from "lucide-react";
 import { readFile } from "@tauri-apps/plugin-fs";
 import { assetUrlToAbsolutePath } from "./imageAssets";
+const clampCrop = (c: any) => {
+  if (c.unit !== '%') return c;
+  const x = Math.max(0, Math.min(100, c.x));
+  const y = Math.max(0, Math.min(100, c.y));
+  return {
+    ...c,
+    x,
+    y,
+    width: Math.max(0, Math.min(100 - x, c.width)),
+    height: Math.max(0, Math.min(100 - y, c.height)),
+  };
+};
 
 const getCroppedImg = async (imageEl: HTMLImageElement, pixelCrop: PixelCrop): Promise<Blob | null> => {
   const canvas = document.createElement("canvas");

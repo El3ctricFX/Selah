@@ -506,7 +506,7 @@ const searchPlugin = new Plugin({
   key: SearchPluginKey,
   state: {
     init: () => DecorationSet.empty,
-                                apply: (tr, oldState, oldEditorState, newState) => {
+                                apply: (tr, oldState, _oldEditorState, newState) => {
                                   const meta = tr.getMeta(SearchPluginKey);
                                   if (meta) {
                                     return getSearchDecorations(newState.doc, meta.matches, meta.currentIndex);
@@ -2002,7 +2002,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
 
         const walk = (blocks: any[]) => {
           for (const b of blocks) {
-            const outer = root.querySelector(`.bn-block-outer[data-id="${b.id}"]`);
+            const outer = root.querySelector(`.bn-block-outer[data-id="${b.id}"]`) as HTMLElement | null;
             if (outer) {
               const content = (outer.querySelector(".bn-block-content") as HTMLElement | null) || outer;
               out.push({ id: b.id, el: b.type === "columnList" ? outer : content });
@@ -2401,7 +2401,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
                         } catch (e) { console.warn("[drag] Failed to keep column alive", e); }
                       });
 
-                      const inserted = editor.insertBlocks(blocksToInsert, targetId, placement);
+                      const inserted = editor.insertBlocks(blocksToInsert, targetId, placement as any);
 
                       // Place cursor in the first inserted block to clear the ProseMirror selection safely
                       if (inserted && inserted.length > 0) {
