@@ -748,6 +748,7 @@ export const createImageGallery = createReactBlockSpec(
       const [hoverSide, setHoverSide] = useState<"top" | "bottom" | "left" | "right" | null>(null);
       const [externalHoverSide, setExternalHoverSide] = useState<"top" | "bottom" | "left" | "right" | null>(null);
       const [cellCtx, setCellCtx] = useState<{ x: number; y: number; row: number; col: number } | null>(null);
+      const cellCtxRef = useRef<HTMLDivElement>(null);
 
       const readGrid = useCallback((): GalleryGrid => {
         const cur =
@@ -1181,7 +1182,10 @@ export const createImageGallery = createReactBlockSpec(
 
       useEffect(() => {
         if (!cellCtx) return;
-        const onDown = () => setCellCtx(null);
+        const onDown = (e: MouseEvent) => {
+          if (cellCtxRef.current?.contains(e.target as Node)) return;
+          setCellCtx(null);
+        };
         const onKey = (e: KeyboardEvent) => {
           if (e.key === "Escape") setCellCtx(null);
         };
@@ -1467,6 +1471,7 @@ export const createImageGallery = createReactBlockSpec(
 
           {cellCtx && (
             <div
+              ref={cellCtxRef}
               className="fixed z-[600] bg-[#1e2327] border border-[#2a3136] rounded-md shadow-2xl py-1 w-64"
               style={{ top: cellCtx.y, left: cellCtx.x }}
               onMouseDown={(e) => { if (e.button === 2) { e.stopPropagation(); e.nativeEvent.stopImmediatePropagation(); } }}
