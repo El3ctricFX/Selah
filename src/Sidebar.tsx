@@ -303,6 +303,23 @@ export default function Sidebar(props: SidebarProps) {
   }, [switcherOpen]);
 
   useEffect(() => {
+    if (!settingsMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (settingsMenuRef.current?.contains(e.target as Node)) return;
+      setSettingsMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setSettingsMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [settingsMenuOpen]);
+
+  useEffect(() => {
     if (!categoryIconPicker) return;
     const onDown = (e: MouseEvent) => {
       const t = e.target as Node;
@@ -564,7 +581,7 @@ export default function Sidebar(props: SidebarProps) {
                 <Settings size={13} />
               </button>
               {settingsMenuOpen && (
-                <div className="absolute right-0 top-full mt-1 z-40 bg-[#1e2327] border border-[#2a3136] rounded-md shadow-xl py-1 w-44">
+                <div data-menu className="absolute right-0 top-full mt-1 z-40 bg-[#1e2327] border border-[#2a3136] rounded-md shadow-xl py-1 w-44">
                   <button
                     onClick={() => {
                       setSettingsMenuOpen(false);
@@ -614,7 +631,7 @@ export default function Sidebar(props: SidebarProps) {
           </button>
 
           {switcherOpen && (
-            <div className="absolute left-2 right-2 top-full mt-1 z-40 bg-[#1e2327] border border-[#2a3136] rounded-md shadow-xl py-1">
+            <div data-menu className="absolute left-2 right-2 top-full mt-1 z-40 bg-[#1e2327] border border-[#2a3136] rounded-md shadow-xl py-1">
               {categories.map((c) => (
                 <div
                   key={c.id}
@@ -1475,7 +1492,7 @@ function NotesTree({
 
       {ctx && (
         <div
-          className="fixed z-50 bg-[#1e2327] border border-[#2a3136] rounded shadow-xl py-1 w-60"
+          data-menu className="fixed z-50 bg-[#1e2327] border border-[#2a3136] rounded shadow-xl py-1 w-60"
           style={{ top: ctx.y, left: ctx.x }}
           onClick={(e) => e.stopPropagation()}
         >
@@ -2322,7 +2339,7 @@ function JournalTree({
     >
       {ctx && (
         <div
-          className="fixed z-50 bg-[#1e2327] border border-[#2a3136] rounded shadow-xl py-1 w-60"
+          data-menu className="fixed z-50 bg-[#1e2327] border border-[#2a3136] rounded shadow-xl py-1 w-60"
           style={{ top: ctx.y, left: ctx.x }}
           onClick={(e) => e.stopPropagation()}
         >

@@ -86,6 +86,8 @@ export interface ThemeBackground {
    * fine-tune each area independently.
    */
   separateTints: boolean;
+  /** 0–100 %. Opacity of dropdown / right-click menus. */
+  menuOpacity: number;
   /** "app" = whole UI, "sidebar" = sidebar shell only. */
   scope: "app" | "sidebar";
 }
@@ -112,6 +114,7 @@ export const DEFAULT_BACKGROUND: ThemeBackground = {
   contentTintIntensity: 100,
   modalColor: "",
   modalOpacity: 100,
+  menuOpacity: 100,
   separateTints: false,
   scope: "app",
 };
@@ -1848,7 +1851,7 @@ export function getCurrentTheme(): Theme {
   return cachedTheme;
 }
 
-function parseTheme(raw: any): Theme {
+export function parseTheme(raw: any): Theme {
   const base = raw?.mode === "light" ? LIGHT_THEME : DARK_THEME;
   return {
     mode: raw?.mode ?? "dark",
@@ -2018,6 +2021,7 @@ export function applyTheme(theme: Theme): void {
     bg.modalColor || "var(--c-elevated)"
   );
   root.style.setProperty("--c-modal-opacity", `${bg.modalOpacity ?? 100}%`);
+  root.style.setProperty("--c-menu-opacity", `${bg.menuOpacity ?? 100}%`);
 
   // Toggle a body class based on the *theme's own* background brightness.
   // Folder label colors, icon contrast, and other luminance-sensitive
@@ -2060,6 +2064,7 @@ export function themeToCSS(theme: Theme): string {
   lines.push(`  /* Settings dialogs */`);
   lines.push(`  --c-modal-color: ${bg.modalColor || "var(--c-elevated)"};`);
   lines.push(`  --c-modal-opacity: ${bg.modalOpacity}%;`);
+  lines.push(`  --c-menu-opacity: ${bg.menuOpacity ?? 100}%;`);
 
   lines.push(`}`);
   return lines.join("\n");
@@ -2122,6 +2127,7 @@ export function themeFromCSS(css: string): Theme | null {
 
   bg.modalColor = readTint("--c-modal-color", "");
   bg.modalOpacity = readNum("--c-modal-opacity", bg.modalOpacity);
+  bg.menuOpacity = readNum("--c-menu-opacity", bg.menuOpacity ?? 100);
 
   // If both tints are set, the imported theme clearly wants separate
   // tints — flip the toggle on. If neither is set, leave it as-is.
@@ -2155,4 +2161,69 @@ export function useTheme() {
   }, []);
 
   return { theme, setTheme };
+}
+
+// ── Custom (user-saved) presets ─────────────────────────────────────────
+export interface CustomPreset {
+  id: string;
+  label: string;
+  theme: Theme;
+  createdAt: number;
+}
+
+const CUSTOM_PRESETS_KEY = "selah-custom-presets-v1";
+const CUSTOM_PRESETS_EVENT = "custom-presets-changed";
+
+export function loadCustomPresets(): CustomPreset[] {
+  try {
+    const raw = localStorage.getItem(CUSTOM_PRESETS_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return [];
+    return arr
+    .filter((p: any) => p && typeof p.id === "string" && typeof p.label === "string" && p.theme)
+    .map((p: any) => ({
+      id: p.id,
+      label: p.label,
+      theme: parseTheme(p.theme),
+                      createdAt: typeof p.createdAt === "number" ? p.createdAt : 0,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+function writeCustomPresets(list: CustomPreset[]): boolean {
+  try {
+    localStorage.setItem(CUSTOM_PRESETS_KEY, JSON.stringify(list));
+    window.dispatchEvent(new Event(CUSTOM_PRESETS_EVENT));
+    return true;
+  } catch (e) {
+    console.error("[theme] could not save custom presets:", e);
+    return false;
+  }
+}
+
+export function addCustomPreset(label: string, theme: Theme): boolean {
+  const preset: CustomPreset = {
+    id: `custom-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    label: label.trim() || "My preset",
+    theme: { ...theme, mode: "custom" },
+    createdAt: Date.now(),
+  };
+  return writeCustomPresets([preset, ...loadCustomPresets()]);
+}
+
+export function deleteCustomPreset(id: string): void {
+  writeCustomPresets(loadCustomPresets().filter((p) => p.id !== id));
+}
+
+export function useCustomPresets(): CustomPreset[] {
+  const [list, setList] = useState<CustomPreset[]>(() => loadCustomPresets());
+  useEffect(() => {
+    const fn = () => setList(loadCustomPresets());
+    window.addEventListener(CUSTOM_PRESETS_EVENT, fn);
+    return () => window.removeEventListener(CUSTOM_PRESETS_EVENT, fn);
+  }, []);
+  return list;
 }

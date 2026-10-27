@@ -1049,3 +1049,17 @@ body.theme-separate-tints.theme-scope-sidebar.theme-has-bg .content-shell [class
   border-radius: 2px;
   color: inherit;
 }
+
+/* ── Dropdown / context menus ──────────────────────────────────────────
+ * Menus tagged data-menu get their own opacity so they stay readable on
+ * top of a background image. The repeated attribute selector is only
+ * there to out-rank the sidebar/content translucency rules above. */
+html body.theme-has-bg [data-menu][data-menu][data-menu][data-menu] {
+  background-color: color-mix(
+    in srgb,
+    var(--c-elevated) var(--c-menu-opacity, 100%),
+                              transparent
+  ) !important;
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}

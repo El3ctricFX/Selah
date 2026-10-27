@@ -3,7 +3,7 @@ import { useState } from "react";
 import {
   Palette, Sun, Moon, Wand2, Copy, Check, Upload,
   Download, RotateCcw, X, AlertTriangle, Code2,
-  Image as ImageIcon, Link as LinkIcon, Trash2, Sliders,
+  Image as ImageIcon, Link as LinkIcon, Trash2, Sliders, Save, Bookmark,
 } from "lucide-react";
 import {
   useTheme,
@@ -15,6 +15,9 @@ import {
   PRESET_CATEGORY_LABELS,
   themeToCSS,
   themeFromCSS,
+  useCustomPresets,
+  addCustomPreset,
+  deleteCustomPreset,
   type ThemeMode,
   type ThemeColors,
   type ThemeBackground,
@@ -44,6 +47,10 @@ export default function AppearancePanel() {
   const [urlDraft, setUrlDraft] = useState("");
   const [imageBusy, setImageBusy] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const customPresets = useCustomPresets();
+  const [presetName, setPresetName] = useState("");
+  const [presetMsg, setPresetMsg] = useState<{ text: string; error?: boolean } | null>(null);
+  const [cssMsg, setCssMsg] = useState<{ error?: boolean } | null>(null);
 
   const isPreset = theme.mode === "dark" || theme.mode === "light";
 
@@ -129,16 +136,38 @@ export default function AppearancePanel() {
     }
   };
 
-  const downloadCSS = () => {
-    const blob = new Blob([themeToCSS(theme)], { type: "text/css" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "selah-theme.css";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
+  const downloadCSS = async () => {
+    try {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const { writeTextFile } = await import("@tauri-apps/plugin-fs");
+      const dest = await save({
+        defaultPath: "selah-theme.css",
+        filters: [{ name: "CSS", extensions: ["css"] }],
+      });
+      if (!dest) return;
+      await writeTextFile(dest, themeToCSS(theme));
+      setCssMsg({});
+    } catch (e) {
+      console.error("[theme] save css failed:", e);
+      setCssMsg({ error: true });
+    }
+    setTimeout(() => setCssMsg(null), 2000);
+  };
+
+  const saveCurrentAsPreset = () => {
+    const name = presetName.trim();
+    if (!name) return;
+    const ok = addCustomPreset(name, theme);
+    if (ok) {
+      setPresetName("");
+      setPresetMsg({ text: `Saved "${name}".` });
+    } else {
+      setPresetMsg({
+        text: "Couldn't save (storage full?). Try removing the background image first.",
+        error: true,
+      });
+    }
+    setTimeout(() => setPresetMsg(null), 3000);
   };
 
   const pickCSSFile = async () => {
@@ -227,8 +256,106 @@ export default function AppearancePanel() {
       {/* ── Presets ──────────────────────────────────────────────────── */}
       <div>
         <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-3">
-          Start from a preset
+          Presets
         </div>
+        <div className="mb-6">
+          <div className="flex items-center gap-2 mb-2.5">
+            <span className="text-xs leading-none select-none">⭐</span>
+            <span className="text-[10px] uppercase tracking-[0.15em] text-gray-500">
+              My presets
+            </span>
+            <div className="flex-1 h-px bg-[#2a3136]/50" />
+            <span className="text-[10px] text-gray-600 tabular-nums">
+              {customPresets.length}
+            </span>
+          </div>
+
+          <div className="flex gap-1.5 mb-2">
+            <input
+              type="text"
+              value={presetName}
+              onChange={(e) => setPresetName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") saveCurrentAsPreset(); }}
+              placeholder="Name the current theme…"
+              className="flex-1 min-w-0 bg-[#0f1315] border border-[#30363d] rounded px-2 py-1.5 text-xs text-gray-200 outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            <button
+              type="button"
+              onClick={saveCurrentAsPreset}
+              disabled={!presetName.trim()}
+              className="flex items-center gap-1 px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded flex-shrink-0"
+            >
+              <Save size={11} /> Save
+            </button>
+          </div>
+
+          {presetMsg && (
+            <p className={`text-[10px] mb-2 ${presetMsg.error ? "text-red-400" : "text-green-400"}`}>
+              {presetMsg.text}
+            </p>
+          )}
+
+          {customPresets.length === 0 ? (
+            <p className="text-[10px] text-gray-600 leading-snug">
+              Tweak colors or a background below, then save it here to reuse it in any vault.
+            </p>
+          ) : (
+            <div className="grid grid-cols-2 gap-2">
+              {customPresets.map((p) => {
+                const c = p.theme.colors;
+                const isActive = (Object.keys(c) as (keyof ThemeColors)[])
+                  .every((k) => c[k] === theme.colors[k]);
+                return (
+                  <div
+                    key={p.id}
+                    className={`group relative rounded-md border overflow-hidden transition-all ${
+                      isActive
+                        ? "border-blue-500/60 ring-1 ring-blue-500/40"
+                        : "border-[#2a3136] hover:border-[#3a4147]"
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setTheme({ ...p.theme, mode: "custom" })}
+                      className="w-full text-left cursor-pointer"
+                    >
+                      <div className="h-8 flex" style={{ backgroundColor: c.bg }}>
+                        <div
+                          className="w-1/4 flex flex-col justify-center gap-0.5 pl-1.5"
+                          style={{ backgroundColor: c.surface }}
+                        >
+                          <div className="h-[3px] w-4/5 rounded-full" style={{ backgroundColor: c.textMuted }} />
+                          <div className="h-[3px] w-3/5 rounded-full" style={{ backgroundColor: c.textMuted }} />
+                        </div>
+                        <div className="flex-1 flex flex-col justify-center gap-0.5 pl-1.5">
+                          <div className="h-[3px] w-1/2 rounded-full" style={{ backgroundColor: c.text }} />
+                          <div className="h-[3px] w-1/3 rounded-full" style={{ backgroundColor: c.accent }} />
+                        </div>
+                      </div>
+                      <div className={`px-2.5 py-2 ${isActive ? "bg-blue-600/15" : "bg-[#131819]"}`}>
+                        <div className={`text-xs font-medium truncate ${isActive ? "text-blue-200" : "text-gray-200"}`}>
+                          {p.label}
+                        </div>
+                        <div className="text-[10px] text-gray-500 mt-0.5">
+                          {p.theme.background.image ? "With background" : "Colors only"}
+                        </div>
+                      </div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => deleteCustomPreset(p.id)}
+                      className="absolute top-1 right-1 p-1 rounded bg-black/70 text-white opacity-0 group-hover:opacity-100 hover:bg-red-600 transition-opacity"
+                      title="Delete preset"
+                    >
+                      <X size={10} />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
         {PRESET_CATEGORY_LABELS.map((cat) => {
           const presets = THEME_PRESETS.filter(
             (p) => (PRESET_CATEGORY[p.id] ?? "dark") === cat.id
@@ -506,6 +633,16 @@ export default function AppearancePanel() {
               )}
             </div>
 
+            <div className="mt-3">
+              <SliderRow
+                label="Menu opacity"
+                value={theme.background.menuOpacity ?? 100}
+                min={0} max={100} unit="%"
+                onChange={(v) => setBackground({ menuOpacity: v })}
+                hint="Dropdowns and right-click menus. Raise it if menu text is hard to read."
+              />
+            </div>
+
             {/* Toggle between one unified tint and per-area tints. */}
             <div className="mt-3">
               <button
@@ -621,7 +758,7 @@ export default function AppearancePanel() {
             className="flex items-center justify-center gap-1.5 px-3 py-2 text-xs bg-[#2a3136] hover:bg-[#30363d] border border-[#30363d] rounded text-gray-200 transition-colors"
           >
             <Download size={12} />
-            <span>Save .css</span>
+            <span>{cssMsg ? (cssMsg.error ? "Failed (see console)" : "Saved ✓") : "Save .css"}</span>
           </button>
           <button
             type="button"
