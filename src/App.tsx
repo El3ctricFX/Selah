@@ -107,6 +107,28 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // Escape exits focus mode — unless a modal / popover / menu is open,
+  // in which case that layer handles Escape itself. Anything fixed at
+  // z-index >= 100 counts as "an open overlay", so the lightbox, settings,
+  // pickers, bookmark menus, etc. all keep priority.
+  useEffect(() => {
+    if (!focusMode) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      const fixedEls = document.querySelectorAll<HTMLElement>(".fixed");
+      for (const el of Array.from(fixedEls)) {
+        const style = window.getComputedStyle(el);
+        if (style.display === "none" || style.visibility === "hidden") continue;
+        const z = parseInt(style.zIndex, 10);
+        if (!Number.isNaN(z) && z >= 100) return;
+      }
+      e.preventDefault();
+      setFocusMode(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [focusMode]);
+
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
@@ -504,12 +526,11 @@ export default function App() {
     <div className="app-shell w-screen h-screen overflow-hidden bg-[#0f1315] text-gray-200 flex flex-row font-sans">
       <ThemeBackground />
       <div
-        className={`sidebar-shell h-full bg-[#161a1d] border-r border-[#2a3136] flex-shrink-0 flex flex-col overflow-hidden transition-all duration-200 ${
-          sidebarHidden ? "w-0 border-r-0" : "w-72"
-        }`}
+        className={`sidebar-shell h-full bg-[#161a1d] border-r border-[#2a3136] flex-shrink-0 flex flex-col overflow-hidden ${
+          focusMode ? "" : "transition-[width] duration-150 ease-out"
+        } ${sidebarHidden ? "w-0 border-r-0 pointer-events-none" : "w-72"}`}
       >
-        {!sidebarHidden && (
-          <Sidebar
+        <Sidebar
             key={vaultPath}
             vaultPath={vaultPath}
             activeCategoryId={activeCategoryId}
@@ -607,7 +628,6 @@ export default function App() {
             onGoHome={() => setActiveView(null)}
             onCollapse={() => setSidebarCollapsed(true)}
           />
-        )}
       </div>
 
       <div className="content-shell flex-grow h-full overflow-hidden relative">

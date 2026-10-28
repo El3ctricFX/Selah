@@ -1030,7 +1030,12 @@ export default function Editor({
       )}
 
       {focusMode && (
-        <button onClick={onToggleFocus} className="fixed top-3 right-3 z-[80] p-2 rounded bg-[#1e2327] border border-[#2a3136] text-gray-400 hover:text-gray-100 cursor-pointer" title="Exit focus mode (Ctrl+Shift+F)">
+        <button
+          type="button"
+          onClick={onToggleFocus}
+          className="fixed top-3 right-3 z-[95] p-2 rounded bg-[#1e2327]/80 border border-[#2a3136] text-gray-400 hover:text-gray-100 hover:bg-[#1e2327] cursor-pointer shadow-lg transition-colors"
+          title="Exit focus mode (Esc or Ctrl+Shift+F)"
+        >
           <Minimize2 size={14} />
         </button>
       )}
@@ -1123,7 +1128,7 @@ export default function Editor({
             {mode === "edit" ? <BookOpen size={16} /> : <Pencil size={16} />}
           </button>
           {onToggleFocus && (
-            <button onClick={onToggleFocus} className="flex items-center justify-center w-8 h-8 rounded text-gray-400 hover:text-gray-100 hover:bg-[#1e2327] transition-colors cursor-pointer" title="Focus mode (Ctrl+Shift+F)">
+            <button type="button" onClick={onToggleFocus} className="flex items-center justify-center w-8 h-8 rounded text-gray-400 hover:text-gray-100 hover:bg-[#1e2327] transition-colors cursor-pointer" title="Focus mode (Ctrl+Shift+F)">
               <Maximize2 size={16} />
             </button>
           )}
