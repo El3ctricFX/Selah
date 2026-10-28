@@ -259,7 +259,7 @@ export default function CleanupPanel({ open, onClose, vaultPath }: Props) {
       onClick={() => { if (working === null) onClose(); }}
     >
       <div
-        className="bg-[#1e2327] border border-[#2a3136] rounded-lg shadow-2xl w-[860px] max-w-[94vw] max-h-[88vh] overflow-hidden flex flex-col"
+        data-opaque className="bg-[#1e2327] border border-[#2a3136] rounded-lg shadow-2xl w-[860px] max-w-[94vw] max-h-[88vh] overflow-hidden flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-2 px-4 py-3 border-b border-[#2a3136] bg-[#1a1e21] flex-shrink-0">

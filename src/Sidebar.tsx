@@ -298,8 +298,15 @@ export default function Sidebar(props: SidebarProps) {
       if (categoryIconPickerRef.current?.contains(t)) return;
       setSwitcherOpen(false);
     };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setSwitcherOpen(false);
+    };
     document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', handler);
+      document.removeEventListener('keydown', onKey);
+    };
   }, [switcherOpen]);
 
   useEffect(() => {

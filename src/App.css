@@ -1050,6 +1050,45 @@ body.theme-separate-tints.theme-scope-sidebar.theme-has-bg .content-shell [class
   color: inherit;
 }
 
+/* ── Opaque popups inside the tinted shells ───────────────────────────
+ * Beats the .content-shell / .sidebar-shell tint rules by repeating a
+ * body class. Covers anything tagged data-opaque and any fixed-position
+ * menu using the elevated background. Must stay LAST in the file. */
+:is(body.theme-has-bg.theme-has-bg.theme-has-bg.theme-has-bg)
+  :is([data-opaque], .fixed[class~="bg-[#1e2327]"]) {
+  background-color: color-mix(
+    in srgb,
+    var(--c-elevated) calc(100% - var(--c-modal-opacity, 100%)),
+    var(--c-modal-color, var(--c-elevated)) var(--c-modal-opacity, 100%)
+  ) !important;
+}
+
+:is(body.theme-has-bg.theme-has-bg.theme-has-bg.theme-has-bg)
+  :is([data-opaque], .fixed[class~="bg-[#1e2327]"])
+  :is([class~="bg-[#1e2327]"], [class~="bg-[#21262a]"]) {
+  background-color: color-mix(in srgb, var(--c-elevated) calc(100% - var(--c-modal-opacity, 100%)), var(--c-modal-color, var(--c-elevated)) var(--c-modal-opacity, 100%)) !important;
+}
+:is(body.theme-has-bg.theme-has-bg.theme-has-bg.theme-has-bg)
+  :is([data-opaque], .fixed[class~="bg-[#1e2327]"])
+  [class~="bg-[#1a1e21]"] {
+  background-color: color-mix(in srgb, var(--c-surface-alt) calc(100% - var(--c-modal-opacity, 100%)), var(--c-modal-color, var(--c-elevated)) var(--c-modal-opacity, 100%)) !important;
+}
+:is(body.theme-has-bg.theme-has-bg.theme-has-bg.theme-has-bg)
+  :is([data-opaque], .fixed[class~="bg-[#1e2327]"])
+  :is([class~="bg-[#161a1d]"], [class~="bg-[#131819]"]) {
+  background-color: color-mix(in srgb, var(--c-surface) calc(100% - var(--c-modal-opacity, 100%)), var(--c-modal-color, var(--c-elevated)) var(--c-modal-opacity, 100%)) !important;
+}
+:is(body.theme-has-bg.theme-has-bg.theme-has-bg.theme-has-bg)
+  :is([data-opaque], .fixed[class~="bg-[#1e2327]"])
+  [class~="bg-[#0f1315]"] {
+  background-color: color-mix(in srgb, var(--c-bg) calc(100% - var(--c-modal-opacity, 100%)), var(--c-modal-color, var(--c-elevated)) var(--c-modal-opacity, 100%)) !important;
+}
+:is(body.theme-has-bg.theme-has-bg.theme-has-bg.theme-has-bg)
+  :is([data-opaque], .fixed[class~="bg-[#1e2327]"])
+  [class~="bg-[#2a3136]"]:not(.h-px) {
+  background-color: color-mix(in srgb, var(--c-border) calc(100% - var(--c-modal-opacity, 100%)), var(--c-modal-color, var(--c-elevated)) var(--c-modal-opacity, 100%)) !important;
+}
+
 /* ── Dropdown / context menus ──────────────────────────────────────────
  * Menus tagged data-menu get their own opacity so they stay readable on
  * top of a background image. The repeated attribute selector is only
