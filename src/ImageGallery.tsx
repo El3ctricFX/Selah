@@ -254,6 +254,34 @@ function mergeDown(grid: GalleryGrid, r: number, c: number): GalleryGrid | null 
     );
   return buildGrid(rows, cols, next);
 }
+
+function mergeLeft(grid: GalleryGrid, r: number, c: number): GalleryGrid | null {
+  const { rows, cols, cells } = extractCells(grid);
+  const cur = cells.find((x) => x.r === r && x.c === c);
+  if (!cur) return null;
+  const left = cells.find((x) => x.r === r && x.c + x.cs === c);
+  if (!left || left.rs !== cur.rs) return null;
+  const next = cells
+    .filter((x) => !(x.r === left.r && x.c === left.c))
+    .map((x) =>
+      x.r === cur.r && x.c === cur.c ? { ...x, c: left.c, cs: cur.cs + left.cs } : x
+    );
+  return buildGrid(rows, cols, next);
+}
+
+function mergeUp(grid: GalleryGrid, r: number, c: number): GalleryGrid | null {
+  const { rows, cols, cells } = extractCells(grid);
+  const cur = cells.find((x) => x.r === r && x.c === c);
+  if (!cur) return null;
+  const up = cells.find((x) => x.r + x.rs === r && x.c === c);
+  if (!up || up.cs !== cur.cs) return null;
+  const next = cells
+    .filter((x) => !(x.r === up.r && x.c === up.c))
+    .map((x) =>
+      x.r === cur.r && x.c === cur.c ? { ...x, r: up.r, rs: cur.rs + up.rs } : x
+    );
+  return buildGrid(rows, cols, next);
+}
 function unmerge(grid: GalleryGrid, r: number, c: number): GalleryGrid {
   const { rows, cols, cells } = extractCells(grid);
   const cur = cells.find((x) => x.r === r && x.c === c);
@@ -1018,6 +1046,20 @@ export const createImageGallery = createReactBlockSpec(
         },
         [readGrid, writeGrid]
       );
+      const doMergeLeft = useCallback(
+        (r: number, c: number) => {
+          const next = mergeLeft(readGrid(), r, c);
+          if (next) writeGrid(next);
+        },
+        [readGrid, writeGrid]
+      );
+      const doMergeUp = useCallback(
+        (r: number, c: number) => {
+          const next = mergeUp(readGrid(), r, c);
+          if (next) writeGrid(next);
+        },
+        [readGrid, writeGrid]
+      );
       const doUnmerge = useCallback(
         (r: number, c: number) => writeGrid(unmerge(readGrid(), r, c)),
         [readGrid, writeGrid]
@@ -1338,12 +1380,25 @@ export const createImageGallery = createReactBlockSpec(
       const ctxReal = getCell(ctxCell);
       const ctxCs = ctxReal?.colspan ?? 1;
       const ctxRs = ctxReal?.rowspan ?? 1;
-      const canMergeRight =
-        !ctxIsCover && ctxReal != null && cellCtx != null &&
-        cellCtx.col + ctxCs < cols;
-      const canMergeDown =
-        !ctxIsCover && ctxReal != null && cellCtx != null &&
-        cellCtx.row + ctxRs < rows;
+
+      const { cells: extractedCells } = extractCells(grid);
+
+      const leftCell = cellCtx ? extractedCells.find(c => c.r === cellCtx.row && c.c + c.cs === cellCtx.col) : null;
+      const canMergeLeft = !ctxIsCover && ctxReal != null && cellCtx != null &&
+        !!leftCell && leftCell.rs === ctxRs;
+
+      const upCell = cellCtx ? extractedCells.find(c => c.r + c.rs === cellCtx.row && c.c === cellCtx.col) : null;
+      const canMergeUp = !ctxIsCover && ctxReal != null && cellCtx != null &&
+        !!upCell && upCell.cs === ctxCs;
+
+      const rightCell = cellCtx ? extractedCells.find(c => c.r === cellCtx.row && c.c === cellCtx.col + ctxCs) : null;
+      const canMergeRight = !ctxIsCover && ctxReal != null && cellCtx != null &&
+        !!rightCell && rightCell.rs === ctxRs;
+
+      const downCell = cellCtx ? extractedCells.find(c => c.r === cellCtx.row + ctxRs && c.c === cellCtx.col) : null;
+      const canMergeDown = !ctxIsCover && ctxReal != null && cellCtx != null &&
+        !!downCell && downCell.cs === ctxCs;
+
       const canUnmerge = !ctxIsCover && ctxReal != null && (ctxCs > 1 || ctxRs > 1);
 
       return (
@@ -1502,6 +1557,15 @@ export const createImageGallery = createReactBlockSpec(
                 </>
               )}
 
+              {canMergeLeft && (
+                <button
+                  type="button"
+                  onClick={() => { doMergeLeft(cellCtx.row, cellCtx.col); setCellCtx(null); }}
+                  className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
+                >
+                  <Merge size={13} className="rotate-180" /> <span>Merge with left</span>
+                </button>
+              )}
               {canMergeRight && (
                 <button
                   type="button"
@@ -1509,6 +1573,15 @@ export const createImageGallery = createReactBlockSpec(
                   className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
                 >
                   <Merge size={13} /> <span>Merge with right</span>
+                </button>
+              )}
+              {canMergeUp && (
+                <button
+                  type="button"
+                  onClick={() => { doMergeUp(cellCtx.row, cellCtx.col); setCellCtx(null); }}
+                  className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
+                >
+                  <Merge size={13} className="-rotate-90" /> <span>Merge with above</span>
                 </button>
               )}
               {canMergeDown && (
