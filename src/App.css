@@ -1102,3 +1102,55 @@ html body.theme-has-bg [data-menu][data-menu][data-menu][data-menu] {
   -webkit-backdrop-filter: blur(10px);
   backdrop-filter: blur(10px);
 }
+
+/* ── BlockNote colors: true rainbow, not pastel ───────────────────── */
+
+/* Dark mode */
+.bn-container[data-color-scheme="dark"] {
+  /* Text */
+  --bn-colors-highlights-red-text:    #ff0000 !important;
+  --bn-colors-highlights-orange-text: #ff8000 !important;
+  --bn-colors-highlights-yellow-text: #ffee00 !important;
+  --bn-colors-highlights-green-text:  #00d000 !important;
+  --bn-colors-highlights-blue-text:   #0080ff !important;
+  --bn-colors-highlights-purple-text: #9d00ff !important;
+  --bn-colors-highlights-pink-text:   #ff1493 !important;
+  --bn-colors-highlights-brown-text:  #b5651d !important;
+  --bn-colors-highlights-gray-text:   #a0a0a0 !important;
+
+  /* Highlights (solid, deep enough that white text stays readable) */
+  --bn-colors-highlights-red-background:    #b00000 !important;
+  --bn-colors-highlights-orange-background: #c75a00 !important;
+  --bn-colors-highlights-yellow-background: #a68f00 !important;
+  --bn-colors-highlights-green-background:  #008a00 !important;
+  --bn-colors-highlights-blue-background:   #0050c8 !important;
+  --bn-colors-highlights-purple-background: #6a00b8 !important;
+  --bn-colors-highlights-pink-background:   #c4106a !important;
+  --bn-colors-highlights-brown-background:  #6b3a10 !important;
+  --bn-colors-highlights-gray-background:   #4a4a4a !important;
+}
+
+/* Light mode */
+.bn-container[data-color-scheme="light"] {
+  /* Text (yellow is darkened so it's readable on white) */
+  --bn-colors-highlights-red-text:    #e00000 !important;
+  --bn-colors-highlights-orange-text: #f06000 !important;
+  --bn-colors-highlights-yellow-text: #d4a800 !important;
+  --bn-colors-highlights-green-text:  #00a000 !important;
+  --bn-colors-highlights-blue-text:   #0060e0 !important;
+  --bn-colors-highlights-purple-text: #7a00d4 !important;
+  --bn-colors-highlights-pink-text:   #e0107a !important;
+  --bn-colors-highlights-brown-text:  #8b4513 !important;
+  --bn-colors-highlights-gray-text:   #606060 !important;
+
+  /* Highlights */
+  --bn-colors-highlights-red-background:    #ff6666 !important;
+  --bn-colors-highlights-orange-background: #ffa040 !important;
+  --bn-colors-highlights-yellow-background: #ffe94d !important;
+  --bn-colors-highlights-green-background:  #55e055 !important;
+  --bn-colors-highlights-blue-background:   #5aa0ff !important;
+  --bn-colors-highlights-purple-background: #b866ff !important;
+  --bn-colors-highlights-pink-background:   #ff70b8 !important;
+  --bn-colors-highlights-brown-background:  #c8895a !important;
+  --bn-colors-highlights-gray-background:   #b0b0b0 !important;
+}
