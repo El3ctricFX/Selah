@@ -129,6 +129,32 @@ export default function SettingsModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen]);
 
+  // ── Keep the modal inside the viewport on window resize ─────────────
+  // Without this, resizing the app leaves the modal stuck at the pixel
+  // coordinates it was centered for the *old* window size. If the user
+  // has never moved it, re-center. If they have, just clamp it so it
+  // can't be pushed off the edge when the window shrinks.
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const onResize = () => {
+      if (!userMovedRef.current) {
+        setPos(centeredPos(size.w, size.h));
+        return;
+      }
+      setPos((p) => {
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        const nx = Math.min(Math.max(12, p.x), Math.max(12, vw - size.w - 12));
+        const ny = Math.min(Math.max(12, p.y), Math.max(12, vh - size.h - 12));
+        return nx === p.x && ny === p.y ? p : { x: nx, y: ny };
+      });
+    };
+
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [isOpen, size.w, size.h]);
+
   // Escape closes.
   useEffect(() => {
     if (!isOpen) return;
