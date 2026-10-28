@@ -279,6 +279,14 @@ export default function Editor({
     return () => { cancelled = true; };
   }, [coverType, resolvedCoverUrl]);
 
+  // Close edit-only popovers when switching to read mode.
+  useEffect(() => {
+    if (mode !== "edit") {
+      setWidthMenuOpen(false);
+      setCoverPickerOpen(false);
+    }
+  }, [mode]);
+
 
   const hasAboveContent =
     (iconAnchor === "above" && showHeaderIcon && (icon || mode === "edit")) ||
@@ -1062,6 +1070,8 @@ export default function Editor({
 
       {!focusMode && (
         <div className="flex items-center justify-end gap-2 px-6 pt-4 pb-2 flex-shrink-0">
+          {mode === "edit" && (
+            <>
           <div className="relative" ref={widthMenuRef}>
             <button
               type="button"
@@ -1107,6 +1117,8 @@ export default function Editor({
           <button onClick={openCoverPanel} className="flex items-center justify-center w-8 h-8 rounded text-gray-400 hover:text-gray-100 hover:bg-[#1e2327] transition-colors cursor-pointer" title="Header settings">
             <Sliders size={16} />
           </button>
+            </>
+          )}
           <button onClick={toggle} className="flex items-center justify-center w-8 h-8 rounded text-gray-400 hover:text-gray-100 hover:bg-[#1e2327] transition-colors cursor-pointer" title={mode === "edit" ? "Switch to read mode (Ctrl+E)" : "Switch to edit mode (Ctrl+E)"}>
             {mode === "edit" ? <BookOpen size={16} /> : <Pencil size={16} />}
           </button>

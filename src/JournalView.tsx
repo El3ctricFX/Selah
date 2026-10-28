@@ -331,6 +331,14 @@ export default function JournalView({
 
   const coverStripHeight = hasCover ? "h-56" : hasInZoneContent ? "h-32" : "h-10";
 
+// Close edit-only popovers when switching to read mode.
+useEffect(() => {
+  if (noteMode !== "edit") {
+    setWidthMenuOpen(false);
+    setCoverPickerOpen(false);
+  }
+}, [noteMode]);
+
   useEffect(() => {
     setIcon(""); setShowHeaderIcon(true); setTitle("");
     setCoverType(""); setCoverValue("");
@@ -1121,6 +1129,8 @@ export default function JournalView({
                   ← → days · ↑ ↓ months
                 </span>
 
+                {noteMode === "edit" && (
+                  <>
                 <button ref={widthMenuRef} type="button"
                   onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); setWidthMenuOpen((o) => !o); }}
                   className="flex items-center gap-1.5 px-2 h-7 rounded text-xs text-gray-400 hover:text-gray-100 hover:bg-[#1e2327] transition-colors cursor-pointer flex-shrink-0"
@@ -1154,6 +1164,8 @@ export default function JournalView({
                   title="Header settings">
                   <Sliders size={15} />
                 </button>
+                  </>
+                )}
 
                 <button onClick={toggleNoteMode}
                   className="flex items-center justify-center w-7 h-7 rounded text-gray-400 hover:text-gray-100 hover:bg-[#1e2327] transition-colors cursor-pointer flex-shrink-0"
