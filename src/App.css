@@ -1052,10 +1052,10 @@ body.theme-separate-tints.theme-scope-sidebar.theme-has-bg .content-shell [class
 
 /* ── Opaque popups inside the tinted shells ───────────────────────────
  * Beats the .content-shell / .sidebar-shell tint rules by repeating a
- * body class. Covers anything tagged data-opaque and any fixed-position
- * menu using the elevated background. Must stay LAST in the file. */
+ * body class. Covers anything tagged data-opaque and any fixed or absolute
+ * menus using the elevated/surface backgrounds. Must stay LAST in the file. */
 :is(body.theme-has-bg.theme-has-bg.theme-has-bg.theme-has-bg)
-  :is([data-opaque], .fixed[class~="bg-[#1e2327]"]) {
+  :is([data-opaque], .fixed[class~="bg-[#1e2327]"], .absolute[class~="bg-[#1e2327]"]) {
   background-color: color-mix(
     in srgb,
     var(--c-elevated) calc(100% - var(--c-modal-opacity, 100%)),
@@ -1064,27 +1064,36 @@ body.theme-separate-tints.theme-scope-sidebar.theme-has-bg .content-shell [class
 }
 
 :is(body.theme-has-bg.theme-has-bg.theme-has-bg.theme-has-bg)
-  :is([data-opaque], .fixed[class~="bg-[#1e2327]"])
+  :is([data-opaque], .fixed[class~="bg-[#161a1d]"], .absolute[class~="bg-[#161a1d]"]) {
+  background-color: color-mix(
+    in srgb,
+    var(--c-surface) calc(100% - var(--c-modal-opacity, 100%)),
+    var(--c-modal-color, var(--c-elevated)) var(--c-modal-opacity, 100%)
+  ) !important;
+}
+
+:is(body.theme-has-bg.theme-has-bg.theme-has-bg.theme-has-bg)
+  :is([data-opaque], .fixed[class~="bg-[#1e2327]"], .absolute[class~="bg-[#1e2327]"], .fixed[class~="bg-[#161a1d]"], .absolute[class~="bg-[#161a1d]"])
   :is([class~="bg-[#1e2327]"], [class~="bg-[#21262a]"]) {
   background-color: color-mix(in srgb, var(--c-elevated) calc(100% - var(--c-modal-opacity, 100%)), var(--c-modal-color, var(--c-elevated)) var(--c-modal-opacity, 100%)) !important;
 }
 :is(body.theme-has-bg.theme-has-bg.theme-has-bg.theme-has-bg)
-  :is([data-opaque], .fixed[class~="bg-[#1e2327]"])
+  :is([data-opaque], .fixed[class~="bg-[#1e2327]"], .absolute[class~="bg-[#1e2327]"], .fixed[class~="bg-[#161a1d]"], .absolute[class~="bg-[#161a1d]"])
   [class~="bg-[#1a1e21]"] {
   background-color: color-mix(in srgb, var(--c-surface-alt) calc(100% - var(--c-modal-opacity, 100%)), var(--c-modal-color, var(--c-elevated)) var(--c-modal-opacity, 100%)) !important;
 }
 :is(body.theme-has-bg.theme-has-bg.theme-has-bg.theme-has-bg)
-  :is([data-opaque], .fixed[class~="bg-[#1e2327]"])
+  :is([data-opaque], .fixed[class~="bg-[#1e2327]"], .absolute[class~="bg-[#1e2327]"], .fixed[class~="bg-[#161a1d]"], .absolute[class~="bg-[#161a1d]"])
   :is([class~="bg-[#161a1d]"], [class~="bg-[#131819]"]) {
   background-color: color-mix(in srgb, var(--c-surface) calc(100% - var(--c-modal-opacity, 100%)), var(--c-modal-color, var(--c-elevated)) var(--c-modal-opacity, 100%)) !important;
 }
 :is(body.theme-has-bg.theme-has-bg.theme-has-bg.theme-has-bg)
-  :is([data-opaque], .fixed[class~="bg-[#1e2327]"])
+  :is([data-opaque], .fixed[class~="bg-[#1e2327]"], .absolute[class~="bg-[#1e2327]"], .fixed[class~="bg-[#161a1d]"], .absolute[class~="bg-[#161a1d]"])
   [class~="bg-[#0f1315]"] {
   background-color: color-mix(in srgb, var(--c-bg) calc(100% - var(--c-modal-opacity, 100%)), var(--c-modal-color, var(--c-elevated)) var(--c-modal-opacity, 100%)) !important;
 }
 :is(body.theme-has-bg.theme-has-bg.theme-has-bg.theme-has-bg)
-  :is([data-opaque], .fixed[class~="bg-[#1e2327]"])
+  :is([data-opaque], .fixed[class~="bg-[#1e2327]"], .absolute[class~="bg-[#1e2327]"], .fixed[class~="bg-[#161a1d]"], .absolute[class~="bg-[#161a1d]"])
   [class~="bg-[#2a3136]"]:not(.h-px) {
   background-color: color-mix(in srgb, var(--c-border) calc(100% - var(--c-modal-opacity, 100%)), var(--c-modal-color, var(--c-elevated)) var(--c-modal-opacity, 100%)) !important;
 }
@@ -1101,6 +1110,16 @@ html body.theme-has-bg [data-menu][data-menu][data-menu][data-menu] {
   ) !important;
   -webkit-backdrop-filter: blur(10px);
   backdrop-filter: blur(10px);
+}
+
+/* Ensure absolute/fixed elements with bg-[#161a1d] also respect the menu opacity if needed */
+:is(body.theme-has-bg.theme-has-bg.theme-has-bg.theme-has-bg)
+  :is([data-menu]) {
+  background-color: color-mix(
+    in srgb,
+    var(--c-elevated) var(--c-menu-opacity, 100%),
+    transparent
+  ) !important;
 }
 
 /* ── BlockNote colors: true rainbow, not pastel ───────────────────── */

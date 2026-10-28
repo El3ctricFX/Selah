@@ -23,6 +23,7 @@ import { saveImageToNoteAssets, assetsDirForNote, coverValueToRelative, setProxy
 import { writeFileAtomic } from "./safeWrite";
 import { useProxyFeature } from "./proxyFeature";
 import TagEditor, { scanAllVaultTags, invalidateTagCache } from "./TagEditor";
+import { formatEntryDate } from "./entries";
 
 interface EditorProps {
   activeNote: { path: string; name: string };
@@ -31,6 +32,7 @@ interface EditorProps {
   onToggleFocus?: () => void;
   onOpenNoteByPath?: (path: string) => void;
   setActiveNote: (note: { path: string; name: string }) => void;
+  entryMode?: boolean;
 }
 
 function displayTitle(name: string): string {
@@ -139,8 +141,11 @@ export default function Editor({
   onToggleFocus,
   onOpenNoteByPath,
   setActiveNote,
+  entryMode = false,
 }: EditorProps) {
-  const [title, setTitle] = useState(displayTitle(activeNote.name));
+  const [title, setTitle] = useState(entryMode ? "" : displayTitle(activeNote.name));
+  const [entryDate, setEntryDate] = useState("");
+  const dateInputRef = useRef<HTMLInputElement>(null);
   const [modifiedAt, setModifiedAt] = useState<string>(new Date().toLocaleString());
   const [createdAt] = useState<string>(new Date().toLocaleString());
   const [wordCount, setWordCount] = useState(0);
@@ -288,7 +293,10 @@ export default function Editor({
     return i === -1 ? p : p.substring(0, i);
   };
 
-  useEffect(() => { setTitle(displayTitle(activeNote.name)); }, [activeNote.name]);
+  useEffect(() => {
+    if (entryMode) return;
+    setTitle(displayTitle(activeNote.name));
+  }, [activeNote.name, entryMode]);
 
   useEffect(() => {
     setIcon(""); setShowHeaderIcon(true);
@@ -304,6 +312,7 @@ export default function Editor({
     setTitleFont("default"); setDocWidth("default");
     setWordCount(0);
     setTags([]);
+    if (entryMode) { setTitle(""); setEntryDate(""); }
     setIconPickerOpen(false); setCoverPickerOpen(false); setWidthMenuOpen(false);
     setCoverUrlDraft(""); setIconMenu(null); setTitleMenu(null); setDragStart(null);
     setPropertiesOpen(false); setSourceOpen(false); setSourceDraft("");
@@ -337,6 +346,10 @@ export default function Editor({
         setDocWidth(((frontmatter.docWidth as string) as DocWidthId) || "default");
         setProxiesOn(frontmatter.proxies === true);
         setProxyPref(activeNote.path, frontmatter.proxies === true);
+        if (entryMode) {
+          setTitle((frontmatter.title as string) || "");
+          setEntryDate(typeof frontmatter.date === "string" ? frontmatter.date.slice(0, 10) : "");
+        }
         setTags(tagsFromFrontmatter(frontmatter));
       } catch {}
     })();
@@ -507,6 +520,10 @@ export default function Editor({
   }, [widthMenuOpen]);
 
   const handleTitleSubmit = async () => {
+    if (entryMode) {
+      await noteBodyRef.current?.updateFrontmatter({ title: title.trim() });
+      return;
+    }
     if (isYear) { setTitle(displayTitle(activeNote.name)); return; }
     const trimmed = title.trim();
     const oldName = displayTitle(activeNote.name);
@@ -543,6 +560,11 @@ export default function Editor({
       setTitle(oldName);
       noteBodyRef.current?.rearm();
     }
+  };
+
+  const handleDateChange = async (ymd: string) => {
+    setEntryDate(ymd);
+    await noteBodyRef.current?.updateFrontmatter({ date: ymd });
   };
 
   const applyIcon = async (newIcon: string) => {
@@ -910,11 +932,11 @@ export default function Editor({
       onBlur={handleTitleSubmit}
       onKeyDown={(e) => {
         if (e.key === "Enter") e.currentTarget.blur();
-        if (e.key === "Escape") { setTitle(displayTitle(activeNote.name)); e.currentTarget.blur(); }
+        if (e.key === "Escape") { if (!entryMode) setTitle(displayTitle(activeNote.name)); e.currentTarget.blur(); }
       }}
       onContextMenu={handleTitleContextMenu}
       readOnly={isYear || mode !== "edit"}
-      placeholder="Untitled Note"
+      placeholder={entryMode ? "Untitled entry" : "Untitled Note"}
       className={`w-full bg-transparent border-none outline-none text-4xl font-bold tracking-tight px-2 py-1 rounded text-center ${
         hasCover && titleAnchor === "in" ? "text-white placeholder-white/60" : "text-gray-100 placeholder-gray-600"
       } ${isYear || mode !== "edit" ? "cursor-default" : "focus:bg-white/5"}`}
@@ -927,6 +949,41 @@ export default function Editor({
       title={mode === "edit" && !isYear ? "Right-click for font options" : undefined}
     />
   );
+
+  const dateEl = entryMode ? (
+    <div className="flex justify-center items-center mt-0.5 relative">
+      {(entryDate || mode === "edit") && (
+        <button
+          type="button"
+          disabled={mode !== "edit"}
+          onClick={() => {
+            const el = dateInputRef.current;
+            if (!el) return;
+            try { (el as any).showPicker?.(); } catch {}
+            el.focus();
+          }}
+          className={`text-sm transition-colors ${
+            hasCover && titleAnchor === "in" ? "text-white/85" : "text-gray-400"
+          } ${mode === "edit" ? "hover:text-gray-100 cursor-pointer" : "cursor-default"}`}
+          style={{
+            textShadow: hasCover && coverTextShadow && titleAnchor === "in" ? "0 2px 8px rgba(0,0,0,0.6)" : undefined,
+          }}
+          title={mode === "edit" ? "Click to change the date" : undefined}
+        >
+          {entryDate ? formatEntryDate(entryDate) : "Add date"}
+        </button>
+      )}
+      <input
+        ref={dateInputRef}
+        type="date"
+        value={entryDate}
+        onChange={(e) => handleDateChange(e.target.value)}
+        className="absolute left-1/2 top-full w-px h-px opacity-0 pointer-events-none"
+        tabIndex={-1}
+        aria-hidden="true"
+      />
+    </div>
+  ) : null;
 
   const renderIconInZone = (zone: Anchor) => {
     if (!showHeaderIcon) return null;
@@ -943,7 +1000,10 @@ export default function Editor({
     if (titleAnchor !== zone) return null;
     return (
       <div className="absolute z-[5]" style={{ left: `${titleX}%`, top: `${titleY}%`, transform: "translate(-50%, -50%)", width: "80%", maxWidth: "48rem" }}>
-        {titleInputEl}
+        <div>
+          {titleInputEl}
+          {dateEl}
+        </div>
       </div>
     );
   };
@@ -1186,6 +1246,10 @@ export default function Editor({
               setDocWidth(((fm.docWidth as string) as DocWidthId) || "default");
               setProxiesOn(fm.proxies === true);
               setProxyPref(activeNote.path, fm.proxies === true);
+              if (entryMode) {
+                setTitle((fm.title as string) || "");
+                setEntryDate(typeof fm.date === "string" ? fm.date.slice(0, 10) : "");
+              }
               setTags(tagsFromFrontmatter(fm));
             }}
           />

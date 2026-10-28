@@ -27,12 +27,13 @@ import {
 } from './folderMeta';
 import { parseNoteFile, serializeNoteFile, type Frontmatter } from './noteFormat';
 import { moveJournalNoteToDate, parseFlexibleDate } from './journalDateMove';
+import { listEntries, createEntry, formatEntryDate, type EntryItem } from './entries';
 
 export interface Category {
   id: string;
   name: string;
   icon: string;
-  mode: 'journal' | 'notes' | 'gallery' | 'abba';
+  mode: 'journal' | 'notes' | 'gallery' | 'abba' | 'entries';
   dirName: string;
   builtin?: boolean;
 }
@@ -48,6 +49,7 @@ interface SidebarProps {
   onOpenNote: (cat: Category, note: { path: string; name: string }) => void;
   onOpenGallery: (cat: Category) => void;
   onOpenAbba: (cat: Category) => void;
+  onOpenEntries: (cat: Category) => void;
   onOpenNotes: (cat: Category) => void;
   onSwitchVault: () => void;
   onOpenSettings: () => void;
@@ -140,7 +142,7 @@ export default function Sidebar(props: SidebarProps) {
   const {
     vaultPath, activeCategoryId, activeView,
     onSelectCategory, onOpenJournalDay, onOpenJournalMonth, onOpenJournalToday,
-    onOpenNote, onOpenGallery, onOpenAbba, onOpenNotes, onSwitchVault,
+    onOpenNote, onOpenGallery, onOpenAbba, onOpenNotes, onOpenEntries, onSwitchVault,
     onOpenSettings, onGoHome, onCollapse,
   } = props;
 
@@ -358,6 +360,7 @@ export default function Sidebar(props: SidebarProps) {
     if (cat.mode === 'gallery') { onOpenGallery(cat); return; }
     if (cat.mode === 'abba') { onOpenAbba(cat); return; }
     if (cat.mode === 'notes') { onOpenNotes(cat); return; }
+    if (cat.mode === 'entries') { onOpenEntries(cat); return; }
     onSelectCategory(cat);
   };
 
@@ -366,6 +369,7 @@ export default function Sidebar(props: SidebarProps) {
     const label =
       mode === 'journal' ? 'journal' :
       mode === 'gallery' ? 'gallery' :
+      mode === 'entries' ? 'entries' :
       mode === 'abba' ? 'Abba (faith)' : 'notes';
     const rawName = await promptAsync(`Name your new ${label} category:`);
     if (!rawName) return;
@@ -375,6 +379,7 @@ export default function Sidebar(props: SidebarProps) {
     const icon =
       mode === 'journal' ? '📅' :
       mode === 'gallery' ? '🎨' :
+      mode === 'entries' ? '📔' :
       mode === 'abba' ? '🙏' : '🗒️';
     const cat: Category = { id, name: rawName.trim() || dirName, icon, mode, dirName };
 
@@ -702,6 +707,9 @@ export default function Sidebar(props: SidebarProps) {
                 <button onClick={() => createCategory('gallery')} className="w-full flex items-center space-x-2 px-3 py-1.5 text-sm text-gray-300 hover:bg-[#2a3136] text-left">
                   <ImageIcon size={13} /> <span>Gallery</span>
                 </button>
+                <button onClick={() => createCategory('entries')} className="w-full flex items-center space-x-2 px-3 py-1.5 text-sm text-gray-300 hover:bg-[#2a3136] text-left">
+                  <FileText size={13} /> <span>Entries</span>
+                </button>
                 <button onClick={() => createCategory('abba')} className="w-full flex items-center space-x-2 px-3 py-1.5 text-sm text-gray-300 hover:bg-[#2a3136] text-left">
                   <Church size={13} /> <span>Abba (faith)</span>
                 </button>
@@ -725,6 +733,19 @@ export default function Sidebar(props: SidebarProps) {
             onOpenMonth={onOpenJournalMonth}
             onOpenToday={onOpenJournalToday}
             onOpenNote={onOpenNote}
+            confirmAsync={confirmAsync}
+            promptAsync={promptAsync}
+          />
+        )}
+        {activeCategory?.mode === 'entries' && (
+          <EntriesTree
+            key={activeCategory.id}
+            category={activeCategory}
+            categoryDir={categoryDir}
+            vaultPath={vaultPath}
+            activeView={activeView}
+            onOpenNote={onOpenNote}
+            onOpenEntries={onOpenEntries}
             confirmAsync={confirmAsync}
             promptAsync={promptAsync}
           />
@@ -792,6 +813,8 @@ function sortNotes(notes: NoteEntry[]): NoteEntry[] {
   return [...notes].sort((a, b) => a.title.localeCompare(b.title));
 }
 
+
+
 function NotesTree({
   category,
   categoryDir,
@@ -835,6 +858,8 @@ function NotesTree({
   } | null>(null);
   const [vaultTags, setVaultTags] = useState<string[]>([]);
 
+
+
   const expandedRef = useRef<Record<string, boolean>>({});
   const rootPathRef = useRef<string | null>(null);
   useEffect(() => { rootPathRef.current = rootPath; }, [rootPath]);
@@ -849,6 +874,8 @@ function NotesTree({
     });
     return () => { cancelled = true; };
   }, [vaultPath]);
+
+
 
   const folderKeyFor = (absPath: string): string => {
     const rp = rootPathRef.current;
@@ -2561,6 +2588,366 @@ function JournalTree({
           </div>
         );
       })}
+    </div>
+  );
+}
+
+function EntriesTree({
+  category, categoryDir, vaultPath, activeView, onOpenNote, onOpenEntries, confirmAsync, promptAsync,
+}: {
+  category: Category;
+  categoryDir: (cat: Category) => Promise<string>;
+  vaultPath: string;
+  activeView: any;
+  onOpenNote: (cat: Category, note: { path: string; name: string }) => void;
+  onOpenEntries: (cat: Category) => void;
+  confirmAsync: (msg: string) => Promise<boolean>;
+  promptAsync: (msg: string, defaultValue?: string) => Promise<string | null>;
+}) {
+  const [items, setItems] = useState<EntryItem[] | null>(null);
+  const [allTags, setAllTags] = useState<string[]>([]);
+  const [tagFilter, setTagFilter] = useState<string | null>(null);
+  const [tagMenuOpen, setTagMenuOpen] = useState(false);
+  const tagMenuRef = useRef<HTMLDivElement>(null);
+
+  const [ctx, setCtx] = useState<{ item: EntryItem; x: number; y: number } | null>(null);
+  const [tagPickerItem, setTagPickerItem] = useState<EntryItem | null>(null);
+  const [vaultTags, setVaultTags] = useState<string[]>([]);
+  const [iconPicker, setIconPicker] = useState<{ item: EntryItem; top: number; left: number } | null>(null);
+  const iconPickerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!tagMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (tagMenuRef.current?.contains(e.target as Node)) return;
+      setTagMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setTagMenuOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [tagMenuOpen]);
+
+  useEffect(() => {
+    if (!vaultPath) return;
+    let cancelled = false;
+    scanAllVaultTags(vaultPath).then((list) => {
+      if (!cancelled) setVaultTags(list);
+    });
+    return () => { cancelled = true; };
+  }, [vaultPath]);
+
+  useEffect(() => {
+    if (!ctx) return;
+    const close = () => setCtx(null);
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setCtx(null); };
+    document.addEventListener('click', close);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('click', close);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [ctx]);
+
+  useEffect(() => {
+    if (!iconPicker) return;
+    const onDown = (e: MouseEvent) => {
+      if (iconPickerRef.current?.contains(e.target as Node)) return;
+      setIconPicker(null);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setIconPicker(null);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [iconPicker]);
+
+  const load = async () => {
+    const dir = await categoryDir(category);
+    await ensureFolder(dir, `entries "${category.name}"`);
+    const loaded = await listEntries(dir);
+    setItems(loaded);
+    const t = new Set<string>();
+    loaded.forEach(it => (it.tags || []).forEach(tag => t.add(tag)));
+    setAllTags(Array.from(t).sort());
+  };
+
+  useEffect(() => {
+    load();
+    const fn = () => load();
+    const events = ['file-changed', 'folder-changed', 'note-frontmatter-changed'];
+    events.forEach((e) => window.addEventListener(e, fn));
+    return () => events.forEach((e) => window.removeEventListener(e, fn));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [category.id]);
+
+  const newEntry = async () => {
+    const dir = await categoryDir(category);
+    const { path, fileName } = await createEntry(dir);
+    await load();
+    onOpenNote(category, { path, name: fileName });
+  };
+
+  const remove = async (it: EntryItem) => {
+    const ok = await confirmAsync(`Move "${it.title || 'this entry'}" to the trash?`);
+    if (!ok) return;
+    notifyNoteDeleted(it.path);
+    await moveToTrash(it.path);
+    await load();
+  };
+
+  const renameEntry = async (it: EntryItem) => {
+    setCtx(null);
+    const next = await promptAsync("Rename entry:", it.title || "Untitled entry");
+    if (!next || next === it.title) return;
+    await writeNoteMeta(it.path, { title: next.trim() });
+    await load();
+    window.dispatchEvent(new CustomEvent("file-changed", { detail: { path: it.path } }));
+    window.dispatchEvent(new CustomEvent("note-frontmatter-changed", { detail: { path: it.path } }));
+  };
+
+  const applyIcon = async (emoji: string) => {
+    if (!iconPicker) return;
+    await writeNoteMeta(iconPicker.item.path, { icon: emoji });
+    await load();
+    window.dispatchEvent(new CustomEvent("file-changed", { detail: { path: iconPicker.item.path } }));
+    window.dispatchEvent(new CustomEvent("note-frontmatter-changed", { detail: { path: iconPicker.item.path } }));
+    if (emoji === '') setIconPicker(null);
+  };
+
+  const handleContextMenu = (e: React.MouseEvent, it: EntryItem) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const W = 240;
+    const H = 160;
+    setCtx({
+      item: it,
+      x: Math.min(e.clientX, window.innerWidth - W - 8),
+      y: Math.min(e.clientY, window.innerHeight - H - 8),
+    });
+  };
+
+  const commitTags = async (next: string[]) => {
+    if (!tagPickerItem) return;
+    await writeNoteMeta(tagPickerItem.path, { tags: next as any });
+    await load();
+    window.dispatchEvent(new CustomEvent('file-changed', { detail: { path: tagPickerItem.path } }));
+    window.dispatchEvent(new CustomEvent('note-frontmatter-changed', { detail: { path: tagPickerItem.path } }));
+    invalidateTagCache();
+    if (vaultPath) {
+      scanAllVaultTags(vaultPath, true).then(setVaultTags);
+    }
+  };
+
+  const isActive = (it: EntryItem) =>
+  activeView?.kind === 'note' &&
+  (activeView.path || '').replace(/\\/g, '/') === it.path.replace(/\\/g, '/');
+
+  return (
+    <div
+      className="p-2 min-h-full"
+      onContextMenu={(e) => {
+        if (e.target === e.currentTarget) e.preventDefault();
+      }}
+    >
+    {tagPickerItem && (
+      <TagPickerModal
+        noteTitle={tagPickerItem.title || 'this entry'}
+        initialTags={tagPickerItem.tags || []}
+        allTags={vaultTags}
+        onCommit={commitTags}
+        onClose={() => setTagPickerItem(null)}
+      />
+    )}
+
+    {ctx && (
+      <div
+        data-menu
+        className="fixed z-50 bg-[#1e2327] border border-[#2a3136] rounded shadow-xl py-1 w-60"
+        style={{ top: ctx.y, left: ctx.x }}
+        onClick={(e) => e.stopPropagation()}
+        onContextMenu={(e) => e.preventDefault()}
+      >
+        <button
+          type="button"
+          onClick={() => { const n = ctx.item; setCtx(null); onOpenNote(category, { path: n.path, name: n.fileName }); }}
+          className="w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-[#2a3136] flex items-center space-x-2 border-b border-[#2a3136]"
+        >
+          <FileText size={13} /> <span>Open</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => { void renameEntry(ctx.item); }}
+          className="w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-[#2a3136] flex items-center space-x-2"
+        >
+          <Pencil size={13} /> <span>Rename</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            const W = 340;
+            const H = 460;
+            setIconPicker({
+              item: ctx.item,
+              top: Math.max(12, Math.min(ctx.y, window.innerHeight - H - 12)),
+              left: Math.max(12, Math.min(ctx.x, window.innerWidth - W - 12)),
+            });
+            setCtx(null);
+          }}
+          className="w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-[#2a3136] flex items-center space-x-2"
+        >
+          <Smile size={13} /> <span>Change icon</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => { setTagPickerItem(ctx.item); setCtx(null); }}
+          className="w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-[#2a3136] flex items-center space-x-2 border-b border-[#2a3136]"
+        >
+          <Tag size={13} /> <span>Edit tags…</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => { const it = ctx.item; setCtx(null); void remove(it); }}
+          className="w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-[#2a3136] flex items-center space-x-2"
+        >
+          <Trash2 size={13} /> <span>Move to trash</span>
+        </button>
+      </div>
+    )}
+
+    <div className="flex items-center justify-between px-1 py-1 mb-1 gap-1">
+    <button
+    onClick={() => onOpenEntries(category)}
+    className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs whitespace-nowrap transition-colors ${
+      activeView?.kind === 'entries'
+      ? 'bg-[#1e2327] text-gray-100'
+      : 'text-gray-400 hover:text-gray-100 hover:bg-[#1e2327]'
+    }`}
+    >
+    <FileText size={12} /> <span>All Entries</span>
+    </button>
+    <button
+    onClick={newEntry}
+    className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-blue-600 hover:bg-blue-500 text-white"
+    >
+    <Plus size={12} /> <span>New Entry</span>
+    </button>
+    </div>
+
+    {items && items.length > 0 && (
+      <div className="flex items-center gap-1 px-1 py-1 mb-1">
+        <div className="relative flex-1" ref={tagMenuRef}>
+          <button
+            type="button"
+            onClick={() => setTagMenuOpen((o) => !o)}
+            className={`flex items-center gap-1 px-2 py-1 rounded text-xs whitespace-nowrap transition-colors ${
+              tagFilter
+                ? 'bg-blue-600 text-white'
+                : 'text-gray-400 hover:text-gray-100 hover:bg-[#1e2327]'
+            }`}
+            title="Filter by tag"
+          >
+            <Tag size={12} />
+            <span className="truncate">{tagFilter ? `#${tagFilter}` : 'Filter by tag'}</span>
+            {tagFilter && (
+              <X
+                size={10}
+                className="ml-1 cursor-pointer hover:text-red-300"
+                onClick={(e) => { e.stopPropagation(); setTagFilter(null); }}
+              />
+            )}
+          </button>
+          {tagMenuOpen && (
+            <div data-menu className="absolute left-0 top-full mt-1 z-40 bg-[#1e2327] border border-[#2a3136] rounded-md shadow-xl py-1 w-56 max-h-72 overflow-y-auto">
+              {allTags.length === 0 ? (
+                <div className="px-3 py-2 text-[11px] text-gray-600 italic">No tags in these entries yet.</div>
+              ) : (
+                allTags.map((t) => (
+                  <button
+                    key={t}
+                    onClick={() => { setTagFilter(t); setTagMenuOpen(false); }}
+                    className={`w-full text-left px-3 py-1.5 text-sm hover:bg-[#2a3136] flex items-center gap-2 ${
+                      t === tagFilter ? 'text-blue-400' : 'text-gray-300'
+                    }`}
+                  >
+                    <Tag size={11} /> <span className="truncate">{t}</span>
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    )}
+
+    {items === null && <div className="px-3 py-2 text-xs text-gray-600">Loading…</div>}
+    {items?.length === 0 && <div className="px-3 py-4 text-xs text-gray-600 text-center">No entries yet.</div>}
+    {tagFilter && items && items.length > 0 && items.filter(it => it.tags?.includes(tagFilter)).length === 0 && (
+      <div className="px-3 py-6 text-center">
+        <p className="text-xs text-gray-600 mb-2">No entries tagged <span className="text-gray-300">#{tagFilter}</span>.</p>
+        <button onClick={() => setTagFilter(null)} className="text-xs text-blue-400 hover:text-blue-300">Clear filter</button>
+      </div>
+    )}
+
+    {(items || []).filter(it => !tagFilter || it.tags?.includes(tagFilter)).map((it) => (
+      <div
+      key={it.path}
+      onClick={() => onOpenNote(category, { path: it.path, name: it.fileName })}
+      onContextMenu={(e) => handleContextMenu(e, it)}
+      className={`py-1.5 px-2 rounded cursor-pointer flex items-center gap-2 ${
+        isActive(it) ? 'bg-[#2a3136]' : 'hover:bg-[#1e2327]'
+      }`}
+      >
+      <span className="flex-shrink-0 text-sm leading-none">{it.icon || '📝'}</span>
+      <div className="flex-1 min-w-0">
+      <div className="text-sm truncate text-gray-200">{it.title || 'Untitled entry'}</div>
+      {it.date && <div className="text-[10px] text-gray-500 truncate">{formatEntryDate(it.date)}</div>}
+      </div>
+
+      </div>
+    ))}
+
+    {iconPicker && createPortal(
+      <div
+        ref={iconPickerRef}
+        className="fixed z-[500] bg-[#1e2327] border border-[#2a3136] rounded-lg shadow-2xl overflow-hidden"
+        style={{ top: iconPicker.top, left: iconPicker.left }}
+      >
+        <div className="flex items-center justify-between px-3 py-2 border-b border-[#2a3136]">
+          <span className="text-xs text-gray-400 truncate">
+            Icon for <span className="text-gray-200">{iconPicker.item.title || "this entry"}</span>
+          </span>
+          <button
+            onClick={() => setIconPicker(null)}
+            className="text-gray-500 hover:text-gray-300 p-0.5"
+          >
+            <X size={12} />
+          </button>
+        </div>
+        <EmojiPicker
+          theme={Theme.DARK}
+          emojiStyle={EmojiStyle.NATIVE}
+          onEmojiClick={(d) => applyIcon(d.emoji)}
+          width={320}
+          height={360}
+          previewConfig={{ showPreview: false }}
+        />
+        <button
+          onClick={() => applyIcon('')}
+          className="w-full text-left text-xs text-gray-500 hover:text-red-400 hover:bg-[#2a3136] px-3 py-2 border-t border-[#2a3136]"
+        >
+          Remove icon
+        </button>
+      </div>,
+      document.body
+    )}
     </div>
   );
 }

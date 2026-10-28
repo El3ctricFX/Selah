@@ -9,6 +9,7 @@ import Editor from "./Editor";
 import Sidebar, { type Category } from "./Sidebar";
 import JournalView from "./JournalView";
 import GalleryView from "./GalleryView";
+import EntriesView from "./EntriesView";
 import AbbaView from "./AbbaView";
 import NotesView from "./NotesView";
 import HomeView from "./HomeView";
@@ -31,6 +32,7 @@ type ActiveView =
   | { kind: "gallery"; dir: string; name: string }
     | { kind: "abba"; dir: string; name: string; icon: string; focusSection?: string; focusNoteId?: string }
   | { kind: "notes"; dir: string; name: string; icon: string; categoryId: string }
+  | { kind: "entries"; dir: string; name: string; icon: string; categoryId: string }
   | null;
 
 const MONTH_NAMES = [
@@ -180,6 +182,7 @@ export default function App() {
     })();
     return () => { cancelled = true; };
   }, [vaultPath]);
+
   // ── View history (mouse-back / Alt+← navigation) ─────────────────────
   const historyRef = useRef<ViewSnapshot[]>([]);
   const forwardRef = useRef<ViewSnapshot[]>([]);
@@ -378,6 +381,17 @@ export default function App() {
 
   const sidebarHidden = focusMode || sidebarCollapsed;
 
+  const isEntryNote =
+    activeView?.kind === "note" &&
+    vaultCategories.some(
+      (c) =>
+        c.mode === "entries" &&
+        !!c.dirName &&
+        activeView.path.replace(/\\/g, "/").startsWith(
+          `${vaultPath.replace(/\\/g, "/").replace(/\/+$/, "")}/${c.dirName}/`
+        )
+    );
+
   const openNoteByPath = (path: string) => {
     const normalized = path.replace(/\\/g, "/");
     const name = normalized.split("/").pop() || "note.selah";
@@ -463,6 +477,11 @@ export default function App() {
   // Shared handler so both the sidebar and the homepage quick-action cards
   // route to the right view.
   const openCategoryView = (cat: Category) => {
+    if (cat.mode === "entries") {
+      setActiveCategoryId(cat.id);
+      setActiveView({ kind: "entries", dir: dirOf(cat), name: cat.name, icon: cat.icon, categoryId: cat.id });
+      return;
+    }
     setActiveCategoryId(cat.id);
     if (cat.mode === "abba") {
       setActiveView({ kind: "abba", dir: dirOf(cat), name: cat.name, icon: cat.icon });
@@ -496,6 +515,11 @@ export default function App() {
             activeCategoryId={activeCategoryId}
             activeView={activeView}
             onSelectCategory={(cat) => {
+              if (cat.mode === "entries") {
+                setActiveCategoryId(cat.id);
+                setActiveView({ kind: "entries", dir: dirOf(cat), name: cat.name, icon: cat.icon, categoryId: cat.id });
+                return;
+              }
               setActiveCategoryId(cat.id);
               if (cat.mode === "abba") {
                 setActiveView({
@@ -574,6 +598,10 @@ export default function App() {
                 categoryId: cat.id,
               });
             }}
+            onOpenEntries={(cat) => {
+              setActiveCategoryId(cat.id);
+              setActiveView({ kind: "entries", dir: dirOf(cat), name: cat.name, icon: cat.icon, categoryId: cat.id });
+            }}
             onSwitchVault={handleReturnToWelcome}
             onOpenSettings={() => setSettingsOpen(true)}
             onGoHome={() => setActiveView(null)}
@@ -612,6 +640,7 @@ export default function App() {
             onToggleFocus={() => setFocusMode((v) => !v)}
             onOpenNoteByPath={openNoteByPath}
             setActiveNote={(note) => setActiveView({ kind: "note", ...note })}
+            entryMode={isEntryNote}
           />
         ) : activeView.kind === "journal" ? (
           <JournalView
@@ -626,6 +655,16 @@ export default function App() {
           />
         ) : activeView.kind === "gallery" ? (
           <GalleryView sectionDir={activeView.dir} sectionName={activeView.name} />
+        ) : activeView.kind === "entries" ? (
+          <EntriesView
+            key={activeView.dir}
+            sectionDir={activeView.dir}
+            sectionName={activeView.name}
+            sectionIcon={activeView.icon}
+            onOpenNote={(note) =>
+              setActiveView({ kind: "note", path: note.path, name: note.name })
+            }
+          />
         ) : activeView.kind === "abba" ? (
           <AbbaView
           abbaDir={activeView.dir}

@@ -289,7 +289,7 @@ export default function HomeView({
             {settings.showSearch && (
               <div className="relative mb-10">
                 <div
-                  className={`flex items-center gap-3 rounded-xl border bg-[#131819]/70 backdrop-blur px-4 py-2.5 transition-colors ${
+                  className={`flex items-center gap-3 rounded-xl border bg-[#161a1d] px-4 py-2.5 transition-colors ${
                     focused
                       ? "border-[#3a4147]"
                       : "border-[#1e2327] hover:border-[#2a3136]"
@@ -312,7 +312,7 @@ export default function HomeView({
                 </div>
 
                 {showResults && (
-                  <div className="absolute left-0 right-0 top-full mt-2 z-30 rounded-xl border border-[#232a2e] bg-[#131819] shadow-2xl overflow-hidden max-h-[55vh] overflow-y-auto">
+                  <div className="absolute left-0 right-0 top-full mt-2 z-30 rounded-xl border border-[#232a2e] bg-[#161a1d] shadow-2xl overflow-hidden max-h-[55vh] overflow-y-auto">
                     {results.length === 0 ? (
                       <div className="px-4 py-6 text-center text-xs text-gray-500 italic">
                         No matches for "{query}"
@@ -326,7 +326,7 @@ export default function HomeView({
                             e.preventDefault();
                             onOpenNoteByPath(r.path);
                           }}
-                          className="w-full text-left px-4 py-2.5 hover:bg-[#161a1d] flex items-center gap-3 border-b border-[#161a1d] last:border-0"
+                          className="w-full text-left px-4 py-2.5 hover:bg-[#1a1e21] flex items-center gap-3 transition-colors"
                         >
                           <span className="text-base flex-shrink-0">
                             {r.icon || "📄"}
@@ -427,7 +427,7 @@ function ShortcutTile({
     <button
       type="button"
       onClick={onClick}
-      className="group flex items-center gap-3 rounded-lg border border-[#1e2327] bg-[#131819]/50 hover:border-[#2a3136] hover:bg-[#161a1d] px-3.5 py-3 transition-colors text-left min-w-0"
+      className="group flex items-center gap-3 rounded-lg border border-[#1e2327] bg-[#161a1d] hover:border-[#2a3136] hover:bg-[#1a1e21] px-3.5 py-3 transition-colors text-left min-w-0"
       title={shortcut.kind === "url" ? shortcut.targetId : undefined}
     >
       <div className="w-7 h-7 flex items-center justify-center flex-shrink-0">

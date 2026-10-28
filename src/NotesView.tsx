@@ -1279,7 +1279,7 @@ export default function NotesView({
                 <span className="hidden md:inline">{SORT_LABELS[sortBy]}</span>
               </button>
               {sortOpen && (
-                <div className="absolute right-0 top-full mt-1 z-40 w-44 bg-[#1e2327] border border-[#2a3136] rounded-md shadow-2xl py-1">
+                <div data-menu className="absolute right-0 top-full mt-1 z-40 w-44 bg-[#1e2327] border border-[#2a3136] rounded-md shadow-2xl py-1">
                   {(Object.keys(SORT_LABELS) as SortBy[]).map((k) => (
                     <button
                       key={k}
@@ -1323,6 +1323,7 @@ export default function NotesView({
               </button>
               {filterOpen && (
                 <div
+                  data-menu
                   className="absolute right-0 top-full mt-1 z-40 w-[320px] bg-[#1e2327] border border-[#2a3136] rounded-md shadow-2xl overflow-hidden"
                   onClick={(e) => e.stopPropagation()}
                 >
