@@ -2126,6 +2126,25 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
 
         if (t.closest("[data-no-marquee]")) return;
 
+        // ── Resize handle intercept ─────────────────────────────────────
+        // If the user grabbed a column resize grip, let the multi-column
+        // extension handle the drag. Without this the marquee starts,
+        // calls preventDefault(), and both things happen at once: the
+        // resize is cancelled AND the blue selection box paints. We walk
+        // up looking for a resize cursor because that's what the library
+        // sets on its handles.
+        {
+          let probe: HTMLElement | null = t;
+          while (probe) {
+            const c = window.getComputedStyle(probe).cursor;
+            if (c && c.includes("resize")) {
+              if (selectedRef.current.length) applySelection([]);
+              return;
+            }
+            probe = probe.parentElement;
+          }
+        }
+
         // ── Drag Handle Intercept ────────────────────────────────────────
         if (t.closest(".bn-side-menu")) {
           const blockOuter = t.closest(".bn-block-outer");
