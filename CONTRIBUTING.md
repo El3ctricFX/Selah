@@ -8,7 +8,7 @@ Selah is an early-stage, local-first journaling and note-taking app designed to 
 
 You do not have to contribute code to help. You can:
 
-- Report a reproducible bug or suggest a feature through [GitHub Issues](https://github.com/El3ctricFX/Selah/issues).
+- Report a reproducible bug or suggest a feature through [GitHub Issues](https://github.com/El3ctricFX/Selah/issues). The bug report and feature request forms are optional; use a blank issue whenever you prefer to write freely.
 - Discuss broader ideas and ask questions in [GitHub Discussions](https://github.com/El3ctricFX/Selah/discussions).
 - Improve documentation, accessibility, usability, translations, or the interface.
 - Submit code fixes and carefully scoped features.
