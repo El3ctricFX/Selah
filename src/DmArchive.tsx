@@ -700,7 +700,7 @@ export const createDmArchive = createReactBlockSpec(
                             alt={`Screenshot ${idx + 1}`}
                             loading="lazy"
                             draggable={false}
-                            className="max-w-full h-auto block pointer-events-none"
+                            className="w-full h-auto block pointer-events-none"
                           />
                         ) : (
                           <div className="py-10 text-xs text-gray-600">
