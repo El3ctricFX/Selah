@@ -1,0 +1,105 @@
+name: Bug report
+description: Report something that is broken or behaving unexpectedly in Selah.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a problem.
+
+        **Privacy first:** Never include real journal entries, prayer requests, personal photos, private `.selah` files, passwords, tokens, or other sensitive information. Use invented sample content and review logs or screenshots before attaching them.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues for a similar report.
+          required: true
+        - label: I removed personal or sensitive information from any details, logs, and screenshots.
+          required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Selah version
+      description: Include the release version or Git commit, if known.
+      placeholder: e.g. v0.1.8
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install_method
+    attributes:
+      label: How are you running Selah?
+      options:
+        - Release package
+        - Flatpak
+        - Built from source
+        - Development mode (npm run tauri dev)
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: operating_system
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - Windows
+        - macOS
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: os_version
+    attributes:
+      label: OS version or distribution
+      description: For example, NixOS version, Ubuntu release, or Windows version.
+      placeholder: e.g. NixOS 25.05
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the problem in a few sentences.
+      placeholder: I tried to… but Selah…
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: List the steps so someone else can try to reproduce the issue.
+      placeholder: |
+        1. Open…
+        2. Select…
+        3. Observe…
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+      placeholder: Describe the expected behavior.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead?
+      placeholder: Describe what happened, including any visible error message.
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Logs or additional context
+      description: Paste relevant error messages or add screenshots made with fictional/demo content only. Remove personal information first.
+      placeholder: Add sanitized logs or any other useful context here.

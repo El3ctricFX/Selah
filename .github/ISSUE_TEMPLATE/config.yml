@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and open-ended ideas
+    url: https://github.com/El3ctricFX/Selah/discussions
+    about: Ask questions or discuss ideas that are not yet a bug report or feature request.
+  - name: Contribution guidelines
+    url: https://github.com/El3ctricFX/Selah/blob/main/CONTRIBUTING.md
+    about: Read how to contribute code, documentation, testing, and feedback.
