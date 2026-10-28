@@ -3,7 +3,7 @@ import { useState } from "react";
 import {
   Palette, Sun, Moon, Wand2, Copy, Check, Upload,
   Download, RotateCcw, X, AlertTriangle, Code2,
-  Image as ImageIcon, Link as LinkIcon, Trash2, Sliders, Save, Bookmark,
+  Image as ImageIcon, Link as LinkIcon, Trash2, Sliders, Save,
 } from "lucide-react";
 import {
   useTheme,
