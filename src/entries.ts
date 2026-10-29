@@ -44,6 +44,11 @@ function makePreview(body: string): string {
     .replace(/^:::.*$/gm, " ")
     .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
     .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    // Strip out the invisible color encoding markers (\uE000, \uE001, \uE002)
+    .replace(/\uE000[^\uE002]*\uE002/g, "")
+    .replace(/[\uE000\uE001\uE002]/g, "")
+    // Strip HTML tags (like <div align="center">)
+    .replace(/<[^>]*>/g, " ")
     .replace(/[#*_>`~]/g, "")
     .replace(/\s+/g, " ")
     .trim();
