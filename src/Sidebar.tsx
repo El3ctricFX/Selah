@@ -1206,10 +1206,6 @@ function NotesTree({
         );
       }
     } catch {}
-    if (vaultPath) {
-      const fresh = await scanAllVaultTags(vaultPath, true);
-      setVaultTags(fresh);
-    }
     setTagPickerNote({ path: note.path, title: note.title, tags });
   };
 
@@ -2704,7 +2700,6 @@ function EntriesTree({
 
   const [ctx, setCtx] = useState<{ item: EntryItem; x: number; y: number } | null>(null);
   const [tagPickerItem, setTagPickerItem] = useState<EntryItem | null>(null);
-  const [vaultTags, setVaultTags] = useState<string[]>([]);
   const [iconPicker, setIconPicker] = useState<{ item: EntryItem; top: number; left: number } | null>(null);
   const [dateTimePickerItem, setDateTimePickerItem] = useState<EntryItem | null>(null);
   const iconPickerRef = useRef<HTMLDivElement>(null);
@@ -2723,15 +2718,6 @@ function EntriesTree({
       document.removeEventListener('keydown', onKey);
     };
   }, [tagMenuOpen]);
-
-  useEffect(() => {
-    if (!vaultPath) return;
-    let cancelled = false;
-    scanAllVaultTags(vaultPath).then((list) => {
-      if (!cancelled) setVaultTags(list);
-    });
-    return () => { cancelled = true; };
-  }, [vaultPath]);
 
   useEffect(() => {
     if (!ctx) return;
@@ -2857,9 +2843,6 @@ function EntriesTree({
     window.dispatchEvent(new CustomEvent('file-changed', { detail: { path: tagPickerItem.path } }));
     window.dispatchEvent(new CustomEvent('note-frontmatter-changed', { detail: { path: tagPickerItem.path } }));
     invalidateTagCache();
-    if (vaultPath) {
-      scanAllVaultTags(vaultPath, true).then(setVaultTags);
-    }
   };
 
   const isActive = (it: EntryItem) =>
@@ -2877,7 +2860,7 @@ function EntriesTree({
       <TagPickerModal
         noteTitle={tagPickerItem.title || 'this entry'}
         initialTags={tagPickerItem.tags || []}
-        allTags={vaultTags}
+        allTags={allTags}
         onCommit={commitTags}
         onClose={() => setTagPickerItem(null)}
       />
@@ -2991,7 +2974,7 @@ function EntriesTree({
     </button>
     </div>
 
-    {items && items.length > 0 && (
+    {items && items.length > 0 && allTags.length > 0 && (
       <div className="flex items-center gap-1 px-1 py-1 mb-1">
         <div className="relative flex-1" ref={tagMenuRef}>
           <button

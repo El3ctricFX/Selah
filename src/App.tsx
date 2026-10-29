@@ -481,6 +481,20 @@ export default function App() {
         )
     );
 
+  let activeCategoryDir = vaultPath;
+  if (activeView?.kind === "note" && vaultPath) {
+    const normVault = vaultPath.replace(/\\/g, "/").replace(/\/+$/, "");
+    const normalized = activeView.path.replace(/\\/g, "/");
+    for (const cat of vaultCategories) {
+      if (!cat.dirName) continue;
+      const prefix = `${normVault}/${cat.dirName}/`;
+      if (normalized.startsWith(prefix)) {
+        activeCategoryDir = `${vaultPath}/${cat.dirName}`;
+        break;
+      }
+    }
+  }
+
   const openNoteByPath = (path: string) => {
     const normalized = path.replace(/\\/g, "/");
     const name = normalized.split("/").pop() || "note.selah";
@@ -723,6 +737,7 @@ export default function App() {
           <Editor
             activeNote={activeView}
             vaultPath={vaultPath}
+            tagsDir={activeCategoryDir}
             focusMode={focusMode}
             onToggleFocus={() => setFocusMode((v) => !v)}
             onOpenNoteByPath={openNoteByPath}

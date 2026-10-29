@@ -28,6 +28,7 @@ import { formatEntryDate } from "./entries";
 interface EditorProps {
   activeNote: { path: string; name: string };
   vaultPath: string;
+  tagsDir?: string;
   focusMode?: boolean;
   onToggleFocus?: () => void;
   onOpenNoteByPath?: (path: string) => void;
@@ -137,6 +138,7 @@ function tagsFromFrontmatter(fm: Frontmatter): string[] {
 export default function Editor({
   activeNote,
   vaultPath,
+  tagsDir,
   focusMode = false,
   onToggleFocus,
   onOpenNoteByPath,
@@ -366,13 +368,14 @@ export default function Editor({
   }, [activeNote.path]);
 
   useEffect(() => {
-    if (!vaultPath) return;
+    const dir = tagsDir || vaultPath;
+    if (!dir) return;
     let cancelled = false;
-    scanAllVaultTags(vaultPath).then((list) => {
+    scanAllVaultTags(dir).then((list) => {
       if (!cancelled) setAllVaultTags(list);
     });
     return () => { cancelled = true; };
-  }, [vaultPath]);
+  }, [vaultPath, tagsDir]);
 
   useEffect(() => {
     if (!coverPickerOpen || !activeNote.path) return;
@@ -779,8 +782,9 @@ export default function Editor({
     setTags(next);
     await noteBodyRef.current?.updateFrontmatter({ tags: next });
     invalidateTagCache();
-    if (vaultPath) {
-      scanAllVaultTags(vaultPath, true).then(setAllVaultTags);
+    const dir = tagsDir || vaultPath;
+    if (dir) {
+      scanAllVaultTags(dir, true).then(setAllVaultTags);
     }
   };
 
