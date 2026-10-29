@@ -411,10 +411,14 @@ function buildNoteLinkDecorations(doc: any): DecorationSet {
 
 function buildNoteLinkDecorationsUnsafe(doc: any): DecorationSet {
   const decos: Decoration[] = [];
-  doc.descendants((node: any, pos: number) => {
-    if (!node.isText) return;
-    const text: string = node.text || "";
-    const re = /\[\[([^\]\n]+)\]\]/g;
+  doc.descendants((node: any, nodePos: number) => {
+    if (!node.isTextblock || node.type.spec.code) return;
+    // Scan the whole paragraph, not one text node, so a link split by a
+    // formatting boundary still matches. Inside a textblock, string index
+    // equals position offset, so pos + m.index below stays correct.
+    const pos = nodePos + 1;
+    const text: string = node.textBetween(0, node.content.size, "\n", "\uFFFC");
+    const re = /\[\[([^\]\n\uFFFC]+)\]\]/g;
     let m: RegExpExecArray | null;
     while ((m = re.exec(text)) !== null) {
       const inner = m[1];
@@ -426,8 +430,8 @@ function buildNoteLinkDecorationsUnsafe(doc: any): DecorationSet {
       const openTo = openFrom + 2;
       const targetFrom = openTo;
       const targetTo = targetFrom + target.length;
-      const pipeTo = targetTo + (pipeIdx >= 0 ? 1 : 0);
-      const displayFrom = pipeTo;
+      const displayFrom = pipeIdx >= 0 ? targetTo + 1 : targetFrom;
+      const pipeTo = displayFrom;
       const displayTo = displayFrom + display.length;
       const closeFrom = displayTo;
       const closeTo = closeFrom + 2;
