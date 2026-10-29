@@ -47,12 +47,31 @@ html, body, #root {
 }
 
 /* TipTap Editor Typography & Elements */
-.ProseMirror h1 { 
-  font-size: 2.25rem; 
-  font-weight: 700; 
-  margin-top: 1em; 
-  margin-bottom: 0.5em; 
-  color: #f3f4f6; 
+.ProseMirror h1 {
+  font-size: 2.25rem;
+  font-weight: 700;
+  margin-top: 1em;
+  margin-bottom: 0.5em;
+  color: #f3f4f6;
+}
+
+/* ── Fix Underline Color ──────────────────────────────────────────────
+   By default, an underline is drawn by its parent <u> tag using the
+   parent's color. If a <span> inside has a custom color (like red), the
+   underline stays white. These rules move the underline to the colored
+   child elements so the line matches the text. */
+.ProseMirror u {
+  text-decoration: none !important;
+}
+.ProseMirror u span,
+.ProseMirror u a {
+  text-decoration: underline !important;
+  text-decoration-color: currentColor !important;
+}
+/* Fallback for regular text inside <u> that has no spans/links */
+.ProseMirror u:not(:has(span, a)) {
+  text-decoration: underline !important;
+  text-decoration-color: currentColor !important;
 }
 
 .ProseMirror h2 { 
