@@ -27,6 +27,8 @@
   --c-folder-purple: #b38ee5;
   --c-folder-pink: #e58eb5;
   --c-folder-red: #e57a7a;
+  /* Fallback only; the actual rainbow renders via .folder-rainbow-text. */
+  --c-folder-rainbow: #ff5e57;
   /* Overlay defaults — kept in sync by applyTheme() in theme.ts. */
   --c-overlay-tint: transparent;
   --c-overlay-intensity: 0%;
@@ -636,6 +638,42 @@ body.theme-light-surface {
   --c-folder-purple: #4c1d95;
   --c-folder-pink: #831843;
   --c-folder-red: #7f1d1d;
+}
+
+/* Rainbow folder / note label.
+ * Paints the glyphs themselves with a sliding red→…→violet gradient.
+ * -webkit-text-fill-color is the WebKit/Blink path; `color: transparent`
+ * covers Firefox. The theme-light-surface block above does NOT override
+ * this — the gradient is readable on both light and dark surfaces. */
+.folder-rainbow-text {
+  background-image: linear-gradient(
+    90deg,
+    #ff5e57 0%,
+    #ff9f40 14%,
+    #ffd93d 28%,
+    #5ece63 42%,
+    #46a0ff 56%,
+    #b16cff 70%,
+    #ff5e57 84%,
+    #ff5e57 100%
+  );
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation: folder-rainbow-shift 6s linear infinite;
+}
+
+@keyframes folder-rainbow-shift {
+  from { background-position:   0% center; }
+  to   { background-position: 200% center; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .folder-rainbow-text {
+    animation: none;
+  }
 }
 
 

@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Plus, Search, Trash2, X, Calendar, Tag as TagIcon, FileText, Pencil, Smile } from "lucide-react";
+import DateTimePickerModal from "./DateTimePickerModal";
 import EmojiPicker, { Theme, EmojiStyle } from "emoji-picker-react";
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { useModal } from "./Modal";
@@ -27,6 +28,7 @@ export default function EntriesView({ sectionDir, sectionName, sectionIcon, onOp
     const [tagPickerItem, setTagPickerItem] = useState<EntryItem | null>(null);
     const [allTags, setAllTags] = useState<string[]>([]);
     const [iconPicker, setIconPicker] = useState<{ item: EntryItem; top: number; left: number } | null>(null);
+    const [dateTimePickerItem, setDateTimePickerItem] = useState<EntryItem | null>(null);
     const iconPickerRef = useRef<HTMLDivElement>(null);
     const { modal, promptAsync, confirmAsync } = useModal();
 
@@ -87,8 +89,24 @@ export default function EntriesView({ sectionDir, sectionName, sectionIcon, onOp
     const removeEntry = async (it: EntryItem) => {
         const ok = await confirmAsync(`Move "${it.title || "this entry"}" to the trash?`);
         if (!ok) return;
+
+        try {
+            // 1. Physically move the file to trash FIRST
+            await moveToTrash(it.path);
+        } catch (e: any) {
+            console.error("[entries] moveToTrash failed:", e);
+            await confirmAsync(`Could not delete the file. It might be locked by another app.\n\nError: ${e?.message ?? String(e)}`);
+            return; // Stop here if the deletion failed
+        }
+
+        // 2. Tell the app to switch views
         window.dispatchEvent(new CustomEvent("note-deleted", { detail: { path: it.path } }));
-        await moveToTrash(it.path);
+
+        // 3. Force the sidebar to refresh its tree
+        const folder = it.path.substring(0, Math.max(it.path.lastIndexOf("/"), it.path.lastIndexOf("\\")));
+        window.dispatchEvent(new CustomEvent("folder-changed", { detail: { path: folder } }));
+
+        // 4. Reload the main view
         await load();
     };
 
@@ -99,13 +117,63 @@ export default function EntriesView({ sectionDir, sectionName, sectionIcon, onOp
         try {
             const raw = await readTextFile(it.path);
             const { frontmatter, body } = parseNoteFile(raw);
-            const fm = { ...frontmatter, title: next.trim(), modified: new Date().toISOString() };
+            const fm: any = { ...frontmatter, title: next.trim() };
+            if (frontmatter.freezeModified !== true) {
+                fm.modified = new Date().toISOString();
+            }
             await writeTextFile(it.path, serializeNoteFile(fm, body));
             window.dispatchEvent(new CustomEvent("file-changed", { detail: { path: it.path } }));
             window.dispatchEvent(new CustomEvent("note-frontmatter-changed", { detail: { path: it.path } }));
             await load();
         } catch (e) { console.error("[entries] rename failed:", e); }
     };
+
+    // Parses a loose date string into a YYYY-MM-DD value. Accepts
+    // ISO, US slash format, "October 4, 2026", "Oct 4", "today" etc.
+    function parseFlexibleDateInput(raw: string): string | null {
+        const s = raw.trim().toLowerCase();
+        if (!s) return null;
+        const today = new Date();
+        const ymd = (d: Date) =>
+            `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+        if (s === "today" || s === "now") return ymd(today);
+        if (s === "yesterday") { const d = new Date(today); d.setDate(d.getDate() - 1); return ymd(d); }
+        if (s === "tomorrow")  { const d = new Date(today); d.setDate(d.getDate() + 1); return ymd(d); }
+
+        let m = s.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})$/);
+        if (m) {
+            const y = +m[1], mo = +m[2], dd = +m[3];
+            if (mo >= 1 && mo <= 12 && dd >= 1 && dd <= 31)
+                return `${y}-${String(mo).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
+        }
+        m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);
+        if (m) {
+            let y = +m[3]; if (y < 100) y += 2000;
+            const mo = +m[1], dd = +m[2];
+            if (mo >= 1 && mo <= 12 && dd >= 1 && dd <= 31)
+                return `${y}-${String(mo).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
+        }
+        const MONTHS = ["january","february","march","april","may","june","july","august","september","october","november","december"];
+        m = s.match(/^([a-z]+)\.?\s+(\d{1,2})(?:st|nd|rd|th)?[,\s]+(\d{2,4})$/);
+        if (m) {
+            const idx = MONTHS.findIndex((x) => x.startsWith(m![1]));
+            if (idx >= 0) {
+                let y = +m[3]; if (y < 100) y += 2000;
+                const dd = +m[2];
+                if (dd >= 1 && dd <= 31)
+                    return `${y}-${String(idx + 1).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
+            }
+        }
+        return null;
+    }
+
+    const changeDate = (it: EntryItem) => {
+        setCtx(null);
+        setDateTimePickerItem(it);
+    };
+
+
 
     const applyIcon = async (emoji: string) => {
         if (!iconPicker) return;
@@ -145,7 +213,7 @@ export default function EntriesView({ sectionDir, sectionName, sectionIcon, onOp
         e.preventDefault();
         e.stopPropagation();
         const W = 240;
-        const H = 160;
+        const H = 260;
         setCtx({
             item: it,
             x: Math.min(e.clientX, window.innerWidth - W - 8),
@@ -183,6 +251,32 @@ export default function EntriesView({ sectionDir, sectionName, sectionIcon, onOp
         }}
         >
         {modal}
+
+        {dateTimePickerItem && (
+          <DateTimePickerModal
+            initialIso={dateTimePickerItem.created ? new Date(dateTimePickerItem.created).toISOString() : new Date().toISOString()}
+            title={dateTimePickerItem.title || "this entry"}
+            onClose={() => setDateTimePickerItem(null)}
+            onSave={async (iso) => {
+              try {
+                const raw = await readTextFile(dateTimePickerItem.path);
+                const { frontmatter, body } = parseNoteFile(raw);
+                const fm: any = {
+                  ...frontmatter,
+                  date: iso.slice(0, 10),
+                  created: iso,
+                };
+                if (frontmatter.freezeModified !== true) {
+                  fm.modified = new Date().toISOString();
+                }
+                await writeTextFile(dateTimePickerItem.path, serializeNoteFile(fm, body));
+                window.dispatchEvent(new CustomEvent("file-changed", { detail: { path: dateTimePickerItem.path } }));
+                window.dispatchEvent(new CustomEvent("note-frontmatter-changed", { detail: { path: dateTimePickerItem.path } }));
+                await load();
+              } catch (e) { console.error("[entries] change date failed:", e); }
+            }}
+          />
+        )}
 
         {ctx && (
             <div
@@ -229,6 +323,14 @@ export default function EntriesView({ sectionDir, sectionName, sectionIcon, onOp
             >
             <TagIcon size={13} /> <span>Edit tags…</span>
             </button>
+            <button
+            type="button"
+            onClick={() => { void changeDate(ctx.item); }}
+            className="w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-[#2a3136] flex items-center space-x-2"
+            >
+            <Calendar size={13} /> <span>Change date…</span>
+            </button>
+
             <button
             type="button"
             onClick={() => { const it = ctx.item; setCtx(null); void removeEntry(it); }}
@@ -355,6 +457,7 @@ export default function EntriesView({ sectionDir, sectionName, sectionIcon, onOp
                     {it.date && (
                         <div className="flex items-center gap-1 text-xs text-gray-500 mt-0.5">
                         <Calendar size={10} /> {formatEntryDate(it.date)}
+
                         </div>
                     )}
                     {it.tags && it.tags.length > 0 && (

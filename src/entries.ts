@@ -14,6 +14,8 @@ export interface EntryItem {
     preview: string;
     wordCount: number;
     tags: string[];
+    /** When true, the editor will not auto-update `modified` on save. */
+    freezeModified: boolean;
 }
 
 export function todayYmd(): string {
@@ -72,6 +74,7 @@ export async function listEntries(dir: string): Promise<EntryItem[]> {
                      preview: plain.slice(0, 180),
                      wordCount: plain ? plain.split(" ").length : 0,
                      tags: Array.isArray(fm.tags) ? (fm.tags as any[]).filter((t): t is string => typeof t === "string") : [],
+                     freezeModified: fm.freezeModified === true,
             });
         } catch {}
     }

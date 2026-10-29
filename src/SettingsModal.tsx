@@ -168,6 +168,11 @@ export default function SettingsModal({
   // ── Drag handling ───────────────────────────────────────────────────
   useEffect(() => {
     if (!dragging) return;
+
+    // Prevent text selection while dragging
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "move";
+
     const onMove = (e: MouseEvent) => {
       setPos({
         x: dragging.startPosX + (e.clientX - dragging.startX),
@@ -180,6 +185,8 @@ export default function SettingsModal({
     return () => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
     };
   }, [dragging]);
 
@@ -198,6 +205,10 @@ export default function SettingsModal({
   // ── Resize handling ─────────────────────────────────────────────────
   useEffect(() => {
     if (!resizing) return;
+
+    // Prevent text selection while resizing
+    document.body.style.userSelect = "none";
+
     const onMove = (e: MouseEvent) => {
       const dx = e.clientX - resizing.startX;
       const dy = e.clientY - resizing.startY;
@@ -220,6 +231,7 @@ export default function SettingsModal({
     return () => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      document.body.style.userSelect = "";
     };
   }, [resizing]);
 

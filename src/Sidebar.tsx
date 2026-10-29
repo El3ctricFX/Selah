@@ -9,7 +9,7 @@ import {
   ChevronRight, ChevronDown, Settings, Plus, Pencil, Smile, Trash2,
   CalendarDays, Image as ImageIcon, NotebookText, Check, FileText, FolderPlus, X,
   Tag, PanelLeftClose, Church, Sparkles, Folder, FolderOpen,
-  Sliders, LogOut, Home,
+  Sliders, LogOut, Home, Calendar,
 } from 'lucide-react';
 import EmojiPicker, { Theme, EmojiStyle } from 'emoji-picker-react';
 
@@ -24,9 +24,11 @@ import {
   makeFolderKey,
   colorForFolder,
   FOLDER_COLORS,
+  isRainbowColor,
 } from './folderMeta';
 import { parseNoteFile, serializeNoteFile, type Frontmatter } from './noteFormat';
 import { moveJournalNoteToDate, parseFlexibleDate } from './journalDateMove';
+import DateTimePickerModal from "./DateTimePickerModal";
 import { listEntries, createEntry, formatEntryDate, type EntryItem } from './entries';
 
 export interface Category {
@@ -85,6 +87,44 @@ function splitFilename(name: string): { base: string; ext: string } {
 function parentDirOf(p: string): string {
   const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
   return i === -1 ? p : p.substring(0, i);
+}
+
+function parseFlexibleDateInput(raw: string): string | null {
+  const s = raw.trim().toLowerCase();
+  if (!s) return null;
+  const today = new Date();
+  const ymd = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+  if (s === "today" || s === "now") return ymd(today);
+  if (s === "yesterday") { const d = new Date(today); d.setDate(d.getDate() - 1); return ymd(d); }
+  if (s === "tomorrow")  { const d = new Date(today); d.setDate(d.getDate() + 1); return ymd(d); }
+
+  let m = s.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})$/);
+  if (m) {
+    const y = +m[1], mo = +m[2], dd = +m[3];
+    if (mo >= 1 && mo <= 12 && dd >= 1 && dd <= 31)
+      return `${y}-${String(mo).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
+  }
+  m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);
+  if (m) {
+    let y = +m[3]; if (y < 100) y += 2000;
+    const mo = +m[1], dd = +m[2];
+    if (mo >= 1 && mo <= 12 && dd >= 1 && dd <= 31)
+      return `${y}-${String(mo).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
+  }
+  const MONTHS = ["january","february","march","april","may","june","july","august","september","october","november","december"];
+  m = s.match(/^([a-z]+)\.?\s+(\d{1,2})(?:st|nd|rd|th)?[,\s]+(\d{2,4})$/);
+  if (m) {
+    const idx = MONTHS.findIndex((x) => x.startsWith(m![1]));
+    if (idx >= 0) {
+      let y = +m[3]; if (y < 100) y += 2000;
+      const dd = +m[2];
+      if (dd >= 1 && dd <= 31)
+        return `${y}-${String(idx + 1).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
+    }
+  }
+  return null;
 }
 
 function notifyNoteDeleted(targetPath: string) {
@@ -418,13 +458,41 @@ export default function Sidebar(props: SidebarProps) {
 
   const renameCategory = async (cat: Category) => {
     const newName = await promptAsync('Rename category:', cat.name);
-    if (!newName || newName === cat.name) return;
+    if (!newName) return;
+
+    const newDirName = sanitizeDirName(newName);
+    const oldDirName = cat.dirName;
+
+    // Only stop if BOTH the display name and the physical folder name are already correct.
+    if (newName === cat.name && newDirName === oldDirName) return;
+
+    // Physically rename the folder on the hard drive first
+    if (oldDirName && oldDirName !== newDirName) {
+      const oldPath = await join(vaultPath, oldDirName);
+      const newPath = await join(vaultPath, newDirName);
+      try {
+        if (await exists(oldPath)) {
+          await fsRename(oldPath, newPath);
+        }
+      } catch (e) {
+        console.error("[vault] Could not rename category folder:", e);
+        await confirmAsync("Could not rename the folder on your hard drive. It may be open in another program.");
+        return; // Stop if we can't rename the folder
+      }
+    }
+
     await saveMetadata({
       ...metadata,
       categories: metadata.categories.map((c: Category) =>
-        c.id === cat.id ? { ...c, name: newName } : c
+      c.id === cat.id ? { ...c, name: newName.trim(), dirName: newDirName } : c
       ),
     });
+
+    // Force the active views and editors to update their paths
+    window.dispatchEvent(new CustomEvent("folder-renamed", {
+      detail: { oldDir: oldDirName, newDir: newDirName }
+    }));
+
     await loadVault();
   };
 
@@ -1356,7 +1424,11 @@ function NotesTree({
   const renderNote = (note: NoteEntry, depth: number) => {
     const active = isActive(note);
     const { ext } = splitFilename(note.fileName);
-    const colorText = note.color && note.color !== 'default' ? FOLDER_COLORS[note.color]?.text || '' : '';
+    const colorText =
+      note.color && note.color !== 'default'
+        ? FOLDER_COLORS[note.color]?.text || ''
+        : '';
+    const rainbow = isRainbowColor(note.color);
     const isDragging = dragNote?.path === note.path;
     return (
       <div
@@ -1381,13 +1453,19 @@ function NotesTree({
           active ? 'bg-[#2a3136]' : 'hover:bg-[#1e2327]'
         } ${isDragging ? 'opacity-40' : ''}`}
         style={{
-          color: active ? colorText || 'var(--c-text-strong)' : colorText || undefined,
+          color: rainbow
+            ? undefined
+            : active
+              ? colorText || 'var(--c-text-strong)'
+              : colorText || undefined,
           paddingLeft: `${8 + depth * 12 + 14}px`,
         }}
         title={note.fileName}
       >
         <span className="flex-shrink-0 text-sm leading-none">{note.icon || '📄'}</span>
-        <span className="truncate flex-1">{note.title}</span>
+        <span className={`truncate flex-1 ${rainbow ? 'folder-rainbow-text' : ''}`}>
+          {note.title}
+        </span>
         {showExtensions && ext && (
           <span className="flex-shrink-0 text-[9px] uppercase tracking-wider leading-none px-1 py-0.5 rounded border border-[#30363d] bg-[#1a1e21] text-gray-500">
             {ext}
@@ -2486,10 +2564,17 @@ function JournalTree({
           <div className="grid grid-cols-5 gap-2 mb-3">
             {Object.entries(FOLDER_COLORS).filter(([k]) => k !== 'default').map(([k, v]) => {
               const active = pickerCurrent === k;
+              const swatchStyle =
+                k === 'rainbow'
+                  ? {
+                      backgroundImage:
+                        'linear-gradient(90deg, #ff5e57, #ff9f40, #ffd93d, #5ece63, #46a0ff, #b16cff)',
+                    }
+                  : { backgroundColor: v.text };
               return (
                 <button key={k} title={v.label} onClick={() => applyPickerValue(k)}
                   className={`w-7 h-7 rounded-full transition-transform hover:scale-110 ${active ? 'ring-2 ring-white ring-offset-1 ring-offset-[#1e2327]' : ''}`}
-                  style={{ backgroundColor: v.text }} />
+                  style={swatchStyle} />
               );
             })}
           </div>
@@ -2509,32 +2594,37 @@ function JournalTree({
       {(years || []).map((year) => {
         const yMeta = folderMeta[yearKey(year)];
         const yColor = colorForFolder(yMeta);
+        const yRainbow = isRainbowColor(yMeta?.color);
         return (
           <div key={year}>
             <div
               onClick={() => toggleYear(year)}
               onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setCtx({ kind: 'year', year, x: e.clientX, y: e.clientY }); }}
               className="flex items-center space-x-2 py-1.5 px-2 rounded cursor-pointer hover:bg-[#1e2327] text-xs uppercase tracking-wider"
-              style={{ color: yColor }}
+              style={yRainbow ? undefined : { color: yColor }}
             >
               {expandedYears[year] ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
               {yMeta?.icon && <span className="text-sm">{yMeta.icon}</span>}
-              <span>{year}</span>
+              <span className={yRainbow ? 'folder-rainbow-text' : ''}>{year}</span>
             </div>
 
             {expandedYears[year] && (
               <>
-                {yearNotes[year] && (
-                  <button
-                    onClick={() => openYearNote(year)}
-                    onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setCtx({ kind: 'yearNote', year, x: e.clientX, y: e.clientY }); }}
-                    className="w-full text-left py-1 pl-6 pr-2 rounded text-sm hover:bg-[#1e2327] flex items-center space-x-2"
-                    style={{ color: yearNotes[year]!.color ? FOLDER_COLORS[yearNotes[year]!.color]?.text || '#9ca3af' : '#6b7280' }}
-                  >
-                    {yearNotes[year]!.icon ? <span className="text-sm">{yearNotes[year]!.icon}</span> : <FileText size={11} />}
-                    <span>Year note</span>
-                  </button>
-                )}
+                {yearNotes[year] && (() => {
+                  const yn = yearNotes[year]!;
+                  const ynRainbow = isRainbowColor(yn.color);
+                  return (
+                    <button
+                      onClick={() => openYearNote(year)}
+                      onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setCtx({ kind: 'yearNote', year, x: e.clientX, y: e.clientY }); }}
+                      className="w-full text-left py-1 pl-6 pr-2 rounded text-sm hover:bg-[#1e2327] flex items-center space-x-2"
+                      style={ynRainbow ? undefined : { color: yn.color ? FOLDER_COLORS[yn.color]?.text || '#9ca3af' : '#6b7280' }}
+                    >
+                      {yn.icon ? <span className="text-sm">{yn.icon}</span> : <FileText size={11} />}
+                      <span className={ynRainbow ? 'folder-rainbow-text' : ''}>Year note</span>
+                    </button>
+                  );
+                })()}
 
                 {months[year] === undefined && <div className="pl-6 pr-2 py-1 text-xs text-gray-600 italic">Loading…</div>}
                 {months[year] !== undefined && months[year].length === 0 && <div className="pl-6 pr-2 py-1 text-xs text-gray-600 italic">No months yet</div>}
@@ -2544,17 +2634,18 @@ function JournalTree({
                   const mKey = monthKey(year, month);
                   const mMeta = folderMeta[mKey];
                   const mColor = colorForFolder(mMeta);
+                  const mRainbow = isRainbowColor(mMeta?.color);
                   return (
                     <div key={key}>
                       <div
                         className="group flex items-center justify-between py-1 pl-6 pr-2 rounded hover:bg-[#1e2327] text-sm"
-                        style={{ color: mColor }}
+                        style={mRainbow ? undefined : { color: mColor }}
                         onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setCtx({ kind: 'month', year, month, x: e.clientX, y: e.clientY }); }}
                       >
                         <div className="flex items-center space-x-2 cursor-pointer flex-grow" onClick={() => toggleMonth(year, month)}>
                           {expandedMonths[key] ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
                           {mMeta?.icon && <span className="text-sm">{mMeta.icon}</span>}
-                          <span>{monthLabel(month)}</span>
+                          <span className={mRainbow ? 'folder-rainbow-text' : ''}>{monthLabel(month)}</span>
                         </div>
                         <button onClick={() => onOpenMonth(category, Number(year), Number(month))} className="opacity-0 group-hover:opacity-100 text-[10px] uppercase tracking-wide text-gray-500 hover:text-gray-200" title="Open month note">Month</button>
                       </div>
@@ -2565,6 +2656,7 @@ function JournalTree({
                       {expandedMonths[key] && (days[key] || []).map(({ day, file, icon, color }) => {
                         const active = isActiveDay(year, month, day);
                         const dayColor = color && color !== 'default' ? FOLDER_COLORS[color]?.text || '' : '';
+                        const dayRainbow = isRainbowColor(color);
                         const { base, ext } = splitFilename(file);
                         return (
                           <div
@@ -2572,10 +2664,10 @@ function JournalTree({
                             onClick={() => onOpenDay(category, Number(year), Number(month), day)}
                             onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setCtx({ kind: 'day', year, month, day, file, x: e.clientX, y: e.clientY }); }}
                             className={`py-1 pl-12 pr-2 rounded cursor-pointer text-sm flex items-center space-x-1.5 ${active ? 'bg-[#2a3136]' : 'hover:bg-[#1e2327]'}`}
-                            style={{ color: active ? dayColor || 'var(--c-text-strong)' : dayColor || undefined }}
+                            style={dayRainbow ? undefined : { color: active ? dayColor || 'var(--c-text-strong)' : dayColor || undefined }}
                           >
                             {icon && <span className="flex-shrink-0">{icon}</span>}
-                            <span className="truncate">{base}</span>
+                            <span className={`truncate ${dayRainbow ? 'folder-rainbow-text' : ''}`}>{base}</span>
                             {showExtensions && ext && <span className="flex-shrink-0 text-[9px] uppercase tracking-wider leading-none px-1 py-0.5 rounded border border-[#30363d] bg-[#1a1e21] text-gray-500">{ext}</span>}
                           </div>
                         );
@@ -2614,6 +2706,7 @@ function EntriesTree({
   const [tagPickerItem, setTagPickerItem] = useState<EntryItem | null>(null);
   const [vaultTags, setVaultTags] = useState<string[]>([]);
   const [iconPicker, setIconPicker] = useState<{ item: EntryItem; top: number; left: number } | null>(null);
+  const [dateTimePickerItem, setDateTimePickerItem] = useState<EntryItem | null>(null);
   const iconPickerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -2698,8 +2791,24 @@ function EntriesTree({
   const remove = async (it: EntryItem) => {
     const ok = await confirmAsync(`Move "${it.title || 'this entry'}" to the trash?`);
     if (!ok) return;
+
+    try {
+      // 1. Physically move the file to trash FIRST
+      await moveToTrash(it.path);
+    } catch (e: any) {
+      console.error("[entries-tree] moveToTrash failed:", e);
+      await confirmAsync(`Could not delete the file. It might be locked by another app.\n\nError: ${e?.message ?? String(e)}`);
+      return; // Stop here if the deletion failed
+    }
+
+    // 2. Notify the app
     notifyNoteDeleted(it.path);
-    await moveToTrash(it.path);
+
+    // 3. Force sidebar refresh
+    const folder = it.path.substring(0, Math.max(it.path.lastIndexOf("/"), it.path.lastIndexOf("\\")));
+    window.dispatchEvent(new CustomEvent("folder-changed", { detail: { path: folder } }));
+
+    // 4. Reload
     await load();
   };
 
@@ -2712,6 +2821,13 @@ function EntriesTree({
     window.dispatchEvent(new CustomEvent("file-changed", { detail: { path: it.path } }));
     window.dispatchEvent(new CustomEvent("note-frontmatter-changed", { detail: { path: it.path } }));
   };
+
+  const changeDate = (it: EntryItem) => {
+    setCtx(null);
+    setDateTimePickerItem(it);
+  };
+
+
 
   const applyIcon = async (emoji: string) => {
     if (!iconPicker) return;
@@ -2767,6 +2883,32 @@ function EntriesTree({
       />
     )}
 
+    {dateTimePickerItem && (
+      <DateTimePickerModal
+        initialIso={dateTimePickerItem.created ? new Date(dateTimePickerItem.created).toISOString() : new Date().toISOString()}
+        title={dateTimePickerItem.title || "this entry"}
+        onClose={() => setDateTimePickerItem(null)}
+        onSave={async (iso) => {
+          try {
+            const raw = await readTextFile(dateTimePickerItem.path);
+            const { frontmatter, body } = parseNoteFile(raw);
+            const fm: any = {
+              ...frontmatter,
+              date: iso.slice(0, 10),
+              created: iso,
+            };
+            if (frontmatter.freezeModified !== true) {
+              fm.modified = new Date().toISOString();
+            }
+            await writeTextFile(dateTimePickerItem.path, serializeNoteFile(fm, body));
+            window.dispatchEvent(new CustomEvent("file-changed", { detail: { path: dateTimePickerItem.path } }));
+            window.dispatchEvent(new CustomEvent("note-frontmatter-changed", { detail: { path: dateTimePickerItem.path } }));
+            await load();
+          } catch (e) { console.error("[entries-tree] change date failed:", e); }
+        }}
+      />
+    )}
+
     {ctx && (
       <div
         data-menu
@@ -2812,6 +2954,14 @@ function EntriesTree({
         >
           <Tag size={13} /> <span>Edit tags…</span>
         </button>
+        <button
+          type="button"
+          onClick={() => { void changeDate(ctx.item); }}
+          className="w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-[#2a3136] flex items-center space-x-2"
+        >
+          <Calendar size={13} /> <span>Change date…</span>
+        </button>
+
         <button
           type="button"
           onClick={() => { const it = ctx.item; setCtx(null); void remove(it); }}
@@ -2908,7 +3058,11 @@ function EntriesTree({
       <span className="flex-shrink-0 text-sm leading-none">{it.icon || '📝'}</span>
       <div className="flex-1 min-w-0">
       <div className="text-sm truncate text-gray-200">{it.title || 'Untitled entry'}</div>
-      {it.date && <div className="text-[10px] text-gray-500 truncate">{formatEntryDate(it.date)}</div>}
+      {it.date && (
+        <div className="text-[10px] text-gray-500 truncate">
+          {formatEntryDate(it.date)}
+        </div>
+      )}
       </div>
 
       </div>

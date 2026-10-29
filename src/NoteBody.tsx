@@ -11,6 +11,15 @@ import {
   useCreateBlockNote,
   getDefaultReactSlashMenuItems,
   SuggestionMenuController,
+  FormattingToolbar,
+  FormattingToolbarController,
+  BlockTypeSelect,
+  BasicTextStyleButton,
+  ColorStyleButton,
+  CreateLinkButton,
+  NestBlockButton,
+  UnnestBlockButton,
+  useBlockNoteEditor,
 } from "@blocknote/react";
 import { BlockNoteView } from "@blocknote/mantine";
 import * as locales from "@blocknote/core/locales";
@@ -29,6 +38,7 @@ import {
     useRef,
     useState,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   readTextFile,
   readDir,
@@ -668,11 +678,11 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         BlockNoteSchema.create().extend({
           blockSpecs: {
             callout: createCallout(),
-                                        bookmark: createBookmark(),
-                                        video: createVideo(),
-                                        scripture: createScripture(),
-                                        dmarchive: createDmArchive(),
-                                        imagegallery: createImageGallery(),
+            bookmark: createBookmark(),
+            video: createVideo(),
+            scripture: createScripture(),
+            dmarchive: createDmArchive(),
+            imagegallery: createImageGallery(),
           },
         })
       ),
@@ -2641,7 +2651,9 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
           fm = { ...onDisk, ...frontmatterRef.current };
         } catch {}
 
-        fm.modified = new Date().toISOString();
+        if (fm.freezeModified !== true) {
+          fm.modified = new Date().toISOString();
+        }
         frontmatterRef.current = fm;
 
         // Atomic, crash-safe write. Never touches the original until the
@@ -3347,22 +3359,17 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
     useEffect(() => {
       const handler = (e: Event) => {
         const detail = (e as CustomEvent).detail as { path?: string } | undefined;
-        if (!detail?.path) return;
-        const child = path.replace(/\\/g, "/");
-        const parent = detail.path.replace(/\\/g, "/").replace(/\/+$/, "");
-        if (child !== parent && !child.startsWith(parent + "/")) return;
-
-        disposedRef.current = true;
-        dirtyRef.current = false;
-        isNewFileRef.current = false;
-
-        if (saveTimerRef.current !== null) {
-          clearTimeout(saveTimerRef.current);
-          saveTimerRef.current = null;
-        }
+        if (detail?.path !== path) return;
+        (async () => {
+          try {
+            const raw = await readTextFile(path);
+            const { frontmatter } = parseNoteFile(raw);
+            frontmatterRef.current = { ...frontmatter };
+          } catch {}
+        })();
       };
-      window.addEventListener("note-deleted", handler);
-      return () => window.removeEventListener("note-deleted", handler);
+      window.addEventListener("note-frontmatter-changed", handler);
+      return () => window.removeEventListener("note-frontmatter-changed", handler);
     }, [path]);
 
     useEffect(() => {
@@ -3559,8 +3566,10 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
           const merged: Frontmatter = {
             ...onDisk,
             ...patch,
-            modified: new Date().toISOString(),
           };
+          if (merged.freezeModified !== true) {
+            merged.modified = new Date().toISOString();
+          }
           for (const k of Object.keys(merged)) {
             if (
               merged[k] === "" ||
@@ -4314,8 +4323,26 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       editor={editor}
       theme={bnTheme}
       slashMenu={false}
+      formattingToolbar={false}
       onChange={handleContentChange}
       >
+      <FormattingToolbarController
+        formattingToolbar={() => (
+          <FormattingToolbar>
+            <BlockTypeSelect key="blockTypeSelect" />
+            <BasicTextStyleButton basicTextStyle="bold" key="boldStyleButton" />
+            <BasicTextStyleButton basicTextStyle="italic" key="italicStyleButton" />
+            <BasicTextStyleButton basicTextStyle="underline" key="underlineStyleButton" />
+            <BasicTextStyleButton basicTextStyle="strike" key="strikeStyleButton" />
+            {/* The original color picker (for individual letters) */}
+            <ColorStyleButton key="colorStyleButton" />
+
+            <CreateLinkButton key="createLinkButton" />
+            <NestBlockButton key="nestBlockButton" />
+            <UnnestBlockButton key="unnestBlockButton" />
+          </FormattingToolbar>
+        )}
+      />
       <SuggestionMenuController
       triggerCharacter="/"
       getItems={getSlashMenuItems}

@@ -412,6 +412,11 @@ useEffect(() => {
 
   useEffect(() => {
     if (!dragStart) return;
+
+    // Prevent text selection while dragging
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "move";
+
     const onMove = (e: MouseEvent) => {
       setPickerPos({
         x: dragStart.px + (e.clientX - dragStart.mx),
@@ -424,11 +429,17 @@ useEffect(() => {
     return () => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
     };
   }, [dragStart]);
 
   useEffect(() => {
     if (!pickerResizing) return;
+
+    // Prevent text selection while resizing
+    document.body.style.userSelect = "none";
+
     const onMove = (e: MouseEvent) => {
       const dx = e.clientX - pickerResizing.startX;
       const dy = e.clientY - pickerResizing.startY;
@@ -446,6 +457,7 @@ useEffect(() => {
     return () => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      document.body.style.userSelect = "";
     };
   }, [pickerResizing]);
 
@@ -1501,6 +1513,7 @@ useEffect(() => {
       {coverPickerOpen && (
         <div
           ref={coverPanelRef}
+          data-no-marquee
           className="fixed z-[100] bg-[#1e2327] border border-[#2a3136] rounded-lg shadow-2xl overflow-hidden flex flex-col"
           style={{
             top: pickerPos.y,
@@ -1531,6 +1544,7 @@ useEffect(() => {
             onMouseDown={(e) => {
               if ((e.target as HTMLElement).closest("[data-no-drag]")) return;
               e.preventDefault();
+              e.stopPropagation();
               setDragStart({ mx: e.clientX, my: e.clientY, px: pickerPos.x, py: pickerPos.y });
             }}>
             <div className="flex items-center gap-2 text-sm font-medium text-gray-100">

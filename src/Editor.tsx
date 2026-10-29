@@ -10,7 +10,7 @@ import {
   Type as TypeIcon, Sparkles, Sliders, Move, Trash2,
   Columns2, Columns3, Columns4, Square, GripHorizontal,
   ArrowUp, ArrowDown, Minus, Upload, Link as LinkIcon,
-  Maximize2, Minimize2, List, Code2, Copy, Check, Plus, Zap,
+  Maximize2, Minimize2, List, Code2, Copy, Check, Plus, Zap, Clock,
 } from "lucide-react";
 import EmojiPicker, { Theme, EmojiStyle } from "emoji-picker-react";
 
@@ -146,8 +146,8 @@ export default function Editor({
   const [title, setTitle] = useState(entryMode ? "" : displayTitle(activeNote.name));
   const [entryDate, setEntryDate] = useState("");
   const dateInputRef = useRef<HTMLInputElement>(null);
-  const [modifiedAt, setModifiedAt] = useState<string>(new Date().toLocaleString());
-  const [createdAt] = useState<string>(new Date().toLocaleString());
+  const [modifiedAt, setModifiedAt] = useState<string>(new Date().toLocaleString("en-US", { year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }));
+  const [createdAt, setCreatedAt] = useState<string>("");
   const [wordCount, setWordCount] = useState(0);
   const { mode, toggle } = useNoteMode();
   const { modal, confirmAsync } = useModal();
@@ -184,6 +184,7 @@ export default function Editor({
   const [docWidth, setDocWidth] = useState<DocWidthId>("default");
   const [proxiesOn, setProxiesOn] = useState(false);
   const proxyFeature = useProxyFeature();
+  const [showModifiedAt, setShowModifiedAt] = useState(true);
 
   const [tags, setTags] = useState<string[]>([]);
   const [allVaultTags, setAllVaultTags] = useState<string[]>([]);
@@ -354,6 +355,7 @@ export default function Editor({
         setDocWidth(((frontmatter.docWidth as string) as DocWidthId) || "default");
         setProxiesOn(frontmatter.proxies === true);
         setProxyPref(activeNote.path, frontmatter.proxies === true);
+        setShowModifiedAt(frontmatter.freezeModified !== true);
         if (entryMode) {
           setTitle((frontmatter.title as string) || "");
           setEntryDate(typeof frontmatter.date === "string" ? frontmatter.date.slice(0, 10) : "");
@@ -400,13 +402,19 @@ export default function Editor({
           setCoverOverlayColor((frontmatter.coverOverlayColor as string) || "#000000");
           setCoverOverlayOpacity(typeof frontmatter.coverOverlayOpacity === "number" ? frontmatter.coverOverlayOpacity : 0);
           setTitleColor((frontmatter.titleColor as string) || "");
+          setShowModifiedAt(frontmatter.freezeModified !== true);
           setTags(tagsFromFrontmatter(frontmatter));
+          setCreatedAt(frontmatter.created ? new Date(frontmatter.created).toLocaleString("en-US", { year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : "");
+          if (entryMode) {
+            setTitle((frontmatter.title as string) || "");
+            setEntryDate(typeof frontmatter.date === "string" ? frontmatter.date.slice(0, 10) : "");
+          }
         } catch {}
       })();
     };
     window.addEventListener("note-frontmatter-changed", handler);
     return () => window.removeEventListener("note-frontmatter-changed", handler);
-  }, [activeNote.path]);
+  }, [activeNote.path, entryMode]);
 
   useEffect(() => {
     const onFocus = async () => {
@@ -420,7 +428,9 @@ export default function Editor({
         setCoverOverlayColor((frontmatter.coverOverlayColor as string) || "#000000");
         setCoverOverlayOpacity(typeof frontmatter.coverOverlayOpacity === "number" ? frontmatter.coverOverlayOpacity : 0);
         setTitleColor((frontmatter.titleColor as string) || "");
+        setShowModifiedAt(frontmatter.freezeModified !== true);
         setTags(tagsFromFrontmatter(frontmatter));
+        setCreatedAt(frontmatter.created ? new Date(frontmatter.created).toLocaleString("en-US", { year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : "");
       } catch {}
     };
     window.addEventListener("focus", onFocus);
@@ -429,17 +439,31 @@ export default function Editor({
 
   useEffect(() => {
     if (!dragStart) return;
+
+    // Prevent text selection while dragging
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "move";
+
     const onMove = (e: MouseEvent) => {
       setPickerPos({ x: dragStart.px + (e.clientX - dragStart.mx), y: dragStart.py + (e.clientY - dragStart.my) });
     };
     const onUp = () => setDragStart(null);
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
-    return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
+    };
   }, [dragStart]);
 
   useEffect(() => {
     if (!pickerResizing) return;
+
+    // Prevent text selection while resizing
+    document.body.style.userSelect = "none";
+
     const onMove = (e: MouseEvent) => {
       const dx = e.clientX - pickerResizing.startX;
       const dy = e.clientY - pickerResizing.startY;
@@ -457,6 +481,7 @@ export default function Editor({
     return () => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      document.body.style.userSelect = "";
     };
   }, [pickerResizing]);
 
@@ -702,6 +727,14 @@ export default function Editor({
     const next = !coverTextShadow;
     setCoverTextShadow(next);
     await noteBodyRef.current?.updateFrontmatter({ coverTextShadow: next });
+  };
+
+  const toggleShowModifiedAt = async () => {
+    const next = !showModifiedAt;
+    setShowModifiedAt(next);
+    await noteBodyRef.current?.updateFrontmatter({
+      freezeModified: next ? undefined : true,
+    });
   };
 
   const toggleProxies = async () => {
@@ -1010,7 +1043,6 @@ export default function Editor({
       <div className="absolute z-[5]" style={{ left: `${titleX}%`, top: `${titleY}%`, transform: "translate(-50%, -50%)", width: "80%", maxWidth: "48rem" }}>
         <div>
           {titleInputEl}
-          {dateEl}
         </div>
       </div>
     );
@@ -1143,7 +1175,7 @@ export default function Editor({
       )}
 
       <div className="flex-1">
-        <div className={`relative w-full ${hasCover ? "h-56" : "h-44"} mb-2`}>
+        <div className={`relative w-full ${hasCover ? "h-56" : "h-28"} mb-2`}>
           {hasCover && (
             <>
               <div className="absolute inset-0 overflow-hidden" style={{ borderRadius: coverRadius > 0 ? `${coverRadius}px` : undefined, ...featherMask }}>
@@ -1212,8 +1244,12 @@ export default function Editor({
         <div className={`${contentWrap} pt-2 pb-3`}>
           <div className="flex items-center justify-center space-x-4 text-xs text-gray-400">
             <span>Created: {createdAt}</span>
-            <span>•</span>
-            <span>Last Modified: {modifiedAt}</span>
+            {showModifiedAt && (
+              <>
+                <span>•</span>
+                <span>Last Modified: {modifiedAt}</span>
+              </>
+            )}
             {wordCount > 0 && (<><span>•</span><span>{wordCount} words</span></>)}
           </div>
         </div>
@@ -1236,8 +1272,8 @@ export default function Editor({
             onWordCountChange={setWordCount}
             onOpenNoteByPath={onOpenNoteByPath}
             onImageClick={(srcs, index) => setLightbox({ srcs, index })}
-            onLoaded={() => setModifiedAt(new Date().toLocaleString())}
-            onSaved={() => setModifiedAt(new Date().toLocaleString())}
+            onLoaded={() => setModifiedAt(new Date().toLocaleString("en-US", { year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }))}
+            onSaved={() => setModifiedAt(new Date().toLocaleString("en-US", { year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }))}
             onFrontmatterLoaded={(fm: Frontmatter) => {
               setIcon((fm.icon as string) || "");
               setShowHeaderIcon(fm.showHeaderIcon !== false);
@@ -1263,6 +1299,8 @@ export default function Editor({
               setDocWidth(((fm.docWidth as string) as DocWidthId) || "default");
               setProxiesOn(fm.proxies === true);
               setProxyPref(activeNote.path, fm.proxies === true);
+              setShowModifiedAt(fm.freezeModified !== true);
+              setCreatedAt(fm.created ? new Date(fm.created).toLocaleString("en-US", { year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : "");
               if (entryMode) {
                 setTitle((fm.title as string) || "");
                 setEntryDate(typeof fm.date === "string" ? fm.date.slice(0, 10) : "");
@@ -1276,6 +1314,7 @@ export default function Editor({
       {coverPickerOpen && (
         <div
           ref={coverPanelRef}
+          data-no-marquee
           className="fixed z-[100] bg-[#1e2327] border border-[#2a3136] rounded-lg shadow-2xl overflow-hidden flex flex-col"
           style={{
             top: pickerPos.y,
@@ -1302,7 +1341,7 @@ export default function Editor({
         className="absolute bottom-0 right-0 w-3 h-3 cursor-nwse-resize hover:bg-blue-500/60 transition-colors z-20"
         title="Drag to resize"
         />
-          <div className="flex items-center justify-between px-3 py-2 border-b border-[#2a3136] cursor-move select-none bg-[#1a1e21]" onMouseDown={(e) => { if ((e.target as HTMLElement).closest("[data-no-drag]")) return; e.preventDefault(); setDragStart({ mx: e.clientX, my: e.clientY, px: pickerPos.x, py: pickerPos.y }); }}>
+          <div className="flex items-center justify-between px-3 py-2 border-b border-[#2a3136] cursor-move select-none bg-[#1a1e21]" onMouseDown={(e) => { if ((e.target as HTMLElement).closest("[data-no-drag]")) return; e.preventDefault(); e.stopPropagation(); setDragStart({ mx: e.clientX, my: e.clientY, px: pickerPos.x, py: pickerPos.y }); }}>
             <div className="flex items-center gap-2 text-sm font-medium text-gray-100">
               <GripHorizontal size={14} className="text-gray-500" />
               <Palette size={14} />
@@ -1458,6 +1497,42 @@ export default function Editor({
             unit="%"
             onChange={(v) => updateCoverOverlay({ opacity: v })}
             />
+            </div>
+
+            <div className="border-t border-[#2a3136] pt-3">
+              <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-2 flex items-center gap-1.5">
+                <Clock size={10} /> Dates
+              </div>
+              <button
+                type="button"
+                onClick={toggleShowModifiedAt}
+                className="w-full flex items-center justify-between text-xs text-gray-300 hover:text-gray-100 px-2 py-1.5 rounded hover:bg-[#2a3136] transition-colors cursor-pointer"
+              >
+                <span>Show modified date</span>
+                <span
+                  className="relative rounded-full transition-colors flex-shrink-0"
+                  style={{
+                    width: 28,
+                    height: 16,
+                    backgroundColor: showModifiedAt ? "#3b82f6" : "#3a4147",
+                  }}
+                >
+                  <span
+                    className="absolute rounded-full bg-white"
+                    style={{
+                      width: 12,
+                      height: 12,
+                      top: 2,
+                      left: showModifiedAt ? 14 : 2,
+                      transition: "left 150ms ease",
+                      boxShadow: "0 1px 2px rgba(0,0,0,0.3)",
+                    }}
+                  />
+                </span>
+              </button>
+              <p className="text-[10px] text-gray-600 mt-1.5 leading-snug">
+                When off, editing this note won't touch its <span className="font-mono">modified</span> field, and the "Last Modified" line is hidden from the header.
+              </p>
             </div>
 
             <div className="border-t border-[#2a3136] pt-3">

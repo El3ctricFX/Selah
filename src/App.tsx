@@ -186,6 +186,73 @@ export default function App() {
     );
   }, [vaultPath]);
 
+  // Listen for folder renames to update the active view instantly
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const { oldDir, newDir } = (e as CustomEvent).detail;
+      if (!oldDir || !newDir) return;
+
+      setActiveView((prev) => {
+        if (!prev || prev.kind === "note" || prev.kind === "journal") return prev;
+        // Check if the active view's directory belongs to the renamed folder
+        const normDir = prev.dir.replace(/\\/g, "/");
+        if (normDir.includes(`/${oldDir}`) || normDir.endsWith(oldDir)) {
+          const nextDir = normDir.replace(oldDir, newDir);
+          return { ...prev, dir: nextDir };
+        }
+        return prev;
+      });
+    };
+    window.addEventListener("folder-renamed", handler);
+    return () => window.removeEventListener("folder-renamed", handler);
+  }, []);
+
+  useEffect(() => {
+    const handleNoteDeleted = (e: Event) => {
+      const deletedPath = (e as CustomEvent).detail?.path;
+      if (!deletedPath) return;
+
+      const norm = (p: string) => p.replace(/\\/g, "/");
+      const target = norm(deletedPath);
+
+      // Only intercept if the currently open view is a note that was just deleted
+      if (activeView?.kind === "note" && norm(activeView.path) === target) {
+        const normVault = norm(vaultPath).replace(/\/+$/, "");
+        const owner = vaultCategories.find(cat => {
+          if (!cat.dirName) return false;
+          const prefix = `${normVault}/${cat.dirName}/`;
+          return target.startsWith(prefix);
+        });
+
+        if (owner) {
+          // Switch back to the category's root view (e.g., the Diary list)
+          if (owner.mode === "entries") {
+            setActiveCategoryId(owner.id);
+            setActiveView({ kind: "entries", dir: `${vaultPath}/${owner.dirName}`, name: owner.name, icon: owner.icon, categoryId: owner.id });
+          } else if (owner.mode === "notes") {
+            setActiveCategoryId(owner.id);
+            setActiveView({ kind: "notes", dir: `${vaultPath}/${owner.dirName}`, name: owner.name, icon: owner.icon, categoryId: owner.id });
+          } else if (owner.mode === "journal") {
+            setActiveCategoryId(owner.id);
+            setActiveView({ kind: "journal", dir: `${vaultPath}/${owner.dirName}` });
+          } else if (owner.mode === "gallery") {
+            setActiveCategoryId(owner.id);
+            setActiveView({ kind: "gallery", dir: `${vaultPath}/${owner.dirName}`, name: owner.name });
+          } else if (owner.mode === "abba") {
+            setActiveCategoryId(owner.id);
+            setActiveView({ kind: "abba", dir: `${vaultPath}/${owner.dirName}`, name: owner.name, icon: owner.icon });
+          }
+        } else {
+          // Fallback: If we can't figure out which category it belonged to, go Home
+          setActiveView(null);
+        }
+      }
+    };
+
+    window.addEventListener("note-deleted", handleNoteDeleted);
+    return () => window.removeEventListener("note-deleted", handleNoteDeleted);
+  }, [activeView, vaultPath, vaultCategories]);
+
   useEffect(() => {
     if (!vaultPath) {
       setVaultCategories([]);
