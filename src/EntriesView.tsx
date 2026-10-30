@@ -130,6 +130,7 @@ export default function EntriesView({ sectionDir, sectionName, sectionIcon, onOp
 
     // Parses a loose date string into a YYYY-MM-DD value. Accepts
     // ISO, US slash format, "October 4, 2026", "Oct 4", "today" etc.
+    // @ts-expect-error: unused helper kept for reference
     function parseFlexibleDateInput(raw: string): string | null {
         const s = raw.trim().toLowerCase();
         if (!s) return null;

@@ -217,7 +217,7 @@ export default function App() {
 
       // Only intercept if the currently open view is a note that was just deleted
       if (activeView?.kind === "note" && norm(activeView.path) === target) {
-        const normVault = norm(vaultPath).replace(/\/+$/, "");
+        const normVault = norm(vaultPath ?? "").replace(/\/+$/, "");
         const owner = vaultCategories.find(cat => {
           if (!cat.dirName) return false;
           const prefix = `${normVault}/${cat.dirName}/`;

@@ -89,6 +89,7 @@ function parentDirOf(p: string): string {
   return i === -1 ? p : p.substring(0, i);
 }
 
+// @ts-expect-error: unused helper kept for reference
 function parseFlexibleDateInput(raw: string): string | null {
   const s = raw.trim().toLowerCase();
   if (!s) return null;
@@ -2681,7 +2682,7 @@ function JournalTree({
 }
 
 function EntriesTree({
-  category, categoryDir, vaultPath, activeView, onOpenNote, onOpenEntries, confirmAsync, promptAsync,
+  category, categoryDir, activeView, onOpenNote, onOpenEntries, confirmAsync, promptAsync,
 }: {
   category: Category;
   categoryDir: (cat: Category) => Promise<string>;

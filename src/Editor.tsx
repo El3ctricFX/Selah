@@ -995,7 +995,8 @@ export default function Editor({
     />
   );
 
-  const dateEl = entryMode ? (
+  // @ts-expect-error: kept for future use
+  const _dateEl = entryMode ? (
     <div className="flex justify-center items-center mt-0.5 relative">
       {(entryDate || mode === "edit") && (
         <button

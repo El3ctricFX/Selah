@@ -19,7 +19,6 @@ import {
   CreateLinkButton,
   NestBlockButton,
   UnnestBlockButton,
-  useBlockNoteEditor,
 } from "@blocknote/react";
 import { BlockNoteView } from "@blocknote/mantine";
 import * as locales from "@blocknote/core/locales";
@@ -38,7 +37,7 @@ import {
     useRef,
     useState,
 } from "react";
-import { createPortal } from "react-dom";
+
 import {
   readTextFile,
   readDir,
