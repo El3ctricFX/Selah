@@ -42,7 +42,7 @@ modules:
     buildsystem: simple
     build-commands:
       - mkdir -p /app/lib/ffmpeg
-      - ar x Selah_0.2.0_amd64.deb
+      - ar x Selah_0.2.1_amd64.deb
       - tar -xf data.tar.* -C /app
 
       # The binary inside the .deb is lowercase ("selah", from Cargo.toml's
@@ -78,4 +78,4 @@ modules:
         install -Dm644 /tmp/Selah.desktop /app/share/applications/io.github.el3ctricfx.selah.desktop
     sources:
       - type: file
-        path: ../src-tauri/target/release/bundle/deb/Selah_0.2.0_amd64.deb
+        path: ../src-tauri/target/release/bundle/deb/Selah_0.2.1_amd64.deb
