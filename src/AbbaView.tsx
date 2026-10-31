@@ -2028,6 +2028,8 @@ function RichLinksSection({
   const [linkDraft, setLinkDraft] = useState("");
   const [savingLink, setSavingLink] = useState(false);
 
+  if (!isEdit && links.length === 0) return null;
+
   const addLink = async () => {
     const url = normalizeUrl(linkDraft);
     if (!url) return;
