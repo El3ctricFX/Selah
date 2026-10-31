@@ -414,6 +414,33 @@ export function videoSrcsToRelativePaths(md: string, noteDir: string): string {
   });
 }
 
+// ── Audio src transforms ────────────────────────────────────────────────
+export function audioSrcsToAssetUrls(md: string, noteDir: string): string {
+  return md.replace(/(::: audio\b[^\n]*?\bsrc=")([^"]+)(")/g, (_m, pre, src, post) => {
+    if (/^(https?:|data:|blob:|asset:)/i.test(src)) return pre + src + post;
+    const decoded = safeDecode(src);
+    const sep = noteDir.includes("\\") ? "\\" : "/";
+    const abs = noteDir.replace(/[\\/]+$/, "") + sep + decoded;
+    try {
+      return pre + convertFileSrc(abs) + post;
+    } catch {
+      return pre + src + post;
+    }
+  });
+}
+
+export function audioSrcsToRelativePaths(md: string, noteDir: string): string {
+  return md.replace(/(::: audio\b[^\n]*?\bsrc=")([^"]+)(")/g, (_m, pre, url, post) => {
+    const absPath = assetUrlToAbsolutePath(url);
+    if (!absPath) return pre + url + post;
+    const normNote = noteDir.replace(/\\/g, "/").replace(/\/+$/, "");
+    const normAbs = absPath.replace(/\\/g, "/");
+    if (!normAbs.startsWith(normNote + "/")) return pre + url + post;
+    const rel = normAbs.slice(normNote.length + 1);
+    return pre + encodeAssetPath(rel) + post;
+  });
+}
+
 // ── DM archive src transforms ───────────────────────────────────────────
 function convertSrcs(
   srcsRaw: string,

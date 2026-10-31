@@ -204,7 +204,12 @@ function extractRefs(body: string, fm: Record<string, unknown>): string[] {
       .replace(/&quot;/g, '"').replace(/&#10;/g, "\n").replace(/&amp;/g, "&");
     if (raw) refs.add(raw);
   }
-
+  const audRe = /::: audio[^\n]*?\bsrc="([^"]*)"/g;
+  while ((m = audRe.exec(body)) !== null) {
+    const raw = m[1]
+    .replace(/&quot;/g, '"').replace(/&#10;/g, "\n").replace(/&amp;/g, "&");
+    if (raw) refs.add(raw);
+  }
   const cv = fm.coverValue;
   if (typeof cv === "string" && cv && !/^(https?:|data:|blob:)/i.test(cv)) {
     refs.add(cv);

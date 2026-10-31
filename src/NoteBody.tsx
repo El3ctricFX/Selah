@@ -76,12 +76,14 @@ import {
   ChevronUp,
   ChevronDown,
   Maximize2,
+  Music,
 } from "lucide-react";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { createCallout } from "./Callout";
 import { createBookmark } from "./Bookmark";
 import { createVideo } from "./VideoBlock";
+import { createAudio } from "./AudioBlock";
 import { createScripture } from "./ScriptureBlock";
 import { createDmArchive } from "./DmArchive";
 import { isReliablyEmbeddable } from "./embeds";
@@ -105,6 +107,8 @@ import {
   markdownImagesToRelativePaths,
   videoSrcsToAssetUrls,
   videoSrcsToRelativePaths,
+  audioSrcsToAssetUrls,
+  audioSrcsToRelativePaths,
   dmarchiveSrcsToAssetUrls,
   dmarchiveSrcsToRelativePaths,
   assetUrlToAbsolutePath,
@@ -177,6 +181,13 @@ function collectImageUrls(blocks: any[]): string[] {
     for (const b of bs) {
       if (b?.type === "image" && b.props?.url) {
         out.push(b.props.url as string);
+      }
+      // Audio files live in the same per-note assets folder as images,
+      // so they need to be tracked here too — otherwise deleting an
+      // audio block leaves its file orphaned on disk with nothing to
+      // prompt the user about.
+      if (b?.type === "audio" && b.props?.src) {
+        out.push(b.props.src as string);
       }
       if (Array.isArray(b?.children)) walk(b.children);
     }
@@ -387,7 +398,7 @@ function resolveDropTarget(
 
 
 const IMAGE_EXT_RE = /\.(png|jpe?g|webp|gif|avif|bmp|svg)$/i;
-const VIDEO_EXT_RE = /\.(mp4|webm|mov|mkv|m4v|avi|ogv)$/i;
+const AUDIO_EXT_RE = /\.(mp3|wav|ogg|oga|opus|m4a|aac|flac|weba)$/i;
 
 const URL_RE = /^https?:\/\/\S+$/i;
 const DEBOUNCE_MS = 150;
@@ -683,6 +694,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
             callout: createCallout(),
             bookmark: createBookmark(),
             video: createVideo(),
+            audio: createAudio(),
             scripture: createScripture(),
             dmarchive: createDmArchive(),
             imagegallery: createImageGallery(),
@@ -2640,7 +2652,8 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         const rawBody = await blocksToNoteBody(editor, editor.document);
         const withImgs = markdownImagesToRelativePaths(rawBody, noteDirOf(path));
         const withVideos = videoSrcsToRelativePaths(withImgs, noteDirOf(path));
-        const withDm = dmarchiveSrcsToRelativePaths(withVideos, noteDirOf(path));
+        const withAudio = audioSrcsToRelativePaths(withVideos, noteDirOf(path));
+        const withDm = dmarchiveSrcsToRelativePaths(withAudio, noteDirOf(path));
         const body = imageGalleryToRelativePaths(withDm, noteDirOf(path));
         const wordCount = countWords(body);
         onWordCountChange?.(wordCount);
@@ -2787,6 +2800,25 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       [path, insertBlocksSmart]
     );
 
+    const saveAndInsertAudioFiles = useCallback(
+      async (files: File[]) => {
+        for (const file of files.filter((f) => f.type.startsWith("audio/"))) {
+          try {
+            const ext = (file.name.split(".").pop() || "mp3").toLowerCase();
+            const name = file.name && file.name !== "blob" ? file.name : `audio-${Date.now()}.${ext}`;
+            const bytes = new Uint8Array(await file.arrayBuffer());
+            const dest = await writeImageBytesToNoteAssets(path, bytes, name);
+            insertBlocksSmart([
+              { type: "audio", props: { src: convertFileSrc(dest), caption: "", fileName: name } },
+            ]);
+          } catch (e) {
+            console.error("[audio] save pasted audio failed:", e);
+          }
+        }
+      },
+      [path, insertBlocksSmart]
+    );
+
     const saveAndInsertFilePaths = useCallback(
       async (paths: string[], target?: DropTarget | null) => {
         // ── Images ────────────────────────────────────────────────
@@ -2843,6 +2875,23 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
             );
           } catch (e) {
             console.error("[paste] save video from path failed:", p, e);
+          }
+        }
+
+        // ── Audio ─────────────────────────────────────────────────
+        for (const p of paths) {
+          if (!AUDIO_EXT_RE.test(p)) continue;
+          try {
+            const dest = await saveFileToNoteAssets(path, p);
+            const url = convertFileSrc(dest);
+            const fileName = dest.split(/[/\\]/).pop() || "audio";
+            insertBlocksSmart(
+              [{ type: "audio", props: { src: url, caption: "", fileName } }],
+              target?.kind === "insert" ? target.refId : null,
+              target?.kind === "insert" ? target.placement : undefined
+            );
+          } catch (e) {
+            console.error("[paste] save audio from path failed:", p, e);
           }
         }
       },
@@ -2982,7 +3031,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
             const item = cd.items[i];
 
             if (item.kind !== "file") continue;
-            if (!/^image\/|^video\//i.test(item.type)) continue;
+            if (!/^image\/|^video\/|^audio\//i.test(item.type)) continue;
               const f = item.getAsFile();
             if (f) collected.push(f);
           }
@@ -2991,7 +3040,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
           for (let i = 0; i < cd.files.length; i++) {
             const f = cd.files[i];
 
-            if (/^image\/|^video\//i.test(f.type)) collected.push(f);
+            if (/^image\/|^video\/|^audio\//i.test(f.type)) collected.push(f);
           }
         }
 
@@ -3004,6 +3053,8 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
           const vids = collected.filter((f) => f.type.startsWith("video/"));
           if (imgs.length > 0) saveAndInsertImageFiles(imgs);
           if (vids.length > 0) saveAndInsertVideoFiles(vids);
+          const auds = collected.filter((f) => f.type.startsWith("audio/"));
+          if (auds.length > 0) saveAndInsertAudioFiles(auds);
           return;
         }
 
@@ -3148,7 +3199,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
 
       document.addEventListener("paste", handler, true);
       return () => document.removeEventListener("paste", handler, true);
-    }, [isLoading, saveAndInsertImageFiles, saveAndInsertVideoFiles,
+    }, [isLoading, saveAndInsertImageFiles, saveAndInsertVideoFiles, saveAndInsertAudioFiles,
     saveAndInsertFilePaths, editor]);
 
     useEffect(() => {
@@ -3252,8 +3303,9 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
 
           const withImgs = markdownImagesToAssetUrls(body, noteDirOf(path));
           const withVideos = videoSrcsToAssetUrls(withImgs, noteDirOf(path));
+          const withAudio = audioSrcsToAssetUrls(withVideos, noteDirOf(path));
           const withDmArchives = dmarchiveSrcsToAssetUrls(
-            withVideos,
+            withAudio,
             noteDirOf(path)
           );
           const withGalleries = imageGalleryToAssetUrls(
@@ -3897,7 +3949,43 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       }),
       [editor, path, insertBlocksSmart]
     );
-
+    const insertAudioMenuItem = useCallback(
+      () => ({
+        title: "Upload audio",
+        subtext: "Insert an audio file from your computer",
+        onItemClick: async () => {
+          let refId: string | null = null;
+          try { refId = editor.getTextCursorPosition?.().block?.id ?? null; } catch {}
+          try {
+            const picked = await open({
+              multiple: true,
+              filters: [{
+                name: "Audio",
+                extensions: ["mp3", "wav", "ogg", "oga", "opus", "m4a", "aac", "flac", "weba"],
+              }],
+            });
+            if (!picked) return;
+            const list = Array.isArray(picked) ? picked : [picked];
+            for (const src of list) {
+              if (typeof src !== "string") continue;
+              const dest = await saveFileToNoteAssets(path, src);
+              const url = convertFileSrc(dest);
+              const fileName = dest.split(/[/\\]/).pop() || "audio";
+              insertBlocksSmart(
+                [{ type: "audio", props: { src: url, caption: "", fileName } }],
+                refId
+              );
+            }
+          } catch (e) {
+            console.error("[audio] picker failed:", e);
+          }
+        },
+        aliases: ["audio", "sound", "music", "recording", "mp3", "voice", "upload"],
+        group: "Basic blocks",
+        icon: <span className="text-base">🎵</span>,
+      }),
+      [editor, path, insertBlocksSmart]
+    );
     const insertScriptureMenuItem = useCallback(
       () => ({
         title: "Bible verse",
@@ -4010,6 +4098,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
                                       insertNoteLinkMenuItem(),
                                       insertImageMenuItem(),
                                       insertVideoMenuItem(),
+                                      insertAudioMenuItem(),
                                       insertScriptureMenuItem(),
                                       insertImageGalleryMenuItem(),
 
@@ -4025,7 +4114,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         );
       };
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [editor, openLinkPicker, insertImageMenuItem, insertVideoMenuItem, insertScriptureMenuItem, insertDmArchiveMenuItem, insertImageGalleryMenuItem]);
+    }, [editor, openLinkPicker, insertImageMenuItem, insertVideoMenuItem, insertAudioMenuItem, insertScriptureMenuItem, insertDmArchiveMenuItem, insertImageGalleryMenuItem]);
 
     useEffect(() => {
       if (!editor) return;
@@ -4212,6 +4301,19 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
     const canDeleteFromDisk = pendingImageAbs
     ? isInsideNoteAssets(pendingImageAbs, path)
     : false;
+
+    // The queue now holds audio URLs as well as image URLs, so the
+    // confirmation dialog needs to know which it's looking at.
+    const pendingMediaKind: "image" | "audio" | "file" = (() => {
+      if (!pendingImageAbs) return "file";
+      const ext = pendingImageAbs.split(".").pop()?.toLowerCase() || "";
+      if (/^(png|jpe?g|gif|webp|avif|bmp|svg)$/.test(ext)) return "image";
+      if (/^(mp3|wav|ogg|oga|opus|m4a|aac|flac|weba)$/.test(ext)) return "audio";
+      return "file";
+    })();
+    const pendingMediaName = pendingImageAbs
+      ? pendingImageAbs.split(/[/\\]/).pop() || ""
+      : "";
 
     const pasteMenuCanEmbed = pasteMenu
     ? isReliablyEmbeddable(pasteMenu.url)
@@ -4821,7 +4923,11 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         <div className="px-4 py-3 border-b border-[#2a3136] flex items-center gap-2">
         <AlertTriangle size={14} className="text-amber-400" />
         <span className="text-sm font-medium text-gray-100">
-        Delete this photo?
+        {pendingMediaKind === "audio"
+          ? "Delete this audio file?"
+          : pendingMediaKind === "image"
+            ? "Delete this image?"
+            : "Delete this file?"}
         </span>
         <button
         onClick={() => resolveImageDelete("cancel")}
@@ -4833,15 +4939,24 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         </div>
 
         <div className="p-4">
-        <div className="w-full h-44 bg-[#0f1315] rounded-md overflow-hidden flex items-center justify-center mb-4">
-        <img
-        src={pendingImageUrl}
-        alt=""
-        className="max-w-full max-h-full object-contain"
-        onError={(e) => {
-          (e.currentTarget as HTMLImageElement).style.display = "none";
-        }}
-        />
+        <div className="w-full h-44 bg-[#0f1315] rounded-md overflow-hidden flex items-center justify-center mb-4 px-4">
+        {pendingMediaKind === "image" ? (
+          <img
+            src={pendingImageUrl}
+            alt=""
+            className="max-w-full max-h-full object-contain"
+            onError={(e) => {
+              (e.currentTarget as HTMLImageElement).style.display = "none";
+            }}
+          />
+        ) : (
+          <div className="flex flex-col items-center gap-3 text-gray-400 text-center min-w-0">
+            <Music size={36} className="opacity-60 flex-shrink-0" />
+            <span className="text-xs font-mono break-all leading-relaxed">
+              {pendingMediaName || "Audio file"}
+            </span>
+          </div>
+        )}
         </div>
 
         {pendingImageDelete.length > 1 && (
@@ -4851,10 +4966,14 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         )}
 
         <p className="text-xs text-gray-400 leading-relaxed">
-        The image was removed from this note.
+        {pendingMediaKind === "audio"
+          ? "The audio file was removed from this note."
+          : pendingMediaKind === "image"
+            ? "The image was removed from this note."
+            : "The file was removed from this note."}
         {canDeleteFromDisk
           ? " Do you also want to delete the file from disk?"
-          : " This image isn't stored in this note's folder, so it can only be removed from the note."}
+          : " This file isn't stored in this note's folder, so it can only be removed from the note."}
           </p>
 
           <div className="flex flex-col gap-2 mt-4">
@@ -4862,7 +4981,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
           onClick={() => resolveImageDelete("cancel")}
           className="w-full text-xs px-3 py-2 rounded text-gray-300 hover:text-gray-100 hover:bg-[#2a3136] border border-[#2a3136] transition-colors cursor-pointer"
           >
-          Cancel — keep image in note
+          Cancel — keep file in note
           </button>
           <button
           onClick={() => resolveImageDelete("note-only")}
