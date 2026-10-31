@@ -2188,7 +2188,7 @@ export default function GalleryView({ sectionDir, sectionName }: GalleryViewProp
           </h2>
           </div>
 
-                    <div className={`flex items-center gap-2 flex-shrink-0 ${hasCover ? "translate-y-16" : ""}`}>
+                    <div className={`flex items-center gap-2 flex-shrink-0 ${hasCover ? "px-1.5 py-1 rounded-lg bg-black/40 backdrop-blur-sm" : ""}`}>
           {isEdit && (
             <div className="relative flex-shrink-0" ref={titleColorMenuRef}>
               <button
