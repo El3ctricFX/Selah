@@ -19,6 +19,7 @@ import {
   CreateLinkButton,
   NestBlockButton,
   UnnestBlockButton,
+  TextAlignButton,
 } from "@blocknote/react";
 import { BlockNoteView } from "@blocknote/mantine";
 import * as locales from "@blocknote/core/locales";
@@ -4441,6 +4442,15 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
             <BasicTextStyleButton basicTextStyle="strike" key="strikeStyleButton" />
             {/* The original color picker (for individual letters) */}
             <ColorStyleButton key="colorStyleButton" />
+
+            {/* Text alignment — applies to whatever block(s) are selected.
+                This is what was missing, and it's shared by every editor
+                (Journal, Notes, Entries, Abba) because they all render
+                NoteBody. */}
+            <TextAlignButton textAlignment="left" key="alignLeft" />
+            <TextAlignButton textAlignment="center" key="alignCenter" />
+            <TextAlignButton textAlignment="right" key="alignRight" />
+            <TextAlignButton textAlignment="justify" key="alignJustify" />
 
             <CreateLinkButton key="createLinkButton" />
             <NestBlockButton key="nestBlockButton" />
