@@ -26,6 +26,8 @@ import { parseNoteFile, type Frontmatter } from "./noteFormat";
 import { saveImageToNoteAssets, assetsDirForNote, coverValueToRelative, setProxyPref } from "./imageAssets";
 import { writeFileAtomic } from "./safeWrite";
 import { useProxyFeature } from "./proxyFeature";
+import DateTimePickerModal from "./DateTimePickerModal";
+import { moveJournalNoteToDate } from "./journalDateMove";
 
 interface JournalViewProps {
   vaultPath: string;
@@ -212,6 +214,7 @@ export default function JournalView({
   const [proxiesOn, setProxiesOn] = useState(false);
   const proxyFeature = useProxyFeature();
   const [createdAt, setCreatedAt] = useState<string>("");
+  const [createdPickerOpen, setCreatedPickerOpen] = useState(false);
   const [modifiedAt, setModifiedAt] = useState<string>("");
   const [wordCount, setWordCount] = useState(0);
 
@@ -1055,6 +1058,74 @@ useEffect(() => {
     <div className="w-full h-full flex flex-col overflow-hidden bg-[#0f1315]">
       {modal}
 
+      {createdPickerOpen && (
+        <DateTimePickerModal
+          initialIso={createdAt || new Date().toISOString()}
+          title={title || dayName}
+          onClose={() => setCreatedPickerOpen(false)}
+          onSave={async (iso) => {
+            const picked = new Date(iso);
+            const ny = picked.getFullYear();
+            const nm = picked.getMonth() + 1;
+            const nd = picked.getDate();
+            const sameDay =
+              mode !== "day" ||
+              (ny === year && nm === month + 1 && nd === day);
+
+            // Same day (or a month note): only the timestamp changes.
+            if (sameDay || !currentPath) {
+              setCreatedAt(iso);
+              await noteBodyRef.current?.updateFrontmatter({ created: iso });
+              return;
+            }
+
+            // Different day: the entry has to move to that date's file.
+            const newLabel = formatDayName(ny, nm, nd);
+            const destPath = await join(
+              journalDir, String(ny), pad(nm), `${newLabel}.selah`
+            );
+            try {
+              if (await exists(destPath)) {
+                const ok = await confirmAsync(
+                  `An entry already exists for "${newLabel}". It will be moved to the trash and replaced.\n\nContinue?`
+                );
+                if (!ok) return;
+              }
+            } catch {}
+
+            const oldMonthDir = noteDir;
+            try {
+              // Write the new created time, save any pending edits, then
+              // stop this editor from writing to the old file again.
+              await noteBodyRef.current?.updateFrontmatter({ created: iso });
+              try { await noteBodyRef.current?.flush(); } catch {}
+              noteBodyRef.current?.dispose();
+
+              await moveJournalNoteToDate(journalDir, currentPath, ny, nm, nd);
+
+              window.dispatchEvent(
+                new CustomEvent("folder-changed", { detail: { path: oldMonthDir } })
+              );
+              window.dispatchEvent(
+                new CustomEvent("folder-changed", {
+                  detail: { path: await join(journalDir, String(ny), pad(nm)) },
+                })
+              );
+
+              setCreatedPickerOpen(false);
+              setDate(new Date(ny, nm - 1, nd));
+              setMode("day");
+            } catch (e: any) {
+              console.error("[journal] change created date failed:", e);
+              noteBodyRef.current?.rearm();
+              await confirmAsync(
+                `Could not change the date: ${e?.message ?? String(e)}`
+              );
+            }
+          }}
+        />
+      )}
+
       {lightbox && (
         <PhotoLightbox
           srcs={lightbox.srcs} index={lightbox.index}
@@ -1334,7 +1405,18 @@ useEffect(() => {
 
               <div className={`${contentWrap} pt-2 pb-3`}>
                 <div className="flex items-center justify-center space-x-4 text-[11px] text-gray-500">
-                  <span>Created: {formatDate(createdAt)}</span>
+                  {noteMode === "edit" ? (
+                    <button
+                      type="button"
+                      onClick={() => setCreatedPickerOpen(true)}
+                      className="hover:text-gray-200 underline decoration-dotted underline-offset-2 cursor-pointer transition-colors"
+                      title="Click to change the created date"
+                    >
+                      Created: {formatDate(createdAt)}
+                    </button>
+                  ) : (
+                    <span>Created: {formatDate(createdAt)}</span>
+                  )}
                   <span>•</span>
                   <span>Modified: {formatDate(modifiedAt)}</span>
                   {wordCount > 0 && (<><span>•</span><span>{wordCount} words</span></>)}
