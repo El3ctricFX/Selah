@@ -1,5 +1,5 @@
 // src/VaultWelcome.tsx
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Folder, Plus, Trash2 } from "lucide-react";
 import { type RecentVault, vaultStillExists } from "./useRecentVaults";
 
@@ -42,6 +42,7 @@ export default function VaultWelcome({
     vault: RecentVault;
   } | null>(null);
   const [missing, setMissing] = useState<Set<string>>(new Set());
+  const ctxMenuRef = useRef<HTMLDivElement>(null);
 
   // Check which paths no longer exist on disk (moved / renamed / deleted).
   useEffect(() => {
@@ -61,7 +62,10 @@ export default function VaultWelcome({
   // Close the context menu on outside click or Escape.
   useEffect(() => {
     if (!ctxMenu) return;
-    const onDown = () => setCtxMenu(null);
+    const onDown = (e: MouseEvent) => {
+      if (ctxMenuRef.current?.contains(e.target as Node)) return;
+      setCtxMenu(null);
+    };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setCtxMenu(null);
     };
@@ -160,6 +164,7 @@ export default function VaultWelcome({
 
       {ctxMenu && (
         <div
+          ref={ctxMenuRef}
           className="fixed z-50 bg-[#1e2327] border border-[#2a3136] rounded-md shadow-xl py-1 w-52"
           style={{ top: ctxMenu.y, left: ctxMenu.x }}
           onMouseDown={(e) => { if (e.button === 2) { e.stopPropagation(); e.nativeEvent.stopImmediatePropagation(); } }}
