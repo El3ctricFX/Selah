@@ -400,6 +400,7 @@ function resolveDropTarget(
 
 const IMAGE_EXT_RE = /\.(png|jpe?g|webp|gif|avif|bmp|svg)$/i;
 const AUDIO_EXT_RE = /\.(mp3|wav|ogg|oga|opus|m4a|aac|flac|weba)$/i;
+const VIDEO_EXT_RE = /\.(mp4|webm|mov|mkv|m4v|avi|ogv)$/i;
 
 const URL_RE = /^https?:\/\/\S+$/i;
 const DEBOUNCE_MS = 150;
