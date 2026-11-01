@@ -836,10 +836,14 @@ export default function AbbaView({
   const [ctxMenu, setCtxMenu] = useState<ContextMenuState>(null);
   const [iconPicker, setIconPicker] = useState<IconPickerState>(null);
   const iconPickerRef = useRef<HTMLDivElement>(null);
+  const ctxMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!ctxMenu) return;
-    const close = () => setCtxMenu(null);
+    const close = (e: MouseEvent) => {
+      if (ctxMenuRef.current?.contains(e.target as Node)) return;
+      setCtxMenu(null);
+    };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setCtxMenu(null);
     };
@@ -1396,6 +1400,7 @@ export default function AbbaView({
 
         {ctxMenu && (
           <div
+            ref={ctxMenuRef}
             className="fixed z-[400] bg-[#1e2327] border border-[#2a3136] rounded-md shadow-2xl py-1 w-[220px]"
             style={{ top: ctxMenu.y, left: ctxMenu.x }}
             onMouseDown={(e) => { if (e.button === 2) { e.stopPropagation(); e.nativeEvent.stopImmediatePropagation(); } }}
@@ -1798,7 +1803,7 @@ function RichDetail({
   isEdit: boolean;
   onBack: () => void;
   onUpdate: (patch: any) => void;
-  onDelete: () => void;
+  onDelete: () => void | Promise<void>;
   fetchLinkMeta?: (url: string) => Promise<Partial<AbbaLink>>;
   onImageClick?: (srcs: string[], index: number) => void;
 }) {
@@ -1888,7 +1893,13 @@ function RichDetail({
         </button>
         <div className="flex items-center gap-2">
           {isEdit && (
-            <button type="button" onClick={onDelete}
+            <button type="button"
+              onClick={async () => {
+                try { await noteBodyRef.current?.flush(); } catch {}
+                noteBodyRef.current?.dispose();
+                await onDelete();
+                noteBodyRef.current?.rearm(); // no-op if deleted; restores editor if you cancelled
+              }}
               className="text-gray-500 hover:text-red-400 p-1.5 rounded transition-colors"
               title="Delete"><Trash2 size={14} /></button>
           )}
