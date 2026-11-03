@@ -774,6 +774,8 @@ export default function App() {
           icon={activeView.icon}
           focusSection={activeView.focusSection}
           focusNoteId={activeView.focusNoteId}
+          vaultPath={vaultPath}
+          onOpenNoteByPath={openNoteByPath}
           />
         ) : (
           <NotesView

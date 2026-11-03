@@ -593,6 +593,7 @@ interface Prayer {
 }
 
 interface Testimony {
+  linkedNote?: string;
   id: string; date: string; title: string;
   icon?: string;
   created?: string; modified?: string; _fileName?: string;
@@ -621,6 +622,8 @@ interface AbbaViewProps {
   icon?: string;
   focusSection?: string;
   focusNoteId?: string;
+  vaultPath?: string;
+  onOpenNoteByPath?: (path: string) => void;
 }
 
 type ListContextHandler<T> = (e: React.MouseEvent, entity: T) => void;
@@ -785,6 +788,8 @@ export default function AbbaView({
   icon,
   focusSection,
   focusNoteId,
+  vaultPath,
+  onOpenNoteByPath,
 }: AbbaViewProps) {  const [tab, setTab] = useState<Tab>("sermons");
   const [loading, setLoading] = useState(true);
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
@@ -811,6 +816,14 @@ export default function AbbaView({
   const [openEventId, setOpenEventId] = useState<string | null>(null);
 
   const [newSermonDate, setNewSermonDate] = useState<string | null>(null);
+  const [linkPickerOpen, setLinkPickerOpen] = useState(false);
+  const vaultRoot = (vaultPath || abbaDir.replace(/[\\/][^\\/]+[\\/]*$/, ""))
+    .replace(/\\/g, "/").replace(/\/+$/, "");
+  const resolveLinked = (rel?: string): string | undefined => {
+    if (!rel) return undefined;
+    if (/^([a-zA-Z]:[\\/]|\/)/.test(rel)) return rel;
+    return `${vaultRoot}/${rel}`;
+  };
 
   const [lightbox, setLightbox] = useState<
     { scope: AbbaScope; images: string[]; index: number } | null
@@ -1235,6 +1248,22 @@ export default function AbbaView({
     commitTestimonies([t, ...testimonies]);
     setOpenTestimonyId(t.id);
   };
+  const linkTestimony = async (n: PickedNote) => {
+    const now = nowIso();
+    const abs = n.path.replace(/\\/g, "/");
+    const rel = abs.startsWith(vaultRoot + "/") ? abs.slice(vaultRoot.length + 1) : abs;
+    const t: Testimony = {
+      id: newId("testimony"), date: n.date || now, title: n.title,
+      linkedNote: rel, created: now, modified: now,
+    };
+    await ensureAbbaNoteFile(abbaDir, "testimonies", t.id, {
+      id: t.id, date: t.date, title: t.title, linkedNote: rel,
+      created: t.created, modified: t.modified,
+    });
+    commitTestimonies([t, ...testimonies]);
+    setLinkPickerOpen(false);
+    setOpenTestimonyId(t.id);
+  };
   const updateTestimony = (id: string, patch: Partial<Testimony>) =>
     commitTestimonies(testimonies.map((t) =>
       t.id === id ? { ...t, ...patch, modified: nowIso() } : t));
@@ -1557,6 +1586,8 @@ export default function AbbaView({
                 onBack={() => setOpenPrayerId(null)}
                 onUpdate={(patch) => updatePrayer(openPrayer.id, patch)}
                 onDelete={() => deletePrayer(openPrayer)}
+              vaultPath={vaultPath}
+              onOpenNoteByPath={onOpenNoteByPath}
                 onImageClick={(srcs, idx) => setRichLightbox({ srcs, index: idx })}
               />
             ) : (
@@ -1582,11 +1613,16 @@ export default function AbbaView({
                 onBack={() => setOpenTestimonyId(null)}
                 onUpdate={(patch) => updateTestimony(openTestimony.id, patch)}
                 onDelete={() => deleteTestimony(openTestimony)}
+                linkedAbs={resolveLinked(openTestimony.linkedNote)}
+                onOpenLinked={onOpenNoteByPath}
+                vaultPath={vaultPath}
+                onOpenNoteByPath={onOpenNoteByPath}
                 onImageClick={(srcs, idx) => setRichLightbox({ srcs, index: idx })}
               />
             ) : (
               <TestimoniesList testimonies={testimonies} viewMode={viewMode}
                 onOpen={(id) => setOpenTestimonyId(id)} onCreate={createTestimony}
+                onLink={() => setLinkPickerOpen(true)}
                 onContextMenu={(e, t) => openContextMenu(e, {
                   label: testimonyTitle(t), icon: t.icon,
                   onOpen: () => setOpenTestimonyId(t.id),
@@ -1607,6 +1643,8 @@ export default function AbbaView({
                 onBack={() => setOpenEventId(null)}
                 onUpdate={(patch) => updateEvent(openEvent.id, patch)}
                 onDelete={() => deleteEvent(openEvent)}
+              vaultPath={vaultPath}
+              onOpenNoteByPath={onOpenNoteByPath}
                 fetchLinkMeta={fetchLinkMeta}
                 onImageClick={(srcs, idx) => setRichLightbox({ srcs, index: idx })}
               />
@@ -1633,6 +1671,8 @@ export default function AbbaView({
                 onBack={() => setOpenStudyId(null)}
                 onUpdate={(patch) => updateStudy(openStudy.id, patch)}
                 onDelete={() => deleteStudy(openStudy)}
+              vaultPath={vaultPath}
+              onOpenNoteByPath={onOpenNoteByPath}
                 fetchLinkMeta={fetchLinkMeta}
                 onImageClick={(srcs, idx) => setRichLightbox({ srcs, index: idx })}
               />
@@ -1744,6 +1784,15 @@ export default function AbbaView({
           </div>
         )}
 
+        {linkPickerOpen && (
+          <NotePickerModal
+            vaultRoot={vaultRoot}
+            skipDir={subPath(abbaDir, "testimonies")}
+            onPick={linkTestimony}
+            onClose={() => setLinkPickerOpen(false)}
+          />
+        )}
+
         {newSermonDate !== null && (
           <div className="fixed inset-0 z-[200] bg-black/70 flex items-center justify-center p-6"
             onClick={() => setNewSermonDate(null)}>
@@ -1791,13 +1840,152 @@ export default function AbbaView({
 // ═══════════════════════════════════════════════════════════════════════════
 //  RichDetail — Prayers, Testimonies, Events, Studies
 // ═══════════════════════════════════════════════════════════════════════════
+type PickedNote = { path: string; title: string; name: string; icon: string; folder: string; date: string };
+
+async function scanVaultNotes(
+  root: string, dir: string, skipDir: string, out: PickedNote[], depth = 0,
+): Promise<void> {
+  if (depth > 8) return;
+  let entries: any[] = [];
+  try { entries = await readDir(dir); } catch { return; }
+  for (const e of entries) {
+    if (!e.name || e.name.startsWith(".") || e.name === "assets" || e.name === "_attachments") continue;
+    const full = await join(dir, e.name);
+    if (e.isDirectory) {
+      if (full.replace(/\\/g, "/").replace(/\/+$/, "") === skipDir) continue;
+      await scanVaultNotes(root, full, skipDir, out, depth + 1);
+    } else if (e.name.endsWith(".selah")) {
+      try {
+        const { frontmatter } = parseNoteFile(await readTextFile(full));
+        const base = e.name.replace(/\.selah$/, "");
+        let src = typeof frontmatter.date === "string" ? frontmatter.date : "";
+        if (!src && /^[A-Z][a-z]+ \d{1,2}, \d{4}$/.test(base)) {
+          src = base;
+        }
+        if (!src && typeof frontmatter.created === "string") {
+          src = frontmatter.created;
+        }
+        let d = src ? new Date(src) : new Date(base);
+        if (isNaN(d.getTime())) d = new Date();
+        const date = isNaN(d.getTime())
+          ? "" : new Date(d.getFullYear(), d.getMonth(), d.getDate(), 12).toISOString();
+        const norm = full.replace(/\\/g, "/");
+        const rel = norm.startsWith(root + "/") ? norm.slice(root.length + 1) : norm;
+        const slash = rel.lastIndexOf("/");
+        out.push({
+          path: full,
+          title: (frontmatter.title as string) || base,
+          name: base,
+          icon: (frontmatter.icon as string) || "",
+          folder: slash > 0 ? rel.slice(0, slash) : "",
+          date,
+        });
+      } catch {}
+    }
+  }
+}
+
+function NotePickerModal({
+  vaultRoot, skipDir, onPick, onClose,
+}: {
+  vaultRoot: string; skipDir: string;
+  onPick: (n: PickedNote) => void; onClose: () => void;
+}) {
+  const [notes, setNotes] = useState<PickedNote[] | null>(null);
+  const [q, setQ] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const out: PickedNote[] = [];
+      await scanVaultNotes(vaultRoot, vaultRoot, skipDir.replace(/\\/g, "/").replace(/\/+$/, ""), out);
+      out.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+      if (!cancelled) setNotes(out);
+    })();
+    return () => { cancelled = true; };
+  }, [vaultRoot, skipDir]);
+
+  const filtered = useMemo(() => {
+    const query = q.trim().toLowerCase();
+    const list = notes || [];
+    if (!query) return list.slice(0, 80);
+    return list.filter((n) => {
+      const d = n.date ? new Date(n.date) : null;
+      const dateStr = d && !isNaN(d.getTime())
+        ? d.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }).toLowerCase()
+        : "";
+      return `${n.title} ${n.name} ${n.folder} ${dateStr}`.toLowerCase().includes(query);
+    }).slice(0, 80);
+  }, [notes, q]);
+
+  return (
+    <div className="fixed inset-0 z-[300] bg-black/60 flex items-start justify-center pt-24" onClick={onClose}>
+      <div className="bg-[#1e2327] border border-[#2a3136] rounded-lg shadow-2xl w-[520px] max-w-[92vw] flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}>
+        <div className="px-3 py-2 border-b border-[#2a3136] bg-[#1a1e21]">
+          <input autoFocus type="text" value={q} onChange={(e) => setQ(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") onClose();
+              if (e.key === "Enter" && filtered[0]) onPick(filtered[0]);
+            }}
+            placeholder="Search for a note to link as a testimony…"
+            className="w-full bg-transparent border-none outline-none text-sm text-gray-100 placeholder-gray-500" />
+        </div>
+        <div className="max-h-[50vh] overflow-y-auto">
+          {notes === null && <div className="px-3 py-3 text-xs text-gray-500">Loading notes…</div>}
+          {notes !== null && filtered.length === 0 && (
+            <div className="px-3 py-3 text-xs text-gray-500 italic">No matches.</div>
+          )}
+          {filtered.map((n) => (
+            <button key={n.path} type="button" onClick={() => onPick(n)}
+              className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2">
+              <span className="w-5 text-center flex-shrink-0">{n.icon || "📄"}</span>
+              <span className="flex-1 min-w-0">
+                <span className="block truncate">
+                  {n.title}
+                  {n.name !== n.title && /^[A-Z][a-z]+ \d{1,2}, \d{4}$/.test(n.name) && (
+                    <span className="ml-2 text-[10px] text-gray-500 font-normal">
+                      ({n.name})
+                    </span>
+                  )}
+                </span>
+                {(n.folder || n.date) && (
+                  <span className="block text-[10px] text-gray-500 truncate">
+                    {(() => {
+                      if (!n.folder) return "";
+                      const parts = n.folder.split('/');
+                      if (parts.length >= 2) {
+                        const section = parts[1].toLowerCase();
+                        if (["sermons", "prayers", "testimonies", "studies", "events", "links"].includes(section)) {
+                          const label = section === 'prayers' ? 'Prayer' : section === 'studies' ? 'Bible Study' : section.charAt(0).toUpperCase() + section.slice(1);
+                          return `${parts[0]} (${label})`;
+                        }
+                      }
+                      return parts[0];
+                    })()}
+                    {n.date ? ` · ${fmtShort(n.date)}` : ""}
+                  </span>
+                )}
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 type RichKind = "prayers" | "testimonies" | "events" | "studies";
 
 function RichDetail({
   kind, entry, abbaDir, isEdit, onBack, onUpdate, onDelete,
+  linkedAbs, onOpenLinked,
   fetchLinkMeta, onImageClick,
+  vaultPath, onOpenNoteByPath,
 }: {
   kind: RichKind;
+  linkedAbs?: string;
+  onOpenLinked?: (path: string) => void;
   entry: any;
   abbaDir: string;
   isEdit: boolean;
@@ -1806,6 +1994,8 @@ function RichDetail({
   onDelete: () => void | Promise<void>;
   fetchLinkMeta?: (url: string) => Promise<Partial<AbbaLink>>;
   onImageClick?: (srcs: string[], index: number) => void;
+  vaultPath?: string;
+  onOpenNoteByPath?: (path: string) => void;
 }) {
   const { mode, toggle, setMode } = useNoteMode();
   const noteBodyRef = useRef<NoteBodyHandle>(null);
@@ -1987,11 +2177,29 @@ function RichDetail({
         </div>
       )}
 
+      {linkedAbs && (
+        <div className="mt-6 flex items-center gap-3 rounded-lg border border-blue-500/30 bg-blue-500/5 px-3 py-2.5">
+          <LinkIcon size={14} className="text-blue-400 flex-shrink-0" />
+          <div className="flex-1 min-w-0">
+            <div className="text-xs text-gray-200">Linked from another note</div>
+            <div className="text-[10px] text-gray-500 font-mono truncate" title={linkedAbs}>
+              {linkedAbs.split(/[/\\]/).pop()}
+            </div>
+          </div>
+          <button type="button" onClick={() => onOpenLinked?.(linkedAbs)}
+            className="flex items-center gap-1.5 text-xs px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded font-medium flex-shrink-0">
+            <ExternalLink size={12} /> Open original note
+          </button>
+        </div>
+      )}
+
       <div className="mt-6">
         <NoteBody
           ref={noteBodyRef}
           key={path}
           path={path}
+          vaultPath={vaultPath}
+          onOpenNoteByPath={onOpenNoteByPath}
           onFrontmatterLoaded={(fm) => {
             if (typeof fm.title === "string") setTitle(fm.title);
             if (typeof fm.date === "string") setDate(fm.date);
@@ -2316,8 +2524,8 @@ function PrayersList({ prayers, viewMode, onOpen, onCreate, onContextMenu }: {
   );
 }
 
-function TestimoniesList({ testimonies, viewMode, onOpen, onCreate, onContextMenu }: {
-  testimonies: Testimony[]; viewMode: ViewMode;
+function TestimoniesList({ testimonies, viewMode, onOpen, onCreate, onLink, onContextMenu }: {
+  testimonies: Testimony[]; viewMode: ViewMode; onLink: () => void;
   onOpen: (id: string) => void; onCreate: () => void;
   onContextMenu: ListContextHandler<Testimony>;
 }) {
@@ -2343,6 +2551,12 @@ function TestimoniesList({ testimonies, viewMode, onOpen, onCreate, onContextMen
           <Plus size={13} /> <span>New Testimony</span>
         </button>
       </div>
+      <div className="flex justify-end mb-3 -mt-1">
+        <button type="button" onClick={onLink}
+          className="flex items-center gap-1.5 text-xs bg-[#1e2327] hover:bg-[#2a3136] border border-[#30363d] text-gray-200 px-3 py-1.5 rounded transition-colors cursor-pointer font-medium">
+          <LinkIcon size={13} /> <span>Link a note as testimony</span>
+        </button>
+      </div>
       {testimonies.length > 0 && (
         <div className="relative mb-4">
           <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
@@ -2366,7 +2580,6 @@ function TestimoniesList({ testimonies, viewMode, onOpen, onCreate, onContextMen
               fallbackIcon={Heart} fallbackTint="#f472b6"
               title={testimonyTitle(t)} dateText={fmtShort(t.date)}
               onContextMenu={(e) => onContextMenu(e, t)}
-              meta={<TimeMeta created={t.created} modified={t.modified} />}
               onClick={() => onOpen(t.id)} />
           ))}
         </div>
@@ -2383,9 +2596,11 @@ function TestimoniesList({ testimonies, viewMode, onOpen, onCreate, onContextMen
                 <div className="flex-1 min-w-0">
                   <div className="flex items-baseline justify-between gap-2">
                     <h4 className="text-sm font-medium text-gray-100 truncate">{testimonyTitle(t)}</h4>
-                    <span className="text-[10px] text-gray-500 flex-shrink-0">{fmtShort(t.date)}</span>
                   </div>
-                  <div className="mt-2"><TimeMeta created={t.created} modified={t.modified} /></div>
+                  <div className="text-[11px] text-gray-500 mt-1 flex items-center gap-1.5">
+                    <Calendar size={10} className="flex-shrink-0" />
+                    <span>{fmtDate(t.date)}</span>
+                  </div>
                 </div>
                 <ChevronLeft size={14} className="text-gray-600 group-hover:text-gray-400 rotate-180 flex-shrink-0 mt-1" />
               </div>

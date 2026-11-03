@@ -161,6 +161,8 @@ type NoteEntry = {
   folderLabel: string;
   /** The category directory name (first path segment from the vault root). */
   categoryName: string;
+  /** Formatted date string (e.g. "Oct 20, 2026") if available. */
+  date?: string;
 };
 
 function noteDirOf(notePath: string): string {
@@ -216,6 +218,7 @@ async function collectNoteFiles(
         let icon = "";
         let title = e.name.replace(/\.selah$/, "");
         let tags: string[] = [];
+        let dateLabel = "";
         try {
           const raw = await readTextFile(full);
           const { frontmatter } = parseNoteFile(raw);
@@ -226,6 +229,22 @@ async function collectNoteFiles(
             tags = (frontmatter.tags as any[]).filter(
               (t): t is string => typeof t === "string" && t.length > 0
             );
+          }
+
+          let rawDate = typeof frontmatter.date === "string" ? frontmatter.date : "";
+          if (!rawDate && /^[A-Z][a-z]+ \d{1,2}, \d{4}$/.test(e.name.replace(/\.selah$/i, ""))) {
+            rawDate = e.name.replace(/\.selah$/i, "");
+          }
+          if (!rawDate && typeof frontmatter.created === "string") {
+            rawDate = frontmatter.created;
+          }
+          if (rawDate) {
+            const d = new Date(rawDate);
+            if (!isNaN(d.getTime())) {
+              dateLabel = d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+            } else {
+              dateLabel = rawDate.slice(0, 10);
+            }
           }
         } catch {}
 
@@ -246,11 +265,12 @@ async function collectNoteFiles(
         out.push({
           path: full,
           name: e.name.replace(/\.selah$/, ""),
-                 title,
-                 icon,
-                 tags,
-                 folderLabel,
-                 categoryName,
+          title,
+          icon,
+          tags,
+          folderLabel,
+          categoryName,
+          date: dateLabel,
         });
       }
     }
@@ -3765,7 +3785,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
 
         const oldWithPipe = `[[${oldTarget}|${oldDisplay}]]`;
         const oldBare = `[[${oldTarget}]]`;
-        const newText = oldDisplay
+        const newText = (oldDisplay && oldDisplay !== newTarget && oldDisplay !== newTarget.split('/').pop())
         ? `[[${newTarget}|${oldDisplay}]]`
         : `[[${newTarget}]]`;
 
@@ -3837,7 +3857,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         : entry.name;
 
         const linkText =
-        entry.title && entry.title !== entry.name
+        entry.title && entry.title !== entry.name && entry.title !== entry.name.replace(/\.selah$/i, "")
         ? `[[${target}|${entry.title}]]`
         : `[[${target}]]`;
 
@@ -4204,9 +4224,9 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
 
         const matches = catPart
         ? allNotes.filter(
-          (n) => n.categoryName === catPart && n.name === basePart
+          (n) => n.categoryName === catPart && (n.name === basePart || n.title === basePart)
         )
-        : allNotes.filter((n) => n.name === basePart);
+        : allNotes.filter((n) => n.name === basePart || n.title === basePart);
 
         if (matches.length === 1) {
           onOpenNoteByPath?.(matches[0].path);
@@ -4262,6 +4282,9 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         if (counts.get(n.name) === 1) {
           noteIconMap.set(n.name, n.icon);
         }
+        if (counts.get(n.title) === 1) {
+          noteIconMap.set(n.title, n.icon);
+        }
       }
 
       try {
@@ -4286,13 +4309,20 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       );
       if (!q) return sorted.slice(0, 60);
       return sorted
-      .filter((n) =>
-      n.title.toLowerCase().includes(q) ||
-      n.name.toLowerCase().includes(q) ||
-      n.tags.some((t) => t.toLowerCase().includes(q)) ||
-      n.folderLabel.toLowerCase().includes(q) ||
-      n.categoryName.toLowerCase().includes(q)
-      )
+      .filter((n) => {
+        const d = n.date ? new Date(n.date) : null;
+        const dateStr = d && !isNaN(d.getTime())
+          ? d.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }).toLowerCase()
+          : "";
+        return (
+          n.title.toLowerCase().includes(q) ||
+          n.name.toLowerCase().includes(q) ||
+          n.tags.some((t) => t.toLowerCase().includes(q)) ||
+          n.folderLabel.toLowerCase().includes(q) ||
+          dateStr.includes(q) ||
+          n.categoryName.toLowerCase().includes(q)
+        );
+      })
       .slice(0, 60);
     }, [linkQuery, allNotes]);
 
@@ -4908,11 +4938,26 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
           {n.icon || "📄"}
           </span>
           <span className="flex-1 min-w-0">
-          <span className="block truncate">{n.title}</span>
-          {(n.categoryName || n.folderLabel) && (
+          <span className="block truncate">
+            {n.title}
+            {n.name !== n.title && /^[A-Z][a-z]+ \d{1,2}, \d{4}$/.test(n.name) && (
+              <span className="ml-2 text-[10px] text-gray-500 font-normal">
+                ({n.name})
+              </span>
+            )}
+          </span>
+          {(n.categoryName || n.folderLabel || n.date) && (
             <span className="block text-[10px] text-gray-500 truncate">
-            {n.categoryName}
-            {n.folderLabel ? ` · ${n.folderLabel}` : ""}
+            {(() => {
+              const abbaSections = ["sermons", "prayers", "testimonies", "studies", "events", "links"];
+              if (n.categoryName && n.folderLabel && abbaSections.includes(n.folderLabel.toLowerCase())) {
+                const section = n.folderLabel.toLowerCase();
+                const label = section === 'prayers' ? 'Prayer' : section === 'studies' ? 'Bible Study' : section.charAt(0).toUpperCase() + section.slice(1);
+                return `${n.categoryName} (${label})`;
+              }
+              return n.categoryName || n.folderLabel.split('/')[0];
+            })()}
+            {n.date ? ` · ${n.date}` : ""}
             </span>
           )}
           </span>
