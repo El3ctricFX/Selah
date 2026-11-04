@@ -688,6 +688,7 @@ export async function auditSingleNote(notePath: string): Promise<VaultReport> {
     missingThumbs: [],
     proxiesOff: [],
     imageStats: { total: 0, optimized: 0, withThumb: 0, originalBytes: 0, proxyBytes: 0 },
+    orphanedCategories: [],
   };
   await auditNote(notePath, basename(notePath), report);
   return report;

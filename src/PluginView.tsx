@@ -1,47 +1,8 @@
 // src/PluginView.tsx
 import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, Puzzle } from "lucide-react";
-import { usePlugins, pluginsDir, type PluginViewContext } from "./plugins";
-import { join } from "@tauri-apps/api/path";
-import { readTextFile, writeTextFile, exists, readDir, mkdir } from "@tauri-apps/plugin-fs";
-import { save } from "@tauri-apps/plugin-dialog";
-import { writeFileAtomic } from "./safeWrite";
-import { moveToTrash } from "./trash";
-
-void pluginsDir; void writeTextFile;
-
-function categoryFs(root: string): PluginViewContext["fs"] {
-    const parts = (rel: string) => {
-        const p = (rel || "").replace(/\\/g, "/").split("/").filter(Boolean);
-        if (p.some((s) => s === "..")) throw new Error("Path escapes the allowed folder");
-        return p;
-    };
-    const abs = async (rel: string) => {
-        const p = parts(rel);
-        return p.length ? await join(root, ...p) : root;
-    };
-    return {
-        async readText(rel) { try { return await readTextFile(await abs(rel)); } catch { return null; } },
-        async writeText(rel, content) {
-            const p = parts(rel);
-            if (p.length === 0) throw new Error("A file path is required");
-            // If the root folder was deleted (e.g. category removed), abort safely
-            if (!(await exists(root))) return;
-            const parent = p.length > 1 ? await join(root, ...p.slice(0, -1)) : root;
-            await mkdir(parent, { recursive: true });
-            await writeFileAtomic(await join(root, ...p), content);
-        },
-        async exists(rel) { try { return await exists(await abs(rel)); } catch { return false; } },
-        async list(rel = "") {
-            try {
-                return (await readDir(await abs(rel))).map((e) => e.name).filter(Boolean) as string[];
-            } catch { return []; }
-        },
-        async mkdir(rel) { await mkdir(await abs(rel), { recursive: true }); },
-        async remove(rel) { await moveToTrash(await abs(rel)); },
-        saveDialog: (options?: any) => save(options),
-    };
-}
+import { usePlugins, scopedFs } from "./plugins";
+import { mkdir } from "@tauri-apps/plugin-fs";
 
 export default function PluginView({
     vaultPath, dir, name, icon, mode,
@@ -67,7 +28,7 @@ export default function PluginView({
             const sidebarEl = document.getElementById("plugin-sidebar-target") || undefined;
 
             return type.render(el, {
-                vaultPath, dir, name, icon, fs: categoryFs(dir),
+                vaultPath, dir, name, icon, fs: scopedFs(dir),
                 sidebarContainer: sidebarEl,
                                // Pass consistent theme classes
                                theme: {

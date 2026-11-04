@@ -1,7 +1,7 @@
 // src/App.tsx
 import { useCallback, useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { readTextFile } from "@tauri-apps/plugin-fs";
+import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PanelLeftOpen } from "lucide-react";
@@ -18,12 +18,13 @@ import ProxyToggleHost from "./ProxyToggleHost";
 import "./App.css";
 import VaultWelcome from "./VaultWelcome";
 import { useRecentVaults } from "./useRecentVaults";
+import { createEntry } from "./entries";
 import { flushAll } from "./flushRegistry";
 import { migrateVaultPaths } from "./vaultMigration";
 import { useTheme, setThemeVaultPath } from "./theme";
 import ThemeBackground from "./ThemeBackground";
 import PluginView from "./PluginView";
-import { loadPlugins, clearPlugins, pluginTypeFor } from "./plugins";
+import { loadPlugins, clearPlugins } from "./plugins";
 
 type JournalFocus = { year: number; month: number; day: number };
 type ViewSnapshot = { view: ActiveView; categoryId: string | null };
@@ -593,6 +594,33 @@ export default function App() {
 
   // Shared handler so both the sidebar and the homepage quick-action cards
   // route to the right view.
+  const handleCreateNewNote = async (catId: string) => {
+    const cat = vaultCategories.find(c => c.id === catId);
+    if (!cat || !cat.dirName) return;
+    const dir = `${vaultPath}/${cat.dirName}`;
+    const now = new Date().toISOString();
+    const fileName = `Untitled-${Date.now()}.selah`;
+    const fullPath = `${dir}/${fileName}`;
+    try {
+      await writeTextFile(fullPath, `---\ncreated: ${now}\nmodified: ${now}\n---\n\n`);
+      openNoteByPath(fullPath);
+    } catch (e) {
+      console.error("[app] failed to create note:", e);
+    }
+  };
+
+  const handleCreateNewEntry = async (catId: string) => {
+    const cat = vaultCategories.find(c => c.id === catId);
+    if (!cat || !cat.dirName) return;
+    const dir = `${vaultPath}/${cat.dirName}`;
+    try {
+      const { path } = await createEntry(dir);
+      openNoteByPath(path);
+    } catch (e) {
+      console.error("[app] failed to create entry:", e);
+    }
+  };
+
   const openCategoryView = (cat: Category) => {
     if (cat.mode.startsWith("plugin:")) {
       setActiveCategoryId(cat.id);
@@ -752,6 +780,18 @@ export default function App() {
               setJournalNonce((n) => n + 1);
               setActiveView({ kind: "journal", dir: dirOf(cat) });
             }}
+            onOpenJournalDay={(cat, year, month, day) => {
+              setActiveCategoryId(cat.id);
+              setJournalNonce((n) => n + 1);
+              setActiveView({
+                kind: "journal",
+                dir: dirOf(cat),
+                focus: { year, month, day },
+                focusMode: "day",
+              });
+            }}
+            onCreateNote={handleCreateNewNote}
+            onCreateEntry={handleCreateNewEntry}
           />
         ) : activeView.kind === "note" ? (
           <Editor

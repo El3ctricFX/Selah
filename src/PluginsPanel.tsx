@@ -1,5 +1,5 @@
 // src/PluginsPanel.tsx
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Puzzle, FolderOpen, RefreshCw, AlertTriangle, Copy, Check, Trash2, MoreVertical, Settings } from "lucide-react";
 import { mkdir } from "@tauri-apps/plugin-fs";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -27,6 +27,30 @@ manifest.json
             container.textContent = "Hello from " + ctx.name;
             return () => { /* optional cleanup */ };
         },
+        // Optional custom actions that users can pin to their home screen.
+        shortcutActions: [
+            {
+                id: "do-something",
+                label: "Do Something Cool",
+                icon: "🚀",
+                run() {
+                    console.log("Shortcut clicked!");
+                    // You can use ctx.fs or trigger custom logic here.
+                }
+            }
+        ]
+    });
+
+    // A home-screen widget. Users enable it in Settings > Home > Widgets.
+    selah.registerHomeWidget({
+        id: "my-widget", label: "My Widget", icon: "📖",
+        slot: "above-verse",   // header | above-shortcuts | below-shortcuts | above-verse
+        render(container, ctx) {
+            // ctx.fs (plugin data folder), ctx.vaultPath, ctx.name
+            // Style with CSS vars: var(--c-text), var(--c-text-muted), var(--c-accent)
+            container.textContent = "Hello";
+            return () => { /* optional cleanup */ };
+        },
     });
 
     // A slash-menu template. Type "/" in any note.
@@ -36,10 +60,52 @@ manifest.json
         // run(editor) { ... }                    // or custom code
     });
 
+    // A home-screen shortcut button. Users enable it in Settings > Home > Widgets.
+    selah.registerShortcut({
+        id: "my-shortcut", label: "Open Timer", icon: "⏱️",
+        onClick() { console.log("Shortcut clicked!"); },
+    });
+
+    // A fully custom home screen (replaces greeting, search, shortcuts).
+    // The Psalm 19:14 verse is always pinned below it.
+    selah.registerHomeScreen({
+        id: "my-custom-home", label: "Sveltab Layout",
+        render(container, ctx) {
+            container.innerHTML = "<div style='color:white; padding:20px;'>My custom React/DOM grid!</div>";
+        }
+    });
+
+    // Persistent per-plugin settings (stored in <plugin>/data/settings.json).
+    selah.settings.set("theme", "dark");
+    const theme = selah.settings.get("theme", "light");
+
+    // Register a callback to run when the plugin reloads or is disabled.
+    // Any setInterval / setTimeout created through selah.setInterval /
+    // selah.setTimeout is cleaned up automatically — use those instead of
+    // the raw globals to avoid leaking timers.
+    selah.onUnload(() => { /* teardown */ });
+
+    // 🚀 Advanced: Rendering the actual Selah Rich Text Editor!
+    // Require React from the API (passed as the 2nd arg to index.js)
+    render(container, ctx, React, ReactDOM) {
+        const root = ReactDOM.createRoot(container);
+        root.render(React.createElement(selah.Editor, {
+            path: ctx.dir + "/my-note.selah",
+            vaultPath: ctx.vaultPath
+        }));
+    }
+
+    // 📂 Advanced File APIs
+    await ctx.fs.readFile("image.png") -> Uint8Array
+    await ctx.fs.writeFile("audio.mp3", bytes)
+    await ctx.fs.copyFile("a.png", "b.png")
+
+    // 📝 Pick a note from the vault
+    const notePath = await selah.pickNote();
+
     Extras
     selah.fs          private storage in <plugin>/data/
     selah.vaultPath   the open vault
-    ctx.fs.readText(path) / writeText(path, text) / exists / list / mkdir / remove
     Top-level await works in index.js.`;
 
     function Toggle({ on, onClick }: { on: boolean; onClick: () => void }) {
@@ -65,6 +131,8 @@ manifest.json
         const [busy, setBusy] = useState(false);
         const { modal, confirmAsync } = useModal();
         const [activeMenu, setActiveMenu] = useState<string | null>(null);
+        const [configuring, setConfiguring] = useState<any | null>(null);
+        const configHostRef = useRef<HTMLDivElement>(null);
 
         // New state for folder opening errors
         const [openError, setOpenError] = useState<string | null>(null);
@@ -76,6 +144,28 @@ manifest.json
             document.addEventListener("click", close);
             return () => document.removeEventListener("click", close);
         }, [activeMenu]);
+
+        useEffect(() => {
+            if (!configuring || !configHostRef.current) return;
+            const el = configHostRef.current;
+            el.innerHTML = "";
+            let disposed = false;
+            let cleanup: (() => void) | undefined;
+
+            Promise.resolve()
+                .then(() => configuring.configure!(el))
+                .then((r) => {
+                    if (typeof r !== "function") return;
+                    if (disposed) { try { r(); } catch {} } else cleanup = r;
+                })
+                .catch((e) => console.error("[plugins] config render failed:", e));
+
+            return () => {
+                disposed = true;
+                try { cleanup?.(); } catch {}
+                el.innerHTML = "";
+            };
+        }, [configuring]);
 
         const reload = async () => {
             setBusy(true);
@@ -91,7 +181,7 @@ manifest.json
             try {
                 await removePlugin(vaultPath, p.id);
             } finally {
-                setBusy(null);
+                setBusy(false);
             }
         };
 
@@ -227,7 +317,7 @@ manifest.json
                                 {p.configure && (
                                     <button
                                     type="button"
-                                    onClick={() => { p.configure!(); setActiveMenu(null); }}
+                                    onClick={() => { setActiveMenu(null); setConfiguring(p); }}
                                     className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
                                     >
                                     <Settings size={13} /> Configure
@@ -244,6 +334,19 @@ manifest.json
                         )}
                     </div>
                     </div>
+                    {p.manifest?.permissions && p.manifest.permissions.length > 0 && (
+                        <div className="mt-1.5 flex flex-wrap gap-1">
+                            {p.manifest.permissions.map((perm) => (
+                                <span
+                                    key={perm}
+                                    className="text-[9px] px-1.5 py-0.5 rounded border border-[#30363d] bg-[#0f1315] text-gray-500 font-mono"
+                                    title={`Declared permission: ${perm}`}
+                                >
+                                    {perm}
+                                </span>
+                            ))}
+                        </div>
+                    )}
                     {p.error && (
                         <div className="mt-1.5 text-[10px] text-red-400 break-words">{p.error}</div>
                     )}
