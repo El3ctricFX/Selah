@@ -92,6 +92,14 @@ export interface ProxiesOffNote {
   bytes: number;
 }
 
+export interface OrphanedPluginCategory {
+  id: string;
+  name: string;
+  dirName: string;
+  absPath: string;
+  pluginId: string;
+}
+
 export interface VaultReport {
   totalNotes: number;
   totalAssets: number;
@@ -103,6 +111,7 @@ export interface VaultReport {
   missingThumbs: MissingThumbForNote[];
   imageStats: ImageStats;
   proxiesOff: ProxiesOffNote[];
+  orphanedCategories: OrphanedPluginCategory[];
 }
 
 function dirname(p: string): string {
@@ -323,6 +332,7 @@ export async function auditVault(vaultPath: string): Promise<VaultReport> {
     missingThumbs: [],
     proxiesOff: [],
     imageStats: { total: 0, optimized: 0, withThumb: 0, originalBytes: 0, proxyBytes: 0 },
+    orphanedCategories: [],
   };
   const walk = async (dir: string, depth: number): Promise<void> => {
     if (depth > 8) return;
@@ -339,6 +349,75 @@ export async function auditVault(vaultPath: string): Promise<VaultReport> {
     }
   };
   await walk(vaultPath, 0);
+
+  // Scan for orphaned folders (both missing plugins and leftovers)
+  try {
+    const metaPath = await join(vaultPath, ".vault_metadata.json");
+    if (await exists(metaPath)) {
+      const raw = await readTextFile(metaPath);
+      const meta = JSON.parse(raw);
+      const knownDirs = new Set<string>();
+
+      if (Array.isArray(meta.categories)) {
+        for (const cat of meta.categories) {
+          if (cat.dirName) knownDirs.add(cat.dirName);
+        }
+
+        // 1. Check for categories in metadata that point to missing plugins
+        for (const cat of meta.categories) {
+          if (cat.mode && cat.mode.startsWith("plugin:")) {
+            const parts = cat.mode.split(":");
+            const pluginId = parts[1];
+            if (pluginId) {
+              const pluginDir = await join(vaultPath, ".plugins", pluginId);
+              let pluginExists = false;
+              try { pluginExists = await exists(pluginDir); } catch {}
+
+              if (!pluginExists && cat.dirName) {
+                const catDir = await join(vaultPath, cat.dirName);
+                let catExists = false;
+                try { catExists = await exists(catDir); } catch {}
+                if (catExists) {
+                  report.orphanedCategories.push({
+                    id: cat.id,
+                    name: cat.name,
+                    dirName: cat.dirName,
+                    absPath: catDir,
+                    pluginId
+                  });
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // 2. Check for folders on disk that aren't in metadata (true ghosts)
+      try {
+        const rootEntries = await readDir(vaultPath);
+        for (const e of rootEntries) {
+          if (!e.name || !e.isDirectory) continue;
+          if (e.name.startsWith(".")) continue; // .plugins, .git, etc.
+          if (e.name === "assets" || e.name === "_attachments") continue;
+          if (knownDirs.has(e.name)) continue; // It's a valid category
+
+          // Avoid duplicates (if it was already caught by the plugin check above)
+          if (report.orphanedCategories.some(c => c.dirName === e.name)) continue;
+
+          report.orphanedCategories.push({
+            id: `orphan-${e.name}`,
+            name: e.name,
+            dirName: e.name,
+            absPath: await join(vaultPath, e.name),
+            pluginId: ""
+          });
+        }
+      } catch {}
+    }
+  } catch (e) {
+    console.warn("[mediaVault] could not scan for orphaned folders", e);
+  }
+
   return report;
 }
 

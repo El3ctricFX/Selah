@@ -22,6 +22,8 @@ import { flushAll } from "./flushRegistry";
 import { migrateVaultPaths } from "./vaultMigration";
 import { useTheme, setThemeVaultPath } from "./theme";
 import ThemeBackground from "./ThemeBackground";
+import PluginView from "./PluginView";
+import { loadPlugins, clearPlugins, pluginTypeFor } from "./plugins";
 
 type JournalFocus = { year: number; month: number; day: number };
 type ViewSnapshot = { view: ActiveView; categoryId: string | null };
@@ -30,6 +32,7 @@ type ActiveView =
   | { kind: "note"; path: string; name: string }
   | { kind: "journal"; dir: string; focus?: JournalFocus; focusMode?: "day" | "month" }
   | { kind: "gallery"; dir: string; name: string }
+  | { kind: "plugin"; dir: string; name: string; icon: string; categoryId: string; mode: string }
     | { kind: "abba"; dir: string; name: string; icon: string; focusSection?: string; focusNoteId?: string }
   | { kind: "notes"; dir: string; name: string; icon: string; categoryId: string }
   | { kind: "entries"; dir: string; name: string; icon: string; categoryId: string }
@@ -184,6 +187,17 @@ export default function App() {
     migrateVaultPaths(vaultPath).catch((e) =>
     console.warn("[app] migration failed:", e)
     );
+  }, [vaultPath]);
+
+  // Load this vault's plugins whenever the vault changes or the feature is toggled.
+  useEffect(() => {
+    if (!vaultPath) { clearPlugins(); return; }
+
+    const reload = () => { void loadPlugins(vaultPath); };
+    reload();
+
+    window.addEventListener("plugins-feature-changed", reload);
+    return () => window.removeEventListener("plugins-feature-changed", reload);
   }, [vaultPath]);
 
   // Listen for folder renames to update the active view instantly
@@ -580,6 +594,11 @@ export default function App() {
   // Shared handler so both the sidebar and the homepage quick-action cards
   // route to the right view.
   const openCategoryView = (cat: Category) => {
+    if (cat.mode.startsWith("plugin:")) {
+      setActiveCategoryId(cat.id);
+      setActiveView({ kind: "plugin", dir: dirOf(cat), name: cat.name, icon: cat.icon, categoryId: cat.id, mode: cat.mode });
+      return;
+    }
     if (cat.mode === "entries") {
       setActiveCategoryId(cat.id);
       setActiveView({ kind: "entries", dir: dirOf(cat), name: cat.name, icon: cat.icon, categoryId: cat.id });
@@ -617,6 +636,7 @@ export default function App() {
             activeCategoryId={activeCategoryId}
             activeView={activeView}
             onSelectCategory={(cat) => {
+              if (cat.mode.startsWith("plugin:")) { openCategoryView(cat); return; }
               if (cat.mode === "entries") {
                 setActiveCategoryId(cat.id);
                 setActiveView({ kind: "entries", dir: dirOf(cat), name: cat.name, icon: cat.icon, categoryId: cat.id });
@@ -766,6 +786,15 @@ export default function App() {
             onOpenNote={(note) =>
               setActiveView({ kind: "note", path: note.path, name: note.name })
             }
+          />
+        ) : activeView.kind === "plugin" ? (
+          <PluginView
+            key={activeView.dir}
+            vaultPath={vaultPath}
+            dir={activeView.dir}
+            name={activeView.name}
+            icon={activeView.icon}
+            mode={activeView.mode}
           />
         ) : activeView.kind === "abba" ? (
           <AbbaView

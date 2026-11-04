@@ -308,6 +308,31 @@ export async function buildThumbsForNote(
   return { generated, failed };
 }
 
+export async function deleteOrphanedCategory(vaultPath: string, categoryId: string, absPath: string): Promise<boolean> {
+  try {
+    if (await exists(absPath)) {
+      await moveToTrash(absPath);
+    }
+    const metaPath = await join(vaultPath, ".vault_metadata.json");
+    let meta: any = {};
+    try { meta = JSON.parse(await readTextFile(metaPath)); } catch {}
+
+    if (Array.isArray(meta.categories)) {
+      meta.categories = meta.categories.filter((c: any) => c.id !== categoryId);
+    }
+    if (Array.isArray(meta.categoryOrder)) {
+      meta.categoryOrder = meta.categoryOrder.filter((id: string) => id !== categoryId);
+    }
+
+    await writeFileAtomic(metaPath, JSON.stringify(meta, null, 2));
+    window.dispatchEvent(new Event('metadata-changed'));
+    return true;
+  } catch (e) {
+    console.warn("[mediaFix] delete orphaned category failed:", e);
+    return false;
+  }
+}
+
 export async function deleteUnusedFile(item: UnusedFile): Promise<boolean> {
   try {
     if (await exists(item.absPath)) await moveToTrash(item.absPath);

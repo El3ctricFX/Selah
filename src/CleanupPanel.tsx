@@ -7,7 +7,7 @@ import {
   Wrench, FolderOpen, ShieldOff, RefreshCw, ArrowRight, HelpCircle,
 } from "lucide-react";
 import { auditVault, type VaultReport, type BrokenRef, type MissingProxiesForNote, type MissingThumbForNote, type ProxiesOffNote } from "./mediaVault";
-import { fixBrokenRef, fixAllBrokenRefsForNote, deleteUnusedFile, keepUnusedFile, fixOldLayout, buildProxiesForNote, buildThumbsForNote, removeProxiesForNote, removeBrokenRefFromNote } from "./mediaFix";
+import { fixBrokenRef, fixAllBrokenRefsForNote, deleteUnusedFile, keepUnusedFile, fixOldLayout, buildProxiesForNote, buildThumbsForNote, removeProxiesForNote, removeBrokenRefFromNote, deleteOrphanedCategory } from "./mediaFix";
 import { basename } from "./mediaVault";
 
 type Phase = "scanning" | "results" | "working" | "done" | "error";
@@ -84,13 +84,15 @@ export default function CleanupPanel({ open, onClose, vaultPath }: Props) {
       oldLayout: report.oldLayout.length,
       pending: report.missingProxies.length,
       proxiesOff: report.proxiesOff.length,
+      orphaned: report.orphanedCategories?.length || 0,
       total:
         report.brokenRefs.length +
         report.unusedFiles.length +
         report.oldLayout.length +
         report.missingProxies.length +
         report.missingThumbs.length +
-        report.proxiesOff.length,
+        report.proxiesOff.length +
+        (report.orphanedCategories?.length || 0),
     };
   }, [report]);
 
@@ -349,6 +351,44 @@ export default function CleanupPanel({ open, onClose, vaultPath }: Props) {
                     No leftover folders, no broken references, no unused files.
                   </p>
                 </div>
+              )}
+
+              {/* ── Orphaned Folders ───────────────────────────────────── */}
+              {report.orphanedCategories?.length > 0 && (
+                <Section
+                  title={
+                    report.orphanedCategories.length === 1
+                      ? "1 orphaned folder"
+                      : `${report.orphanedCategories.length} orphaned folders`
+                  }
+                  subtitle={
+                    <>
+                      These folders exist on your hard drive but are not connected to any active category.
+                      This usually happens if a plugin was deleted, or if a category was removed from the sidebar but its files were left behind.
+                      Moving them to the trash will clean up your vault and remove any ghost categories.
+                    </>
+                  }
+                  icon={<AlertTriangle size={13} className="text-amber-400" />}
+                  onSelectAll={() => selectAllOf(report.orphanedCategories.map((o) => `orphaned:${o.id}`))}
+                  onFixAll={() => run("Trashing orphaned folders", async () => {
+                    for (const cat of report.orphanedCategories) {
+                      await deleteOrphanedCategory(vaultPath, cat.id, cat.absPath);
+                    }
+                  })}
+                  fixAllLabel="Move all to trash"
+                  working={working}
+                >
+                  {report.orphanedCategories.map((cat) => (
+                    <Row key={cat.id} checked={selected.has(`orphaned:${cat.id}`)} onToggle={() => toggle(`orphaned:${cat.id}`)}>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs text-gray-200 truncate">{cat.name}</div>
+                        <div className="text-[10px] text-gray-500 font-mono truncate mt-0.5" title={cat.absPath}>
+                          {cat.dirName}
+                        </div>
+                      </div>
+                    </Row>
+                  ))}
+                </Section>
               )}
 
               {/* ── Old layout ─────────────────────────────────────────── */}

@@ -4,20 +4,22 @@ import { readTextFile } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import { getVersion } from "@tauri-apps/api/app";
 import {
-    X, Home, Palette, Info,
+    X, Home, Palette, Info, Puzzle,
   GripHorizontal, Eye, EyeOff, Crosshair, Sliders,
   ExternalLink, Heart, Code2, MessageCircle,
 } from "lucide-react";
 import { writeFileAtomic } from "./safeWrite";
 import { proxyFeatureEnabled, setProxyFeatureEnabled } from "./proxyFeature";
+import { pluginFeatureEnabled, setPluginFeatureEnabled } from "./pluginFeature";
 import {
   HomeSettingsPanel,
   DEFAULT_HOME_SETTINGS,
   type HomeSettings,
 } from "./HomeSettings";
 import AppearancePanel from "./AppearancePanel";
+import PluginsPanel from "./PluginsPanel";
 
-type SectionId = "home" | "general" | "appearance" | "about";
+type SectionId = "home" | "general" | "appearance" | "plugins" | "about";
 
 type Section = {
   id: SectionId;
@@ -30,6 +32,7 @@ const SECTIONS: Section[] = [
   { id: "home",       label: "Home",       icon: Home,     description: "Customize your home screen" },
   { id: "general",    label: "General",    icon: Sliders,  description: "App-wide preferences" },
   { id: "appearance", label: "Appearance", icon: Palette,  description: "Themes, light mode, custom CSS" },
+  { id: "plugins",    label: "Plugins",    icon: Puzzle,   description: "Extend Selah with your own tools" },
   { id: "about",      label: "About",      icon: Info,     description: "Version and info" },
 ];
 
@@ -433,6 +436,8 @@ export default function SettingsModal({
               <GeneralPanel vaultPath={vaultPath} />
             ) : section === "appearance" ? (
               <AppearancePanel />
+            ) : section === "plugins" ? (
+              <PluginsPanel vaultPath={vaultPath} />
             ) : (
               <AboutPanel />
             )}
@@ -500,6 +505,7 @@ function GeneralPanel({ vaultPath }: { vaultPath: string }) {
     catch { return false; }
   });
   const [proxies, setProxies] = useState<boolean>(() => proxyFeatureEnabled());
+  const [plugins, setPlugins] = useState<boolean>(() => pluginFeatureEnabled());
   const [confirmOff, setConfirmOff] = useState(false);
 
   const toggleExtensions = () => {
@@ -546,7 +552,24 @@ function GeneralPanel({ vaultPath }: { vaultPath: string }) {
     </p>
     </div>
 
-    <div>
+    <div className="border-t border-[#2a3136] pt-4">
+    <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-3">
+    Plugins
+    </div>
+    <label className="flex items-center justify-between text-xs text-gray-300 cursor-pointer py-1">
+    <span>Enable plugins</span>
+    <Switch on={plugins} onClick={() => {
+        const next = !plugins;
+        setPlugins(next);
+        setPluginFeatureEnabled(next);
+    }} />
+    </label>
+    <p className="text-[10px] text-gray-600 mt-2 leading-snug">
+    Off by default. When enabled, Selah will scan the <span className="font-mono">.plugins</span> folder in your vault and load any custom tools, categories, or templates you've installed.
+    </p>
+    </div>
+
+    <div className="border-t border-[#2a3136] pt-4">
     <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-3">
     Images
     </div>

@@ -88,6 +88,7 @@ import { createAudio } from "./AudioBlock";
 import { createScripture } from "./ScriptureBlock";
 import { createDmArchive } from "./DmArchive";
 import { isReliablyEmbeddable } from "./embeds";
+import { getPluginSlashItems } from "./plugins";
 import { useNoteMode } from "./useNoteMode";
 import { useTheme } from "./theme";
 import { NoteContext } from "./NoteContext";
@@ -4116,6 +4117,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         );
         const extra = [
           insertCallout(editor),
+          ...getPluginSlashItems(editor, insertBlocksSmart),
                                       insertDmArchiveMenuItem(),
                                       insertNoteLinkMenuItem(),
                                       insertImageMenuItem(),

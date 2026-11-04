@@ -30,12 +30,13 @@ import { parseNoteFile, serializeNoteFile, type Frontmatter } from './noteFormat
 import { moveJournalNoteToDate, parseFlexibleDate } from './journalDateMove';
 import DateTimePickerModal from "./DateTimePickerModal";
 import { listEntries, createEntry, formatEntryDate, type EntryItem } from './entries';
+import { usePlugins, pluginTypeFor } from './plugins';
 
 export interface Category {
   id: string;
   name: string;
   icon: string;
-  mode: 'journal' | 'notes' | 'gallery' | 'abba' | 'entries';
+  mode: 'journal' | 'notes' | 'gallery' | 'abba' | 'entries' | `plugin:${string}`;
   dirName: string;
   builtin?: boolean;
 }
@@ -198,6 +199,7 @@ export default function Sidebar(props: SidebarProps) {
   });
   const { modal, promptAsync, confirmAsync } = useModal();
   const switcherRef = useRef<HTMLDivElement>(null);
+  const plugins = usePlugins();
   const settingsMenuRef = useRef<HTMLDivElement>(null);
 
   const [categoryIconPicker, setCategoryIconPicker] = useState<{
@@ -411,7 +413,8 @@ export default function Sidebar(props: SidebarProps) {
       mode === 'journal' ? 'journal' :
       mode === 'gallery' ? 'gallery' :
       mode === 'entries' ? 'entries' :
-      mode === 'abba' ? 'Abba (faith)' : 'notes';
+      mode === 'abba' ? 'Abba (faith)' :
+      mode.startsWith('plugin:') ? (pluginTypeFor(mode)?.label || 'plugin') : 'notes';
     const rawName = await promptAsync(`Name your new ${label} category:`);
     if (!rawName) return;
 
@@ -421,7 +424,8 @@ export default function Sidebar(props: SidebarProps) {
       mode === 'journal' ? '📅' :
       mode === 'gallery' ? '🎨' :
       mode === 'entries' ? '📔' :
-      mode === 'abba' ? '🙏' : '🗒️';
+      mode === 'abba' ? '🙏' :
+      mode.startsWith('plugin:') ? (pluginTypeFor(mode)?.icon || '🧩') : '🗒️';
     const cat: Category = { id, name: rawName.trim() || dirName, icon, mode, dirName };
 
     const folderPath = await join(vaultPath, dirName);
@@ -782,6 +786,17 @@ export default function Sidebar(props: SidebarProps) {
                 <button onClick={() => createCategory('abba')} className="w-full flex items-center space-x-2 px-3 py-1.5 text-sm text-gray-300 hover:bg-[#2a3136] text-left">
                   <Church size={13} /> <span>Abba (faith)</span>
                 </button>
+                {plugins.categoryTypes.map((t) => (
+                  <button
+                    key={t.mode}
+                    onClick={() => createCategory(t.mode as Category['mode'])}
+                    title={t.description}
+                    className="w-full flex items-center space-x-2 px-3 py-1.5 text-sm text-gray-300 hover:bg-[#2a3136] text-left"
+                  >
+                    <span className="w-[13px] text-center text-xs leading-none">{t.icon || '🧩'}</span>
+                    <span>{t.label}</span>
+                  </button>
+                ))}
               </div>
             </div>
           )}
@@ -819,7 +834,7 @@ export default function Sidebar(props: SidebarProps) {
             promptAsync={promptAsync}
           />
         )}
-        {activeCategory?.mode === 'notes' && (
+        {(activeCategory?.mode === 'notes' || (activeCategory?.mode?.startsWith('plugin:') && pluginTypeFor(activeCategory.mode)?.layout !== 'full')) && (
           <NotesTree
             key={activeCategory.id}
             category={activeCategory}
@@ -834,6 +849,11 @@ export default function Sidebar(props: SidebarProps) {
             confirmAsync={confirmAsync}
             promptAsync={promptAsync}
           />
+        )}
+
+        {/* --- CUSTOM PLUGIN SIDEBAR TARGET --- */}
+        {activeCategory?.mode?.startsWith('plugin:') && (
+          <div id="plugin-sidebar-target" className="h-full w-full" />
         )}
       </div>
     </div>
