@@ -4229,7 +4229,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
 
         const itemsWithUniqueKeys = combinedItems.map(item => ({
           ...item,
-          name: item.name || item.title
+          name: (item as any).name || item.title
         }));
 
         return filterSuggestionItems(

@@ -386,8 +386,6 @@ async function runPlugin(vaultPath: string, rec: PluginRecord) {
                         type: def.type,
                         propSchema: def.propSchema || {},
                         content: "none",
-                        toExternalHTML: def.toExternalHTML,
-                        parse: def.parse,
                     },
                     {
                         render: (props) => {
@@ -397,7 +395,9 @@ async function runPlugin(vaultPath: string, rec: PluginRecord) {
                             } catch (e: any) {
                                 return React.createElement("div", { style: { color: "red" } }, "Block Error: " + e.message);
                             }
-                        }
+                        },
+                        toExternalHTML: def.toExternalHTML,
+                        parse: def.parse,
                     }
                 )();
 
