@@ -86,6 +86,7 @@ import { createBookmark } from "./Bookmark";
 import { createVideo } from "./VideoBlock";
 import { createAudio } from "./AudioBlock";
 import { createScripture } from "./ScriptureBlock";
+import { createAttachment } from "./FileBlock";
 import { createDmArchive } from "./DmArchive";
 import { isReliablyEmbeddable } from "./embeds";
 import { getPluginSlashItems } from "./plugins";
@@ -171,6 +172,29 @@ function noteDirOf(notePath: string): string {
   return notePath.substring(0, lastSlash);
 }
 
+/** Path of a saved file relative to the note's folder (portable). */
+function attachmentRel(dest: string, notePath: string): string {
+  const d = dest.replace(/\\/g, "/");
+  const n = noteDirOf(notePath).replace(/\\/g, "/").replace(/\/+$/, "");
+  return d.startsWith(n + "/") ? d.slice(n.length + 1) : dest;
+}
+
+/**
+ * Resolve any pending-delete URL (image/audio `asset://` URL, or an
+ * attachment's relative `src`) to an absolute filesystem path.
+ * Returns null if it can't be resolved.
+ */
+function resolvePendingAssetUrl(url: string, notePath: string): string | null {
+  if (!url) return null;
+  const fromAsset = assetUrlToAbsolutePath(url);
+  if (fromAsset) return fromAsset;
+  if (/^([a-zA-Z]:[\\/]|\/)/.test(url)) return url;
+  const noteDir = noteDirOf(notePath);
+  if (!noteDir) return null;
+  const sep = noteDir.includes("\\") ? "\\" : "/";
+  return noteDir.replace(/[\\/]+$/, "") + sep + url.replace(/^[\\/]+/, "");
+}
+
 function mimeToExt(mime: string): string {
   if (!mime.startsWith("image/")) return "png";
   const sub = mime.slice(6).toLowerCase();
@@ -191,6 +215,12 @@ function collectImageUrls(blocks: any[]): string[] {
       // audio block leaves its file orphaned on disk with nothing to
       // prompt the user about.
       if (b?.type === "audio" && b.props?.src) {
+        out.push(b.props.src as string);
+      }
+      // Archived file attachments (zip, html, pdf…). Their `src` is a
+      // relative path (not an asset:// URL), but the diffing only cares
+      // that the string is unique and stable — which it is.
+      if (b?.type === "attachment" && b.props?.src) {
         out.push(b.props.src as string);
       }
       if (Array.isArray(b?.children)) walk(b.children);
@@ -719,6 +749,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
             video: createVideo(),
             audio: createAudio(),
             scripture: createScripture(),
+            attachment: createAttachment(),
             dmarchive: createDmArchive(),
             imagegallery: createImageGallery(),
           },
@@ -2917,6 +2948,25 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
             console.error("[paste] save audio from path failed:", p, e);
           }
         }
+
+        // ── Everything else (zip, html, pdf…) → archived file card ──
+        for (const p of paths) {
+          if (IMAGE_EXT_RE.test(p) || VIDEO_EXT_RE.test(p) || AUDIO_EXT_RE.test(p)) continue;
+          try {
+            const dest = await saveFileToNoteAssets(path, p);
+            const fileName = p.split(/[/\\]/).pop() || "file";
+            insertBlocksSmart(
+              [{
+                type: "attachment",
+                props: { src: attachmentRel(dest, path), caption: "", fileName },
+              }],
+              target?.kind === "insert" ? target.refId : null,
+              target?.kind === "insert" ? target.placement : undefined
+            );
+          } catch (e) {
+            console.error("[paste] save file from path failed:", p, e);
+          }
+        }
       },
       [path, insertImageBlocks, insertBlocksSmart]
     );
@@ -3730,7 +3780,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       }
 
       if (action === "note-and-disk" && url) {
-        const abs = assetUrlToAbsolutePath(url);
+        const abs = resolvePendingAssetUrl(url, path);
         if (abs) {
           await deleteImageFromNoteAssets(abs, path);
         }
@@ -4009,6 +4059,40 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       }),
       [editor, path, insertBlocksSmart]
     );
+    const insertFileMenuItem = useCallback(
+      () => ({
+        title: "Upload file",
+        subtext: "Archive any file (zip, html, pdf…) without embedding it",
+        onItemClick: async () => {
+          let refId: string | null = null;
+          try { refId = editor.getTextCursorPosition?.().block?.id ?? null; } catch {}
+          try {
+            const picked = await open({ multiple: true });
+            if (!picked) return;
+            const list = Array.isArray(picked) ? picked : [picked];
+            for (const src of list) {
+              if (typeof src !== "string") continue;
+              const dest = await saveFileToNoteAssets(path, src);
+              const fileName = src.split(/[/\\]/).pop() || "file";
+              insertBlocksSmart(
+                [{
+                  type: "attachment",
+                  props: { src: attachmentRel(dest, path), caption: "", fileName },
+                }],
+                refId
+              );
+            }
+          } catch (e) {
+            console.error("[attachment] picker failed:", e);
+          }
+        },
+        aliases: ["file", "attach", "attachment", "zip", "html", "archive", "upload", "pdf"],
+        group: "Basic blocks",
+        icon: <span className="text-base">📎</span>,
+      }),
+      [editor, path, insertBlocksSmart]
+    );
+
     const insertScriptureMenuItem = useCallback(
       () => ({
         title: "Bible verse",
@@ -4123,6 +4207,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
                                       insertImageMenuItem(),
                                       insertVideoMenuItem(),
                                       insertAudioMenuItem(),
+                                      insertFileMenuItem(),
                                       insertScriptureMenuItem(),
                                       insertImageGalleryMenuItem(),
 
@@ -4138,7 +4223,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         );
       };
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [editor, openLinkPicker, insertImageMenuItem, insertVideoMenuItem, insertAudioMenuItem, insertScriptureMenuItem, insertDmArchiveMenuItem, insertImageGalleryMenuItem]);
+    }, [editor, openLinkPicker, insertImageMenuItem, insertVideoMenuItem, insertAudioMenuItem, insertFileMenuItem, insertScriptureMenuItem, insertDmArchiveMenuItem, insertImageGalleryMenuItem]);
 
     useEffect(() => {
       if (!editor) return;
@@ -4330,7 +4415,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
 
     const pendingImageUrl = pendingImageDelete[0] || null;
     const pendingImageAbs = pendingImageUrl
-    ? assetUrlToAbsolutePath(pendingImageUrl)
+    ? resolvePendingAssetUrl(pendingImageUrl, path)
     : null;
     const canDeleteFromDisk = pendingImageAbs
     ? isInsideNoteAssets(pendingImageAbs, path)
@@ -5009,9 +5094,14 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
           />
         ) : (
           <div className="flex flex-col items-center gap-3 text-gray-400 text-center min-w-0">
-            <Music size={36} className="opacity-60 flex-shrink-0" />
+            {pendingMediaKind === "audio" ? (
+              <Music size={36} className="opacity-60 flex-shrink-0" />
+            ) : (
+              <FileText size={36} className="opacity-60 flex-shrink-0" />
+            )}
             <span className="text-xs font-mono break-all leading-relaxed">
-              {pendingMediaName || "Audio file"}
+              {pendingMediaName ||
+                (pendingMediaKind === "audio" ? "Audio file" : "File")}
             </span>
           </div>
         )}

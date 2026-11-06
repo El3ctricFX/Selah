@@ -155,7 +155,7 @@ interface ColumnSpec {
 }
 
 interface Segment {
-  kind: "md" | "columns" | "callout" | "bookmark" | "video" | "audio" | "scripture" | "dmarchive" | "imagegallery";
+  kind: "md" | "columns" | "callout" | "bookmark" | "video" | "audio" | "attachment" | "scripture" | "dmarchive" | "imagegallery";
   text?: string;
   columns?: ColumnSpec[];
   callout?: { icon: string; color: string; inner: string };
@@ -173,6 +173,11 @@ interface Segment {
     fileName: string;
   };
   audio?: {
+    src: string;
+    caption: string;
+    fileName: string;
+  };
+  attachment?: {
     src: string;
     caption: string;
     fileName: string;
@@ -222,7 +227,7 @@ function escAttr(s: unknown): string {
 }
 
 const NESTED_BLOCK_RE = /^:::\s+(columns|column|callout)\b/;
-const SELF_CONTAINED_BLOCK_RE = /^:::\s+(bookmark|video|audio|scripture|dmarchive|imagegallery)\b/;
+const SELF_CONTAINED_BLOCK_RE = /^:::\s+(bookmark|video|audio|attachment|scripture|dmarchive|imagegallery)\b/;
 
 function readUntilCloser(
   lines: string[],
@@ -369,6 +374,22 @@ function splitNoteBody(body: string): Segment[] {
       out.push({
         kind: "audio",
         audio: {
+          src: unescapeAttr(attrs.src || ""),
+          caption: unescapeAttr(attrs.caption || ""),
+          fileName: unescapeAttr(attrs.fileName || ""),
+        },
+      });
+      continue;
+    }
+
+    if (trimmed.startsWith("::: attachment")) {
+      flush();
+      const attrs = parseAttrs(trimmed);
+      i++;
+      if (i < lines.length && lines[i].trim() === ":::") i++;
+      out.push({
+        kind: "attachment",
+        attachment: {
           src: unescapeAttr(attrs.src || ""),
           caption: unescapeAttr(attrs.caption || ""),
           fileName: unescapeAttr(attrs.fileName || ""),
@@ -800,6 +821,12 @@ async function parseBodyToBlocks(
         type: "audio",
         props: { src: a.src, caption: a.caption, fileName: a.fileName },
       });
+    } else if (seg.kind === "attachment") {
+      const f = seg.attachment!;
+      blocks.push({
+        type: "attachment",
+        props: { src: f.src, caption: f.caption, fileName: f.fileName },
+      });
     } else if (seg.kind === "scripture") {
       const s = seg.scripture!;
       blocks.push({
@@ -938,6 +965,14 @@ async function serializeBlockList(
           p.caption
         )}" fileName="${escAttr(p.fileName)}"`
       );
+    } else if (block.type === "attachment") {
+      await flush();
+      const p = block.props || {};
+      chunks.push(
+        `::: attachment src="${escAttr(p.src)}" caption="${escAttr(
+          p.caption
+        )}" fileName="${escAttr(p.fileName)}"`
+      );
     } else if (block.type === "scripture") {
       await flush();
       const p = block.props || {};
@@ -1020,6 +1055,9 @@ export function flattenToObsidianMarkdown(raw: string): string {
     } else if (seg.kind === "audio") {
       const a = seg.audio!;
       out.push(`[${a.caption || a.fileName || "Audio"}](${a.src})`);
+    } else if (seg.kind === "attachment") {
+      const f = seg.attachment!;
+      out.push(`[${f.caption || f.fileName || "File"}](${f.src})`);
     } else if (seg.kind === "scripture") {
       const s = seg.scripture!;
       out.push(`> **${s.reference}** (KJV)\n>\n> ${s.text}`);
