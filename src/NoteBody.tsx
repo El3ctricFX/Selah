@@ -89,7 +89,7 @@ import { createScripture } from "./ScriptureBlock";
 import { createAttachment } from "./FileBlock";
 import { createDmArchive } from "./DmArchive";
 import { isReliablyEmbeddable } from "./embeds";
-import { getPluginSlashItems } from "./plugins";
+import { getPluginSlashItems, getPluginBlockSpecs } from "./plugins";
 import { useNoteMode } from "./useNoteMode";
 import { useTheme } from "./theme";
 import { NoteContext } from "./NoteContext";
@@ -752,6 +752,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
             attachment: createAttachment(),
             dmarchive: createDmArchive(),
             imagegallery: createImageGallery(),
+            ...getPluginBlockSpecs(), // <--- Loads custom blocks from plugins!
           },
         })
       ),
@@ -4217,9 +4218,23 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         } else {
           defaultItems.push(...extra);
         }
+        const combinedItems = combineByGroup(defaultItems, getMultiColumnSlashMenuItems(editor));
+
+        // Force sort by group so identical group headers are rendered exactly once
+        combinedItems.sort((a, b) => {
+            const groupA = a.group || "";
+            const groupB = b.group || "";
+            return groupA.localeCompare(groupB);
+        });
+
+        const itemsWithUniqueKeys = combinedItems.map(item => ({
+          ...item,
+          name: item.name || item.title
+        }));
+
         return filterSuggestionItems(
-          combineByGroup(defaultItems, getMultiColumnSlashMenuItems(editor)),
-                                     query
+          itemsWithUniqueKeys,
+          query
         );
       };
       // eslint-disable-next-line react-hooks/exhaustive-deps

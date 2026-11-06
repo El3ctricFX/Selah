@@ -1,8 +1,10 @@
 // src/PluginsPanel.tsx
 import { useState, useEffect, useRef } from "react";
-import { Puzzle, FolderOpen, RefreshCw, AlertTriangle, Copy, Check, Trash2, MoreVertical, Settings, Store } from "lucide-react";
-import { mkdir } from "@tauri-apps/plugin-fs";
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { Puzzle, FolderOpen, RefreshCw, AlertTriangle, Copy, Check, Trash2, MoreVertical, Settings, Store, Download } from "lucide-react";
+import { mkdir, readDir, readTextFile, copyFile, exists } from "@tauri-apps/plugin-fs";
+import { revealItemInDir, openUrl } from "@tauri-apps/plugin-opener";
+import { open } from "@tauri-apps/plugin-dialog";
+import { join } from "@tauri-apps/api/path";
 import { usePlugins, loadPlugins, setPluginEnabled, pluginsDir, removePlugin } from "./plugins";
 import { usePluginFeature } from "./pluginFeature";
 import { useModal } from "./Modal";
@@ -203,6 +205,65 @@ manifest.json
             }
         };
 
+        const importPlugin = async () => {
+            setBusy(true);
+            try {
+                const selected = await open({ directory: true, multiple: false });
+                if (!selected || typeof selected !== "string") return;
+
+                const manifestPath = await join(selected, "manifest.json");
+                if (!(await exists(manifestPath))) {
+                    alert("The selected folder does not contain a manifest.json file.");
+                    return;
+                }
+
+                const manifestRaw = await readTextFile(manifestPath);
+                const manifest = JSON.parse(manifestRaw);
+                const id = manifest.id;
+
+                if (!id) {
+                    alert("Invalid manifest.json: missing 'id'.");
+                    return;
+                }
+
+                const pluginsRoot = await pluginsDir(vaultPath);
+                const destDir = await join(pluginsRoot, id);
+
+                if (await exists(destDir)) {
+                    const overwrite = await confirmAsync(`A plugin with the id "${id}" already exists. Overwrite it?`);
+                    if (!overwrite) return;
+                    await removePlugin(vaultPath, id);
+                }
+
+                await mkdir(destDir, { recursive: true });
+
+                // Recursively copy files (skipping data folders so we don't overwrite settings)
+                const copyDir = async (src: string, dest: string) => {
+                    await mkdir(dest, { recursive: true });
+                    const entries = await readDir(src);
+                    for (const entry of entries) {
+                        if (entry.name.startsWith(".") || entry.name === "data") continue;
+                        const srcPath = await join(src, entry.name);
+                        const destPath = await join(dest, entry.name);
+                        if (entry.isDirectory) {
+                            await copyDir(srcPath, destPath);
+                        } else {
+                            await copyFile(srcPath, destPath);
+                        }
+                    }
+                };
+
+                await copyDir(selected, destDir);
+                await loadPlugins(vaultPath);
+                alert(`Successfully imported plugin: ${manifest.name || id}`);
+            } catch (e: any) {
+                console.error(e);
+                alert("Failed to import plugin: " + String(e));
+            } finally {
+                setBusy(false);
+            }
+        };
+
         const openFolder = async () => {
             setOpenError(null);
             try {
@@ -250,6 +311,14 @@ manifest.json
             <div className="p-5 space-y-6">
             <div>
             <div className="flex flex-wrap items-center gap-2 mb-3">
+            <button
+            type="button"
+            onClick={importPlugin}
+            disabled={busy}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 text-white active:scale-95 transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100 rounded cursor-pointer font-medium"
+            >
+            <Download size={12} /> Import Plugin
+            </button>
             <button
             type="button"
             onClick={openFolder}
@@ -413,13 +482,54 @@ manifest.json
 
             <div>
             <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-2">
-            Making a plugin
+            Developer Resources
             </div>
-            <pre className="text-[10px] leading-relaxed text-gray-300 bg-[#0f1315] border border-[#2a3136] rounded-md p-3 overflow-x-auto whitespace-pre font-mono">
-            {DOCS}
-            </pre>
+            <button
+                type="button"
+                onClick={async () => {
+                    const url = `https://github.com/${REGISTRY_REPO}/wiki/API-Reference`;
+                    try {
+                        await openUrl(url);
+                    } catch (err) {
+                        console.error("Failed to open URL with native API:", err);
+                        window.open(url, "_blank");
+                    }
+                }}
+                className="w-full flex items-center justify-between px-4 py-3 bg-[#131819] hover:bg-[#1a2024] border border-[#2a3136] rounded-md transition-colors cursor-pointer text-left"
+            >
+                <div>
+                    <div className="text-sm text-gray-100 font-medium">Documentation & API Guide</div>
+                    <div className="text-[11px] text-gray-500">Learn how to build and submit your own plugins.</div>
+                </div>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-gray-400"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
+            </button>
             </div>
             </div>
+
+            {/* Plugin Configuration Modal */}
+            {configuring && (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+                    <div className="bg-[#0f1315] border border-[#2a3136] rounded-xl shadow-2xl w-full max-w-md flex flex-col overflow-hidden">
+                        <div className="flex items-center justify-between px-5 py-4 border-b border-[#2a3136] bg-[#131819]">
+                            <h2 className="text-sm font-semibold text-gray-100 flex items-center gap-2">
+                                <Settings size={16} className="text-blue-400" />
+                                Configure {configuring.manifest?.name || configuring.id}
+                            </h2>
+                            <button onClick={() => setConfiguring(null)} className="text-gray-500 hover:text-gray-200 p-1 rounded-md hover:bg-[#2a3136]">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                            </button>
+                        </div>
+                        <div className="p-5 overflow-y-auto max-h-[60vh]">
+                            <div ref={configHostRef} />
+                        </div>
+                        <div className="p-4 border-t border-[#2a3136] bg-[#131819] flex justify-end">
+                            <button onClick={() => setConfiguring(null)} className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-md text-sm font-semibold">
+                                Done
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* Community Plugins Modal */}
             {showCommunityModal && (

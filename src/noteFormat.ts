@@ -719,48 +719,66 @@ async function parseBodyToBlocks(
       if (!seg.text?.trim()) continue;
 
       const text = seg.text;
-      const divRegex = /<div\s+align="(center|right|left|justify)">([\s\S]*?)<\/div>/g;
+
+      // NEW: Extract custom plugin blocks (HTML comments)
+      const pluginRegex = /<!--\s*selah-plugin:\s*(\{.*?\})\s*-->/gs;
       let match;
       let lastIndex = 0;
 
-      while ((match = divRegex.exec(text)) !== null) {
-        // Parse any text before the div
-        if (match.index > lastIndex) {
-          const prevText = text.slice(lastIndex, match.index);
-          if (prevText.trim()) {
-            const parsed = await editor.tryParseMarkdownToBlocks(prevText);
+      const parseTextSegment = async (t: string) => {
+        if (!t.trim()) return;
+        const divRegex = /<div\s+align="(center|right|left|justify)">([\s\S]*?)<\/div>/g;
+        let divMatch;
+        let divLastIndex = 0;
+        while ((divMatch = divRegex.exec(t)) !== null) {
+          if (divMatch.index > divLastIndex) {
+            const prevText = t.slice(divLastIndex, divMatch.index);
+            if (prevText.trim()) {
+              const parsed = await editor.tryParseMarkdownToBlocks(prevText);
+              const decoded = decodeColorsInBlocks(parsed);
+              blocks.push(...extractImageWidths(decoded));
+            }
+          }
+          const align = divMatch[1];
+          const innerText = divMatch[2];
+          if (innerText.trim()) {
+            const parsed = await editor.tryParseMarkdownToBlocks(innerText);
+            const decoded = decodeColorsInBlocks(parsed);
+            const aligned = decoded.map((b) => ({
+              ...b,
+              props: { ...b.props, textAlignment: align },
+            }));
+            blocks.push(...extractImageWidths(aligned));
+          }
+          divLastIndex = divRegex.lastIndex;
+        }
+        if (divLastIndex < t.length) {
+          const restText = t.slice(divLastIndex);
+          if (restText.trim()) {
+            const parsed = await editor.tryParseMarkdownToBlocks(restText);
             const decoded = decodeColorsInBlocks(parsed);
             blocks.push(...extractImageWidths(decoded));
           }
         }
+      };
 
-        // Parse the text inside the aligned div
-        const align = match[1];
-        const innerText = match[2];
-        if (innerText.trim()) {
-          const parsed = await editor.tryParseMarkdownToBlocks(innerText);
-          const decoded = decodeColorsInBlocks(parsed);
+      while ((match = pluginRegex.exec(text)) !== null) {
+        const textBefore = text.slice(lastIndex, match.index);
+        await parseTextSegment(textBefore);
 
-          // Apply the alignment to all resulting blocks
-          const aligned = decoded.map((b) => ({
-            ...b,
-            props: { ...b.props, textAlignment: align },
-          }));
-
-          blocks.push(...extractImageWidths(aligned));
+        try {
+          const parsed = JSON.parse(match[1]);
+          blocks.push(parsed);
+        } catch (e) {
+          console.error("Failed to parse plugin block", e);
         }
-        lastIndex = divRegex.lastIndex;
+
+        lastIndex = pluginRegex.lastIndex;
       }
 
-      // Parse any remaining text after the div
-      if (lastIndex < text.length) {
-        const restText = text.slice(lastIndex);
-        if (restText.trim()) {
-          const parsed = await editor.tryParseMarkdownToBlocks(restText);
-          const decoded = decodeColorsInBlocks(parsed);
-          blocks.push(...extractImageWidths(decoded));
-        }
-      }
+      const textAfter = text.slice(lastIndex);
+      await parseTextSegment(textAfter);
+
     } else if (seg.kind === "columns") {
       const columnChildren = await Promise.all(
         (seg.columns || []).map(async (col) => {
@@ -918,8 +936,15 @@ async function serializeBlockList(
     pending = [];
   };
 
+  const CORE_BLOCKS = new Set(["paragraph", "heading", "bulletListItem", "numberedListItem", "checkListItem", "image", "video", "audio", "file", "table", "scripture", "callout", "bookmark", "dmarchive", "imagegallery", "columnList", "column"]);
+
   for (const block of blocks) {
-    if (block.type === "columnList") {
+    // NEW: Handle custom plugin blocks
+    if (!CORE_BLOCKS.has(block.type)) {
+      await flush();
+      const jsonStr = JSON.stringify({ type: block.type, props: block.props });
+      chunks.push(`<!-- selah-plugin: ${jsonStr} -->`);
+    } else if (block.type === "columnList") {
       await flush();
       const colTexts: string[] = [];
       for (const col of block.children || []) {

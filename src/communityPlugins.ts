@@ -40,7 +40,8 @@ function validEntry(e: any): e is RegistryEntry {
     if (e.badge !== undefined && typeof e.badge !== "string") return false;
     if (!e.files || typeof e.files !== "object") return false;
     const paths = Object.keys(e.files);
-    if (!paths.includes("manifest.json") || !paths.includes("index.js")) return false;
+    // Allow manifest.json and index.js to be in a subfolder
+    if (!paths.some(p => p.endsWith("manifest.json")) || !paths.some(p => p.endsWith("index.js"))) return false;
     return paths.every((p) => FILE_RE.test(p) && HASH_RE.test(e.files[p]));
 }
 
@@ -102,16 +103,19 @@ export async function installFromRegistry(vaultPath: string, entry: RegistryEntr
     }
 
     // 2. The manifest id must match the registry id.
-    const manifestBytes = downloaded.find(([p]) => p === "manifest.json")![1];
+    const manifestPath = Object.keys(entry.files).find(p => p.endsWith("manifest.json"))!;
+    const manifestBytes = downloaded.find(([p]) => p === manifestPath)![1];
     let manifest: any;
     try { manifest = JSON.parse(new TextDecoder().decode(manifestBytes)); }
     catch { throw new Error("manifest.json is not valid JSON"); }
     if (String(manifest?.id) !== entry.id) throw new Error("manifest.json id doesn't match the registry id");
 
-    // 3. Write.
+    // 3. Write. (Strip the subfolder prefix so files land in the root of the plugin folder)
+    const prefix = manifestPath.replace("manifest.json", "");
     await mkdir(dir, { recursive: true });
     for (const [path, bytes] of downloaded) {
-        const parts = path.split("/");
+        const relativePath = prefix && path.startsWith(prefix) ? path.slice(prefix.length) : path;
+        const parts = relativePath.split("/");
         if (parts.length > 1) await mkdir(await join(dir, ...parts.slice(0, -1)), { recursive: true });
         await writeFileAtomic(await join(dir, ...parts), bytes);
     }

@@ -8,6 +8,10 @@ import { join } from "@tauri-apps/api/path";
 import { writeFileAtomic } from "./safeWrite";
 import { moveToTrash } from "./trash";
 import { pluginFeatureEnabled } from "./pluginFeature";
+import { createReactBlockSpec } from "@blocknote/react";
+import { createPortal } from "react-dom";
+import EmojiPicker from "emoji-picker-react";
+import { currentEmojiTheme } from "./emojiTheme";
 
 export interface PluginManifest {
     id: string;
@@ -197,6 +201,11 @@ const ID_RE = /^[a-zA-Z0-9_-]+$/;
 
 let records: PluginRecord[] = [];
 let ready = false;
+const pluginBlockSpecs: Record<string, any> = {};
+
+export function getPluginBlockSpecs() {
+    return pluginBlockSpecs;
+}
 let loadSeq = 0;
 const emit = () => window.dispatchEvent(new Event("plugins-changed"));
 
@@ -328,6 +337,14 @@ async function runPlugin(vaultPath: string, rec: PluginRecord) {
                 return typeof picked === "string" ? picked : null;
             },
 
+            // NEW: Vault read access for plugins (like dashboards)
+            readVaultText: async (absPath: string) => {
+                try { return await readTextFile(absPath); } catch { return null; }
+            },
+            listVaultDir: async (absPath: string) => {
+                try { return await readDir(absPath); } catch { return []; }
+            },
+
             /** Register a cleanup that runs on plugin reload / disable. */
             onUnload(cb: () => void) {
                 if (typeof cb === "function") rec.cleanups.push(cb);
@@ -358,6 +375,33 @@ async function runPlugin(vaultPath: string, rec: PluginRecord) {
                     if (settingsTimer) clearTimeout(settingsTimer);
                     settingsTimer = setTimeout(flushSettings, 250);
                 },
+            },
+
+            registerBlockSpec(def: any) {
+                if (!def || !def.type) throw new Error("registerBlockSpec: type is required");
+                if (typeof def.render !== "function") throw new Error("registerBlockSpec: render is required");
+
+                const spec = createReactBlockSpec(
+                    {
+                        type: def.type,
+                        propSchema: def.propSchema || {},
+                        content: "none",
+                        toExternalHTML: def.toExternalHTML,
+                        parse: def.parse,
+                    },
+                    {
+                        render: (props) => {
+                            try {
+                                // Pass React and createPortal so the plugin can use them
+                                return def.render(props, React, createPortal);
+                            } catch (e: any) {
+                                return React.createElement("div", { style: { color: "red" } }, "Block Error: " + e.message);
+                            }
+                        }
+                    }
+                )();
+
+                pluginBlockSpecs[def.type] = spec;
             },
 
             registerCategoryType(def: PluginCategoryTypeDef) {
@@ -421,6 +465,10 @@ async function runPlugin(vaultPath: string, rec: PluginRecord) {
             registerConfiguration(cb: (container: HTMLElement) => void | (() => void)) {
                 if (typeof cb === "function") rec.configure = cb;
             },
+
+            // Expose the exact native EmojiPicker to plugins!
+            EmojiPicker,
+            currentEmojiTheme,
         };
 
         // Track a flush of pending settings so reload/disable writes them.
@@ -603,6 +651,7 @@ export function getPluginSlashItems(
         if (!rec.enabled || rec.error) continue;
         for (const item of rec.slashItems) {
             out.push({
+                name: item.title, // <--- Add this line to fix the React crash
                 title: item.title,
                 subtext: item.subtext,
                 aliases: item.aliases ?? [],
