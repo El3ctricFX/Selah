@@ -15,6 +15,7 @@ export interface PluginManifest {
     version?: string;
     description?: string;
     author?: string;
+    icon?: string;
     /** Advisory only — shown on the plugin card. The sandbox does not
      *  actually enforce these because `new Function` gives plugins the
      *  whole window; declaring them is a warning to the user, not a gate. */
@@ -496,6 +497,7 @@ export async function loadPlugins(vaultPath: string): Promise<void> {
                 version: m.version ? String(m.version) : undefined,
                 description: m.description ? String(m.description) : undefined,
                 author: m.author ? String(m.author) : undefined,
+                icon: m.icon ? String(m.icon) : undefined,
                 permissions: Array.isArray(m.permissions)
                     ? m.permissions.filter((p: any) => typeof p === "string")
                     : undefined,

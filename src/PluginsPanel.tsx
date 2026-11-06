@@ -1,11 +1,13 @@
 // src/PluginsPanel.tsx
 import { useState, useEffect, useRef } from "react";
-import { Puzzle, FolderOpen, RefreshCw, AlertTriangle, Copy, Check, Trash2, MoreVertical, Settings } from "lucide-react";
+import { Puzzle, FolderOpen, RefreshCw, AlertTriangle, Copy, Check, Trash2, MoreVertical, Settings, Store } from "lucide-react";
 import { mkdir } from "@tauri-apps/plugin-fs";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { usePlugins, loadPlugins, setPluginEnabled, pluginsDir, removePlugin } from "./plugins";
 import { usePluginFeature } from "./pluginFeature";
 import { useModal } from "./Modal";
+import CommunityPlugins from "./CommunityPlugins";
+import { REGISTRY_REPO } from "./communityPlugins";
 
 const DOCS = String.raw`<vault>/.plugins/my-plugin/
 manifest.json
@@ -13,7 +15,7 @@ index.js
 
 manifest.json
 { "id": "my-plugin", "name": "My Plugin", "version": "1.0.0",
-    "description": "What it does", "author": "You" }
+    "description": "What it does", "author": "You", "icon": "✨" }
 
     index.js  (runs when the vault opens; "selah" is the API)
 
@@ -133,10 +135,26 @@ manifest.json
         const [activeMenu, setActiveMenu] = useState<string | null>(null);
         const [configuring, setConfiguring] = useState<any | null>(null);
         const configHostRef = useRef<HTMLDivElement>(null);
+        const [showCommunityModal, setShowCommunityModal] = useState(false);
 
         // New state for folder opening errors
         const [openError, setOpenError] = useState<string | null>(null);
         const [copied, setCopied] = useState(false);
+
+        // Intercept Escape key to close only the Community modal
+        useEffect(() => {
+            if (!showCommunityModal) return;
+            const handleEscape = (e: KeyboardEvent) => {
+                if (e.key === "Escape") {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    setShowCommunityModal(false);
+                }
+            };
+            // Use capture phase to intercept the event before Settings modal sees it
+            window.addEventListener("keydown", handleEscape, true);
+            return () => window.removeEventListener("keydown", handleEscape, true);
+        }, [showCommunityModal]);
 
         useEffect(() => {
             if (!activeMenu) return;
@@ -153,12 +171,12 @@ manifest.json
             let cleanup: (() => void) | undefined;
 
             Promise.resolve()
-                .then(() => configuring.configure!(el))
-                .then((r) => {
-                    if (typeof r !== "function") return;
-                    if (disposed) { try { r(); } catch {} } else cleanup = r;
-                })
-                .catch((e) => console.error("[plugins] config render failed:", e));
+            .then(() => configuring.configure!(el))
+            .then((r) => {
+                if (typeof r !== "function") return;
+                if (disposed) { try { r(); } catch {} } else cleanup = r;
+            })
+            .catch((e) => console.error("[plugins] config render failed:", e));
 
             return () => {
                 disposed = true;
@@ -217,11 +235,11 @@ manifest.json
         if (!pluginsEnabled) {
             return (
                 <div className="p-5 flex flex-col items-center justify-center text-center h-full min-h-[300px]">
-                    <Puzzle size={32} className="text-gray-600 mb-4 opacity-50" />
-                    <p className="text-sm text-gray-300 mb-2">Plugins are currently disabled.</p>
-                    <p className="text-xs text-gray-500 max-w-xs leading-relaxed">
-                        To protect your app, plugins are turned off by default. You can enable them by going to <strong>Settings → General</strong> and turning on "Enable plugins".
-                    </p>
+                <Puzzle size={32} className="text-gray-600 mb-4 opacity-50" />
+                <p className="text-sm text-gray-300 mb-2">Plugins are currently disabled.</p>
+                <p className="text-xs text-gray-500 max-w-xs leading-relaxed">
+                To protect your app, plugins are turned off by default. You can enable them by going to <strong>Settings → General</strong> and turning on "Enable plugins".
+                </p>
                 </div>
             );
         }
@@ -273,6 +291,25 @@ manifest.json
             </span>
             </div>
 
+            {/* Community Plugins Button */}
+            <div>
+            <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-2">
+            Community
+            </div>
+            <button
+            type="button"
+            onClick={() => setShowCommunityModal(true)}
+            className="w-full flex items-center justify-between px-4 py-3 bg-[#131819] hover:bg-[#1a2024] border border-[#2a3136] rounded-md transition-colors cursor-pointer text-left"
+            >
+            <div>
+            <div className="text-sm text-gray-100 font-medium">Browse Community Plugins</div>
+            <div className="text-[11px] text-gray-500">Discover and install plugins reviewed by the maintainer.</div>
+            </div>
+            <Store size={16} className="text-gray-400" />
+            </button>
+            </div>
+
+            {/* Installed Plugins */}
             <div>
             <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-2">
             Installed plugins
@@ -285,26 +322,35 @@ manifest.json
                 </p>
             ) : (
                 <div className="space-y-1.5">
-                {plugins.map((p) => (
-                    <div key={p.dir} className="rounded-md border border-[#2a3136] bg-[#131819] px-3 py-2.5">
-                    <div className="flex items-center gap-2">
-                    <Puzzle size={13} className="text-blue-400 flex-shrink-0" />
-                    <div className="flex-1 min-w-0">
-                    <div className="text-xs text-gray-100 truncate">
-                    {p.manifest?.name || p.id}
-                    {p.manifest?.version && (
-                        <span className="ml-2 text-[10px] text-gray-500 font-mono">v{p.manifest.version}</span>
-                    )}
-                    </div>
-                    {p.manifest?.description && (
-                        <div className="text-[10px] text-gray-500 truncate">{p.manifest.description}</div>
-                    )}
-                    </div>
-                    <Toggle
-                    on={p.enabled}
-                    onClick={() => void setPluginEnabled(vaultPath, p.id, !p.enabled)}
-                    />
-                    <div className="relative flex-shrink-0 ml-1">
+                {plugins.map((p) => {
+                    const isMaintainer = p.manifest?.author?.toLowerCase() === REGISTRY_REPO.split('/')[0].toLowerCase();
+
+                    return (
+                        <div key={p.dir} className="rounded-md border border-[#2a3136] bg-[#131819] px-3 py-2.5">
+                        <div className="flex items-center gap-2">
+                        <span className="text-base leading-none w-6 text-center flex-shrink-0">{p.manifest?.icon || "🧩"}</span>
+                        <div className="flex-1 min-w-0">
+                        <div className="text-xs text-gray-100 flex items-center gap-2 truncate">
+                        <span className="truncate">{p.manifest?.name || p.id}</span>
+                        {isMaintainer && (
+                            <span className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border bg-blue-500/20 text-blue-300 border-blue-500/30">
+                            Official
+                            </span>
+                        )}
+                        {p.manifest?.version && (
+                            <span className="text-[10px] text-gray-500 font-mono">v{p.manifest.version}</span>
+                        )}
+                        </div>
+                        <div className="text-[10px] text-gray-500 truncate flex items-center gap-2">
+                        {p.manifest?.description}
+                        {p.manifest?.author && <span className="opacity-60">by {p.manifest.author}</span>}
+                        </div>
+                        </div>
+                        <Toggle
+                        on={p.enabled}
+                        onClick={() => void setPluginEnabled(vaultPath, p.id, !p.enabled)}
+                        />
+                        <div className="relative flex-shrink-0 ml-1">
                         <button
                         type="button"
                         onClick={(e) => { e.stopPropagation(); setActiveMenu(activeMenu === p.id ? null : p.id); }}
@@ -314,54 +360,54 @@ manifest.json
                         </button>
                         {activeMenu === p.id && (
                             <div className="absolute right-0 top-full mt-1 z-50 bg-[#1e2327] border border-[#2a3136] rounded-md shadow-2xl py-1 w-40">
-                                {p.configure && (
-                                    <button
-                                    type="button"
-                                    onClick={() => { setActiveMenu(null); setConfiguring(p); }}
-                                    className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
-                                    >
-                                    <Settings size={13} /> Configure
-                                    </button>
-                                )}
+                            {p.configure && (
                                 <button
                                 type="button"
-                                onClick={() => { handleRemove(p); setActiveMenu(null); }}
-                                className="w-full text-left px-3 py-1.5 text-sm text-red-400 hover:bg-[#2a3136] flex items-center gap-2 border-t border-[#2a3136]"
+                                onClick={() => { setActiveMenu(null); setConfiguring(p); }}
+                                className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
                                 >
-                                <Trash2 size={13} /> Delete
+                                <Settings size={13} /> Configure
                                 </button>
+                            )}
+                            <button
+                            type="button"
+                            onClick={() => { handleRemove(p); setActiveMenu(null); }}
+                            className="w-full text-left px-3 py-1.5 text-sm text-red-400 hover:bg-[#2a3136] flex items-center gap-2 border-t border-[#2a3136]"
+                            >
+                            <Trash2 size={13} /> Delete
+                            </button>
                             </div>
                         )}
-                    </div>
-                    </div>
-                    {p.manifest?.permissions && p.manifest.permissions.length > 0 && (
-                        <div className="mt-1.5 flex flex-wrap gap-1">
+                        </div>
+                        </div>
+                        {p.manifest?.permissions && p.manifest.permissions.length > 0 && (
+                            <div className="mt-1.5 flex flex-wrap gap-1">
                             {p.manifest.permissions.map((perm) => (
                                 <span
-                                    key={perm}
-                                    className="text-[9px] px-1.5 py-0.5 rounded border border-[#30363d] bg-[#0f1315] text-gray-500 font-mono"
-                                    title={`Declared permission: ${perm}`}
+                                key={perm}
+                                className="text-[9px] px-1.5 py-0.5 rounded border border-[#30363d] bg-[#0f1315] text-gray-500 font-mono"
+                                title={`Declared permission: ${perm}`}
                                 >
-                                    {perm}
+                                {perm}
                                 </span>
                             ))}
+                            </div>
+                        )}
+                        {p.error && (
+                            <div className="mt-1.5 text-[10px] text-red-400 break-words">{p.error}</div>
+                        )}
+                        {p.enabled && !p.error && (p.categoryTypes.length > 0 || p.slashItems.length > 0) && (
+                            <div className="mt-1.5 text-[10px] text-gray-500">
+                            {p.categoryTypes.length > 0 &&
+                                `Category types: ${p.categoryTypes.map((t) => t.label).join(", ")}`}
+                                {p.categoryTypes.length > 0 && p.slashItems.length > 0 && " · "}
+                                {p.slashItems.length > 0 &&
+                                    `Slash items: ${p.slashItems.map((s) => s.title).join(", ")}`}
+                                    </div>
+                        )}
                         </div>
-                    )}
-                    {p.error && (
-                        <div className="mt-1.5 text-[10px] text-red-400 break-words">{p.error}</div>
-                    )}
-                    {p.enabled && !p.error && (p.categoryTypes.length > 0 || p.slashItems.length > 0) && (
-                        <div className="mt-1.5 text-[10px] text-gray-500">
-                        {p.categoryTypes.length > 0 &&
-                            `Category types: ${p.categoryTypes.map((t) => t.label).join(", ")}`}
-                            {p.categoryTypes.length > 0 && p.slashItems.length > 0 && " · "}
-                            {p.slashItems.length > 0 &&
-                                `Slash items: ${p.slashItems.map((s) => s.title).join(", ")}`}
-                                </div>
-                    )}
+                    )})}
                     </div>
-                ))}
-                </div>
             )}
             </div>
 
@@ -374,6 +420,32 @@ manifest.json
             </pre>
             </div>
             </div>
+
+            {/* Community Plugins Modal */}
+            {showCommunityModal && (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6 bg-black/60 backdrop-blur-sm">
+                <div
+                className="bg-[#0f1315] border border-[#2a3136] rounded-xl shadow-2xl w-full max-w-2xl h-[80vh] flex flex-col overflow-hidden"
+                onClick={(e) => e.stopPropagation()}
+                >
+                <div className="flex items-center justify-between px-5 py-4 border-b border-[#2a3136] bg-[#131819] flex-shrink-0">
+                <h2 className="text-sm font-semibold text-gray-100 flex items-center gap-2">
+                <Store size={16} className="text-blue-400" />
+                Community Plugins
+                </h2>
+                <button
+                onClick={() => setShowCommunityModal(false)}
+                className="text-gray-500 hover:text-gray-200 p-1 rounded-md hover:bg-[#2a3136] transition-colors"
+                >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                </button>
+                </div>
+                <div className="flex-1 overflow-hidden p-5 bg-[#0f1315]">
+                <CommunityPlugins vaultPath={vaultPath} />
+                </div>
+                </div>
+                </div>
+            )}
             </>
         );
     }
