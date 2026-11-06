@@ -7,7 +7,7 @@ import { useModal } from "./Modal";
 import {
     fetchRegistry, installFromRegistry, readInstallInfo, entrySourceUrl, REGISTRY_REPO,
     type RegistryEntry,
-} from "./communityPlugins";
+} from "./registry";
 
 export default function CommunityPlugins({ vaultPath }: { vaultPath: string }) {
     const { plugins } = usePlugins();
@@ -178,7 +178,7 @@ export default function CommunityPlugins({ vaultPath }: { vaultPath: string }) {
                         </div>
                         {e.permissions && e.permissions.length > 0 && (
                             <div className="mt-1.5 flex flex-wrap gap-1">
-                            {e.permissions.map((p) => (
+                            {e.permissions.map((p: string) => (
                                 <span key={p} className="text-[9px] px-1.5 py-0.5 rounded border border-[#30363d] bg-[#0f1315] text-gray-500 font-mono">{p}</span>
                             ))}
                             </div>
