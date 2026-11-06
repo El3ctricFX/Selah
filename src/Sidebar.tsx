@@ -25,6 +25,7 @@ import {
   colorForFolder,
   FOLDER_COLORS,
   isRainbowColor,
+  withMonthDefaults,
 } from './folderMeta';
 import { parseNoteFile, serializeNoteFile, type Frontmatter } from './noteFormat';
 import { moveJournalNoteToDate, parseFlexibleDate } from './journalDateMove';
@@ -1958,7 +1959,7 @@ function JournalTree({
     try {
       if (!(await exists(fullPath))) return [];
       const entries = await readDir(fullPath);
-      return entries.filter((e) => e.isDirectory).map((e) => e.name).sort((a, b) => Number(b) - Number(a));
+      return entries.filter((e) => e.isDirectory).map((e) => e.name).sort((a, b) => Number(a) - Number(b));
     } catch { return []; }
   };
 
@@ -2649,7 +2650,7 @@ function JournalTree({
                 {(months[year] || []).map((month) => {
                   const key = `${year}/${month}`;
                   const mKey = monthKey(year, month);
-                  const mMeta = folderMeta[mKey];
+                  const mMeta = withMonthDefaults(folderMeta[mKey], month);
                   const mColor = colorForFolder(mMeta);
                   const mRainbow = isRainbowColor(mMeta?.color);
                   return (

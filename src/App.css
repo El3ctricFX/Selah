@@ -27,6 +27,8 @@
   --c-folder-purple: #b38ee5;
   --c-folder-pink: #e58eb5;
   --c-folder-red: #e57a7a;
+  --c-folder-teal: #4fc3b5;
+  --c-folder-gold: #e8b84a;
   /* Fallback only; the actual rainbow renders via .folder-rainbow-text. */
   --c-folder-rainbow: #ff5e57;
   /* Overlay defaults — kept in sync by applyTheme() in theme.ts. */
@@ -657,6 +659,8 @@ body.theme-light-surface {
   --c-folder-purple: #4c1d95;
   --c-folder-pink: #831843;
   --c-folder-red: #7f1d1d;
+  --c-folder-teal: #0f5f58;
+  --c-folder-gold: #6b4e08;
 }
 
 /* Rainbow folder / note label.

@@ -12,6 +12,33 @@ export function makeFolderKey(categoryId: string, ...parts: string[]): string {
   return [categoryId, ...parts].join("/");
 }
 
+// Default icon + color for each journal month (1–12). Used whenever the
+// user hasn't picked their own.
+export const MONTH_DEFAULTS: Record<number, { icon: string; color: string }> = {
+  1:  { icon: "❄️",  color: "blue"   }, // Ice Blue
+  2:  { icon: "❤️",  color: "pink"   }, // Deep Rose
+  3:  { icon: "🌱",  color: "green"  }, // Sage Green
+  4:  { icon: "🍃",  color: "green"  }, // Sage Green
+  5:  { icon: "☀️",  color: "yellow" }, // Bright Yellow
+  6:  { icon: "🏖️", color: "teal"   }, // Ocean Teal
+  7:  { icon: "🎆",  color: "gold"   }, // Sunset Gold
+  8:  { icon: "🌻",  color: "orange" }, // Amber Orange
+  9:  { icon: "🍂",  color: "brown"  }, // Rust Brown
+  10: { icon: "🎃",  color: "orange" }, // Pumpkin Orange
+  11: { icon: "🍁",  color: "red"    }, // Cranberry Red
+  12: { icon: "🌲",  color: "green"  }, // Pine Green
+};
+
+/** Fills in the month's default icon/color wherever the user hasn't set one. */
+export function withMonthDefaults(
+  meta: FolderMeta | undefined,
+  month: string | number
+): FolderMeta {
+  const d = MONTH_DEFAULTS[Number(month)];
+  if (!d) return meta || {};
+  return { ...meta, icon: meta?.icon || d.icon, color: meta?.color || d.color };
+}
+
 export const FOLDER_COLORS: Record<string, { label: string; text: string }> = {
   default: { label: "Default", text: "var(--c-folder-default)" },
   gray:    { label: "Gray",    text: "var(--c-folder-gray)" },
@@ -23,6 +50,8 @@ export const FOLDER_COLORS: Record<string, { label: string; text: string }> = {
   purple:  { label: "Purple",  text: "var(--c-folder-purple)" },
   pink:    { label: "Pink",    text: "var(--c-folder-pink)" },
   red:     { label: "Red",     text: "var(--c-folder-red)" },
+  teal:    { label: "Teal",    text: "var(--c-folder-teal)" },
+  gold:    { label: "Gold",    text: "var(--c-folder-gold)" },
   // Rendering special-cases this one; `text` is only a safe fallback.
   rainbow: { label: "Rainbow", text: "var(--c-folder-rainbow)" },
 };
