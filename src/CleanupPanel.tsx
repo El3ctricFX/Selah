@@ -7,7 +7,7 @@ import {
   Wrench, FolderOpen, ShieldOff, RefreshCw, ArrowRight, HelpCircle,
 } from "lucide-react";
 import { auditVault, type VaultReport, type BrokenRef, type MissingProxiesForNote, type MissingThumbForNote, type ProxiesOffNote } from "./mediaVault";
-import { fixBrokenRef, fixAllBrokenRefsForNote, deleteUnusedFile, keepUnusedFile, fixOldLayout, buildProxiesForNote, buildThumbsForNote, removeProxiesForNote, removeBrokenRefFromNote, deleteOrphanedCategory } from "./mediaFix";
+import { fixBrokenRef, fixAllBrokenRefsForNote, deleteUnusedFile, keepUnusedFile, fixOldLayout, buildProxiesForNote, buildThumbsForNote, removeProxiesForNote, removeBrokenRefFromNote, deleteOrphanedCategory, deleteOrphanedAssetFolder } from "./mediaFix";
 import { basename } from "./mediaVault";
 
 type Phase = "scanning" | "results" | "working" | "done" | "error";
@@ -78,13 +78,15 @@ export default function CleanupPanel({ open, onClose, vaultPath }: Props) {
 
   const summary = useMemo(() => {
     if (!report) return null;
+    const orphanedFolders = report.orphanedCategories?.length || 0;
+    const orphanedAssets = report.orphanedAssetFolders?.length || 0;
     return {
       broken: report.brokenRefs.length,
       unused: report.unusedFiles.length,
       oldLayout: report.oldLayout.length,
       pending: report.missingProxies.length,
       proxiesOff: report.proxiesOff.length,
-      orphaned: report.orphanedCategories?.length || 0,
+      orphaned: orphanedFolders + orphanedAssets,
       total:
         report.brokenRefs.length +
         report.unusedFiles.length +
@@ -92,7 +94,8 @@ export default function CleanupPanel({ open, onClose, vaultPath }: Props) {
         report.missingProxies.length +
         report.missingThumbs.length +
         report.proxiesOff.length +
-        (report.orphanedCategories?.length || 0),
+        orphanedFolders +
+        orphanedAssets,
     };
   }, [report]);
 
@@ -388,6 +391,87 @@ export default function CleanupPanel({ open, onClose, vaultPath }: Props) {
                       </div>
                     </Row>
                   ))}
+                </Section>
+              )}
+
+              {/* ── Orphaned asset folders ────────────────────────────── */}
+              {report.orphanedAssetFolders?.length > 0 && (
+                <Section
+                  title={
+                    report.orphanedAssetFolders.length === 1
+                      ? "1 leftover assets folder"
+                      : `${report.orphanedAssetFolders.length} leftover assets folders`
+                  }
+                  subtitle={
+                    <>
+                      These are per-note media folders whose matching{" "}
+                      <code className="px-1 rounded bg-black/40 font-mono">.selah</code> file no
+                      longer exists — so the photos, audio, and attachments inside them are no
+                      longer reachable from any note. This usually happens when a note was deleted
+                      by an older version of the app that didn't trash its assets, or the trash
+                      step failed. Moving them to the trash reclaims the space.
+                    </>
+                  }
+                  icon={<Trash2 size={13} className="text-amber-400" />}
+                  onSelectAll={() =>
+                    selectAllOf(
+                      report.orphanedAssetFolders.map((o) => `oa:${o.absPath}`),
+                    )
+                  }
+                  onFixAll={() =>
+                    run("Moving leftover assets to trash", async () => {
+                      for (const o of report.orphanedAssetFolders) {
+                        await deleteOrphanedAssetFolder(o);
+                      }
+                    })
+                  }
+                  fixAllLabel={
+                    report.orphanedAssetFolders.length === 1
+                      ? "Move to trash"
+                      : `Move all ${report.orphanedAssetFolders.length}`
+                  }
+                  extraActions={
+                    <button
+                      onClick={() =>
+                        run("Moving selected assets to trash", async () => {
+                          for (const o of report.orphanedAssetFolders) {
+                            if (!selected.has(`oa:${o.absPath}`)) continue;
+                            await deleteOrphanedAssetFolder(o);
+                          }
+                        })
+                      }
+                      disabled={
+                        working !== null ||
+                        !report.orphanedAssetFolders.some((o) =>
+                          selected.has(`oa:${o.absPath}`),
+                        )
+                      }
+                      className="flex items-center gap-1 px-2.5 py-1 text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white rounded"
+                    >
+                      <Trash2 size={11} /> Trash selected
+                    </button>
+                  }
+                  working={working}
+                >
+                  {report.orphanedAssetFolders.map((o) => {
+                    const key = `oa:${o.absPath}`;
+                    return (
+                      <Row key={key} checked={selected.has(key)} onToggle={() => toggle(key)}>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-xs text-gray-200 truncate font-mono" title={o.absPath}>
+                            {o.noteBase}/
+                          </div>
+                          <div className="text-[10px] text-gray-500 mt-0.5">
+                            {o.fileCount} file{o.fileCount === 1 ? "" : "s"} ·{" "}
+                            {fmtBytes(o.size)} · no matching note
+                          </div>
+                          <div className="text-[10px] text-gray-600 font-mono truncate mt-0.5" title={o.absPath}>
+                            {o.absPath}
+                          </div>
+                        </div>
+                      </Row>
+                    );
+                  })}
                 </Section>
               )}
 

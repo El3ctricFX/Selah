@@ -15,6 +15,7 @@ import EmojiPicker, { Theme, EmojiStyle } from 'emoji-picker-react';
 
 import { useModal } from './Modal';
 import { moveToTrash } from './trash';
+import { trashNoteWithAssets } from './deleteNote';
 import { writeFileAtomic } from './safeWrite';
 import CleanupPanel from './CleanupPanel';
 import TagPickerModal from './TagPickerModal';
@@ -1194,11 +1195,17 @@ function NotesTree({
   };
 
   const deleteNote = async (note: NoteEntry) => {
-    const ok = await confirmAsync(`Move "${note.title}" to the trash?`);
+    const ok = await confirmAsync(
+      `Move "${note.title}" to the trash?\n\nIts photos, audio, and attachments will be deleted with it.`
+    );
     if (!ok) return;
     try {
       notifyNoteDeleted(note.path);
-      await moveToTrash(note.path);
+      const { noteTrashed } = await trashNoteWithAssets(note.path);
+      if (!noteTrashed) {
+        await confirmAsync('Could not delete the file. It might be locked by another app.');
+        return;
+      }
       await reload();
     } catch (e) { console.error('[notes-tree] delete failed:', e); }
   };
@@ -2289,14 +2296,17 @@ function JournalTree({
   };
 
   const deleteYearNote = async (year: string) => {
-    const ok = await confirmAsync(`Move the ${year} year note to the trash?`);
+    const ok = await confirmAsync(
+      `Move the ${year} year note to the trash?\n\nIts photos, audio, and attachments will be deleted with it.`
+    );
     if (!ok) return;
     const dir = await categoryDir(category);
     for (const p of [await join(dir, year, `_${year}-Year.selah`), await join(dir, year, `_${year}-Year.md`)]) {
       try {
         if (await exists(p)) {
           notifyNoteDeleted(p);
-          await moveToTrash(p);
+          await trashNoteWithAssets(p);
+          break;
         }
       } catch {}
     }
@@ -2327,13 +2337,19 @@ function JournalTree({
     if (!ctx || ctx.kind !== 'day') return;
     const { year, month, file } = ctx;
     setCtx(null);
-    const ok = await confirmAsync(`Move ${file} to the trash?`);
+    const ok = await confirmAsync(
+      `Move ${file} to the trash?\n\nIts photos, audio, and attachments will be deleted with it.`
+    );
     if (!ok) return;
     const dir = await categoryDir(category);
     const monthPath = await join(dir, year, month);
     const fullPath = await join(monthPath, file);
     notifyNoteDeleted(fullPath);
-    await moveToTrash(fullPath);
+    const { noteTrashed } = await trashNoteWithAssets(fullPath);
+    if (!noteTrashed) {
+      await confirmAsync('Could not delete the file. It might be locked by another app.');
+      return;
+    }
     setDays((p) => ({
       ...p,
       [`${year}/${month}`]: (p[`${year}/${month}`] || []).filter((d) => d.file !== file),
@@ -2431,7 +2447,8 @@ function JournalTree({
       try {
         if (await exists(p)) {
           notifyNoteDeleted(p);
-          await moveToTrash(p);
+          await trashNoteWithAssets(p);
+          break;
         }
       } catch {}
     }
@@ -2797,26 +2814,33 @@ function EntriesTree({
   };
 
   const remove = async (it: EntryItem) => {
-    const ok = await confirmAsync(`Move "${it.title || 'this entry'}" to the trash?`);
+    const ok = await confirmAsync(
+      `Move "${it.title || 'this entry'}" to the trash?\n\nIts photos, audio, and attachments will be deleted with it.`
+    );
     if (!ok) return;
 
+    let noteTrashed = false;
     try {
-      // 1. Physically move the file to trash FIRST
-      await moveToTrash(it.path);
+      const result = await trashNoteWithAssets(it.path);
+      noteTrashed = result.noteTrashed;
     } catch (e: any) {
-      console.error("[entries-tree] moveToTrash failed:", e);
-      await confirmAsync(`Could not delete the file. It might be locked by another app.\n\nError: ${e?.message ?? String(e)}`);
-      return; // Stop here if the deletion failed
+      console.error("[entries-tree] delete failed:", e);
+      await confirmAsync(`Could not delete the file.\n\nError: ${e?.message ?? String(e)}`);
+      return;
+    }
+    if (!noteTrashed) {
+      await confirmAsync('Could not delete the file. It might be locked by another app.');
+      return;
     }
 
-    // 2. Notify the app
+    // Notify the app
     notifyNoteDeleted(it.path);
 
-    // 3. Force sidebar refresh
+    // Force sidebar refresh
     const folder = it.path.substring(0, Math.max(it.path.lastIndexOf("/"), it.path.lastIndexOf("\\")));
     window.dispatchEvent(new CustomEvent("folder-changed", { detail: { path: folder } }));
 
-    // 4. Reload
+    // Reload
     await load();
   };
 

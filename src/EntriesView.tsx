@@ -6,7 +6,7 @@ import DateTimePickerModal from "./DateTimePickerModal";
 import EmojiPicker, { Theme, EmojiStyle } from "emoji-picker-react";
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { useModal } from "./Modal";
-import { moveToTrash } from "./trash";
+import { trashNoteWithAssets } from "./deleteNote";
 import TagPickerModal from "./TagPickerModal";
 import { parseNoteFile, serializeNoteFile } from "./noteFormat";
 import { invalidateTagCache } from "./TagEditor";
@@ -87,16 +87,24 @@ export default function EntriesView({ sectionDir, sectionName, sectionIcon, onOp
     };
 
     const removeEntry = async (it: EntryItem) => {
-        const ok = await confirmAsync(`Move "${it.title || "this entry"}" to the trash?`);
+        const ok = await confirmAsync(
+            `Move "${it.title || "this entry"}" to the trash?\n\nIts photos, audio, and attachments will be deleted with it.`
+        );
         if (!ok) return;
 
+        // 1. Move the note *and* its per-note assets folder to trash together.
+        let noteTrashed = false;
         try {
-            // 1. Physically move the file to trash FIRST
-            await moveToTrash(it.path);
+            const result = await trashNoteWithAssets(it.path);
+            noteTrashed = result.noteTrashed;
         } catch (e: any) {
-            console.error("[entries] moveToTrash failed:", e);
-            await confirmAsync(`Could not delete the file. It might be locked by another app.\n\nError: ${e?.message ?? String(e)}`);
-            return; // Stop here if the deletion failed
+            console.error("[entries] delete failed:", e);
+            await confirmAsync(`Could not delete the file.\n\nError: ${e?.message ?? String(e)}`);
+            return;
+        }
+        if (!noteTrashed) {
+            await confirmAsync("Could not delete the file. It might be locked by another app.");
+            return;
         }
 
         // 2. Tell the app to switch views

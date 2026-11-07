@@ -761,3 +761,24 @@ export async function removeProxiesForNote(
   notifyRewritten(notePath);
   return { removed, rewritten };
 }
+
+/**
+ * Trash a single orphaned `assets/<name>/` folder.
+ */
+export async function deleteOrphanedAssetFolder(
+  folder: { absPath: string },
+): Promise<boolean> {
+  try {
+    if (await exists(folder.absPath)) {
+      await moveToTrash(folder.absPath);
+    }
+    return true;
+  } catch (e) {
+    console.warn(
+      "[mediaFix] delete orphaned assets folder failed:",
+      folder.absPath,
+      e,
+    );
+    return false;
+  }
+}

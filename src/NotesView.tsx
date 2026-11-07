@@ -15,6 +15,7 @@ import EmojiPicker, { Theme, EmojiStyle } from "emoji-picker-react";
 import { useModal } from "./Modal";
 import { parseNoteFile, serializeNoteFile } from "./noteFormat";
 import { moveToTrash } from "./trash";
+import { trashNoteWithAssets } from "./deleteNote";
 import TagPickerModal from "./TagPickerModal";
 import { scanAllVaultTags, invalidateTagCache } from "./TagEditor";
 import { makeFolderKey, type FolderMetaMap } from "./folderMeta";
@@ -598,11 +599,17 @@ export default function NotesView({
   };
 
   const deleteNote = async (note: NoteEntry) => {
-    const ok = await confirmAsync(`Move "${note.title}" to the trash?`);
+    const ok = await confirmAsync(
+      `Move "${note.title}" to the trash?\n\nIts photos, audio, and attachments will be deleted with it.`
+    );
     if (!ok) return;
     try {
       notifyNoteDeleted(note.path);
-      await moveToTrash(note.path);
+      const { noteTrashed } = await trashNoteWithAssets(note.path);
+      if (!noteTrashed) {
+        await confirmAsync("Could not delete the file. It might be locked by another app.");
+        return;
+      }
       await load();
     } catch (e) { console.error("[notes] delete failed:", e); }
   };

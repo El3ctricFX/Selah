@@ -100,6 +100,20 @@ export interface OrphanedPluginCategory {
   pluginId: string;
 }
 
+/**
+ * An `assets/<name>/` folder whose matching `<name>.selah` note no longer
+ * exists. Produced when a note was deleted but its per-note assets folder
+ * was left behind (e.g. a crash, or an older version of the app that only
+ * trashed the `.selah`).
+ */
+export interface OrphanedAssetFolder {
+  absPath: string;
+  noteBase: string;
+  parentDir: string;
+  fileCount: number;
+  size: number;
+}
+
 export interface VaultReport {
   totalNotes: number;
   totalAssets: number;
@@ -112,6 +126,7 @@ export interface VaultReport {
   imageStats: ImageStats;
   proxiesOff: ProxiesOffNote[];
   orphanedCategories: OrphanedPluginCategory[];
+  orphanedAssetFolders: OrphanedAssetFolder[];
 }
 
 function dirname(p: string): string {
@@ -339,6 +354,7 @@ export async function auditVault(vaultPath: string): Promise<VaultReport> {
     proxiesOff: [],
     imageStats: { total: 0, optimized: 0, withThumb: 0, originalBytes: 0, proxyBytes: 0 },
     orphanedCategories: [],
+    orphanedAssetFolders: [],
   };
   const walk = async (dir: string, depth: number): Promise<void> => {
     if (depth > 8) return;
@@ -346,8 +362,16 @@ export async function auditVault(vaultPath: string): Promise<VaultReport> {
     try { entries = await readDir(dir); } catch { return; }
     for (const e of entries) {
       if (!e.name || e.name.startsWith(".")) continue;
-      if (e.name === "assets" || e.name === "_attachments") continue;
+      if (e.name === "_attachments") continue;
       const full = await join(dir, e.name);
+      if (e.name === "assets") {
+        // Examine every per-note assets folder for orphans instead of
+        // skipping it. Notes are audited *first* (or in parallel — order
+        // doesn't matter here since orphan detection just checks the
+        // filesystem, not the report).
+        await scanAssetsForOrphans(dir, full, report);
+        continue;
+      }
       if (e.isDirectory) { await walk(full, depth + 1); continue; }
       if (!e.name.endsWith(".selah")) continue;
       report.totalNotes++;
@@ -695,7 +719,195 @@ export async function auditSingleNote(notePath: string): Promise<VaultReport> {
     proxiesOff: [],
     imageStats: { total: 0, optimized: 0, withThumb: 0, originalBytes: 0, proxyBytes: 0 },
     orphanedCategories: [],
+    orphanedAssetFolders: [],
   };
   await auditNote(notePath, basename(notePath), report);
   return report;
+}
+
+async function isDirectoryPath(p: string): Promise<boolean> {
+  try {
+    const s = await stat(p);
+    return (s as any).isDirectory === true;
+  } catch {
+    return false;
+  }
+}
+
+async function fsExistsLocal(p: string): Promise<boolean> {
+  try { return await exists(p); } catch { return false; }
+}
+
+/**
+ * Walk an `assets/` folder and record every subfolder that no longer has a
+ * corresponding note file next to it.
+ *
+ * Handles both layouts this app uses:
+ *
+ *   Regular notes:  <noteDir>/assets/<noteBase>/   ↔ <noteDir>/<noteBase>.selah
+ *   Abba sections:  <abbaDir>/assets/<section>/<id>/ ↔ <abbaDir>/<section>/<id>.selah
+ *
+ * Abba folders are never reported as orphaned here — AbbaView already
+ * trashes them when an entry is deleted, and the section name is not
+ * itself a note, so the "matching .selah" test never applies. We skip
+ * them by checking if a sibling directory exists next to `assets/` with
+ * the same name.
+ */
+async function scanAssetsForOrphans(
+  parentDir: string,
+  assetsRoot: string,
+  report: VaultReport,
+): Promise<void> {
+  // If this is a Gallery category, its assets are managed by gallery.json,
+  // not by .selah files. We use a different check for it.
+  if (await fsExistsLocal(await join(parentDir, "gallery.json"))) {
+    await auditGalleryAssets(parentDir, assetsRoot, report);
+    return;
+  }
+
+  let entries: any[] = [];
+  try { entries = await readDir(assetsRoot); } catch { return; }
+
+  for (const e of entries) {
+    if (!e.name || !e.isDirectory) continue;
+    if (e.name.startsWith(".")) continue;
+
+    const absPath = await join(assetsRoot, e.name);
+
+    // Regular note?
+    if (await fsExistsLocal(await join(parentDir, `${e.name}.selah`))) continue;
+    if (await fsExistsLocal(await join(parentDir, `${e.name}.md`))) continue;
+
+    // Abba-style nested layout? (assets/<section>/<id>/)
+    // If a sibling directory with the same name exists next to `assets/`,
+    // this is a section folder, not a per-note assets folder — Abba
+    // handles its own cleanup.
+    if (await isDirectoryPath(await join(parentDir, e.name))) continue;
+
+    // Anything else is a genuine orphan. Roll up size + file count so the
+    // UI can show how much space trashing it will reclaim.
+    let size = 0;
+    let fileCount = 0;
+    const stack: string[] = [absPath];
+    while (stack.length > 0) {
+      const cur = stack.pop()!;
+      let inner: any[] = [];
+      try { inner = await readDir(cur); } catch { continue; }
+      for (const ie of inner) {
+        if (!ie.name) continue;
+        const p = await join(cur, ie.name);
+        if (ie.isDirectory) {
+          stack.push(p);
+        } else {
+          try {
+            const s = await stat(p);
+            size += (s as any).size ?? 0;
+            fileCount++;
+          } catch {}
+        }
+      }
+    }
+    report.orphanedAssetFolders.push({
+      absPath,
+      noteBase: e.name,
+      parentDir,
+      fileCount,
+      size,
+    });
+  }
+}
+
+/**
+ * Gallery categories are backed by `gallery.json`, which contains an array
+ * of items. Each item has an `id` and lists of image filenames.
+ *
+ * We cross-reference the filesystem against `gallery.json` to find folders
+ * or flat files that are no longer tracked by any item.
+ */
+async function auditGalleryAssets(
+  parentDir: string,
+  assetsRoot: string,
+  report: VaultReport,
+): Promise<void> {
+  let galleryData: any[] = [];
+  try {
+    const raw = await readTextFile(await join(parentDir, "gallery.json"));
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) galleryData = parsed;
+  } catch {
+    return; // No gallery.json or it's corrupt. Don't touch anything.
+  }
+
+  const referencedIds = new Set<string>();
+  const referencedFiles = new Set<string>();
+
+  for (const item of galleryData) {
+    if (item.id) referencedIds.add(item.id);
+
+    const addImg = (f: string | null | undefined) => {
+      if (f && typeof f === "string") referencedFiles.add(f);
+    };
+
+      if (Array.isArray(item.mainImages)) item.mainImages.forEach(addImg);
+      if (Array.isArray(item.referenceImages)) item.referenceImages.forEach(addImg);
+      if (Array.isArray(item.progress)) item.progress.forEach((p: any) => addImg(p.image));
+      if (Array.isArray(item.versions)) item.versions.forEach((v: any) => addImg(v.image));
+      if (typeof item.image === "string") addImg(item.image);
+  }
+
+  let entries: any[] = [];
+  try { entries = await readDir(assetsRoot); } catch { return; }
+
+  for (const e of entries) {
+    if (!e.name || e.name.startsWith(".")) continue;
+    const absPath = await join(assetsRoot, e.name);
+
+    if (e.isDirectory) {
+      // If this item folder's ID isn't in gallery.json, it's an orphan.
+      if (!referencedIds.has(e.name)) {
+        let size = 0;
+        let fileCount = 0;
+        const stack: string[] = [absPath];
+        while (stack.length > 0) {
+          const cur = stack.pop()!;
+          let inner: any[] = [];
+          try { inner = await readDir(cur); } catch { continue; }
+          for (const ie of inner) {
+            if (!ie.name) continue;
+            const p = await join(cur, ie.name);
+            if (ie.isDirectory) stack.push(p);
+            else {
+              try {
+                const s = await stat(p);
+                size += (s as any).size ?? 0;
+                fileCount++;
+              } catch {}
+            }
+          }
+        }
+        if (fileCount > 0) {
+          report.orphanedAssetFolders.push({
+            absPath,
+            noteBase: e.name,
+            parentDir,
+            fileCount,
+            size,
+          });
+        }
+      }
+    } else {
+      // Legacy flat files (not in a subfolder). If not referenced in JSON, it's unused.
+      if (!referencedFiles.has(e.name)) {
+        try {
+          const s = await stat(absPath);
+          report.unusedFiles.push({
+            absPath,
+            notePath: await join(parentDir, "gallery.json"),
+                                  size: (s as any).size ?? 0,
+                                  inProxy: false,
+          });
+        } catch {}
+      }
+    }
+  }
 }
