@@ -707,6 +707,42 @@ function extractImageWidths(blocks: any[]): any[] {
   });
 }
 
+function mergeQuoteLines(text: string): string {
+  const lines = text.split('\n');
+  const out: string[] = [];
+  let inQuote = false;
+  let quoteLines: string[] = [];
+
+  const flushQuote = () => {
+    if (inQuote) {
+      // If all lines look like plain text, merge them with <br>.
+      // This prevents BlockNote from treating them as separate paragraphs (which adds indents).
+      const isPlainText = quoteLines.every(l => !l.match(/^([-*+]|\d+\.)\s/));
+      if (isPlainText) {
+        out.push('> ' + quoteLines.join('<br>'));
+      } else {
+        // If there are lists inside the quote, keep them on separate lines.
+        out.push(...quoteLines.map(l => '> ' + l));
+      }
+      inQuote = false;
+      quoteLines = [];
+    }
+  };
+
+  for (const line of lines) {
+    const match = line.match(/^([ \t]*>)[ \t]?(.*)$/);
+    if (match) {
+      inQuote = true;
+      quoteLines.push(match[2].replace(/\\$/, '').trimEnd());
+    } else {
+      flushQuote();
+      out.push(line);
+    }
+  }
+  flushQuote();
+  return out.join('\n');
+}
+
 async function parseBodyToBlocks(
   editor: BlockNoteEditor<any, any, any>,
   body: string
@@ -721,18 +757,24 @@ async function parseBodyToBlocks(
       const text = seg.text;
 
       // NEW: Extract custom plugin blocks (HTML comments)
-      const pluginRegex = /<!--\s*selah-plugin:\s*(\{.*?\})\s*-->/gs;
+      const pluginRegex = /<!--\s*selah-plugin:\s*(\{[\s\S]*?)\s*-->/g;
       let match;
       let lastIndex = 0;
 
       const parseTextSegment = async (t: string) => {
         if (!t.trim()) return;
+
+        // Strip any trailing backslashes globally. This fixes existing notes
+        // that were saved with hard-break backslashes and prevents the
+        // parser from misinterpreting them as nested quotes.
+        const cleanT = mergeQuoteLines(t);
+
         const divRegex = /<div\s+align="(center|right|left|justify)">([\s\S]*?)<\/div>/g;
         let divMatch;
         let divLastIndex = 0;
-        while ((divMatch = divRegex.exec(t)) !== null) {
+        while ((divMatch = divRegex.exec(cleanT)) !== null) {
           if (divMatch.index > divLastIndex) {
-            const prevText = t.slice(divLastIndex, divMatch.index);
+            const prevText = cleanT.slice(divLastIndex, divMatch.index);
             if (prevText.trim()) {
               const parsed = await editor.tryParseMarkdownToBlocks(prevText);
               const decoded = decodeColorsInBlocks(parsed);
@@ -752,8 +794,8 @@ async function parseBodyToBlocks(
           }
           divLastIndex = divRegex.lastIndex;
         }
-        if (divLastIndex < t.length) {
-          const restText = t.slice(divLastIndex);
+        if (divLastIndex < cleanT.length) {
+          const restText = cleanT.slice(divLastIndex);
           if (restText.trim()) {
             const parsed = await editor.tryParseMarkdownToBlocks(restText);
             const decoded = decodeColorsInBlocks(parsed);
@@ -936,7 +978,13 @@ async function serializeBlockList(
     pending = [];
   };
 
-  const CORE_BLOCKS = new Set(["paragraph", "heading", "bulletListItem", "numberedListItem", "checkListItem", "image", "video", "audio", "file", "table", "scripture", "callout", "bookmark", "dmarchive", "imagegallery", "columnList", "column"]);
+  const CORE_BLOCKS = new Set([
+  "paragraph", "heading", "bulletListItem", "numberedListItem",
+  "checkListItem", "image", "video", "audio", "file", "table",
+  "quote", "divider", "codeBlock",
+  "scripture", "callout", "bookmark", "dmarchive", "imagegallery",
+  "columnList", "column",
+]);
 
   for (const block of blocks) {
     // NEW: Handle custom plugin blocks
@@ -1026,6 +1074,23 @@ async function serializeBlockList(
       chunks.push(
         `::: imagegallery grid="${escAttr(p.grid || "[]")}" gap="${escAttr(p.gap ?? 8)}" colWidths="${escAttr(p.colWidths || "[]")}" rowHeights="${escAttr(p.rowHeights || "[]")}"`
       );
+    } else if (block.type === "quote") {
+      await flush();
+      const inner = await editor.blocksToMarkdownLossy(
+        encodeColorsInBlocks([{ type: "paragraph", content: block.content }])
+      );
+
+      // Standardize quote lines: strip any backslashes BlockNote adds for hard breaks.
+      const lines = inner.trim().split('\n');
+      const quoted = lines.map(l => {
+        const clean = l.replace(/\\$/, '').trimEnd();
+        return clean ? `> ${clean}` : '>';
+      }).join('\n');
+
+      chunks.push(quoted);
+    } else if (block.type === "divider") {
+      await flush();
+      chunks.push('---');
     } else if (block.type === "image") {
       const p = block.props || {};
       const pw = typeof p.previewWidth === "number" && p.previewWidth > 0
