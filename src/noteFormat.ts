@@ -983,7 +983,7 @@ async function serializeBlockList(
   "checkListItem", "image", "video", "audio", "file", "table",
   "quote", "divider", "codeBlock",
   "scripture", "callout", "bookmark", "dmarchive", "imagegallery",
-  "columnList", "column",
+  "attachment", "columnList", "column",
 ]);
 
   for (const block of blocks) {
