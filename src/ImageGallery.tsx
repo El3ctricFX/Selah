@@ -508,9 +508,9 @@ function FilledCell({
         }
       }}
       className={`relative overflow-hidden group ${
-        cell.fit === "cover"
-          ? "rounded-none border-0 bg-transparent"
-          : "rounded-md border border-[#2a3136] bg-[#0f1315]"
+        cell.fit === "contain"
+          ? "rounded-md border border-[#2a3136] bg-[#0f1315]"
+          : "rounded-none border-0 bg-transparent"
       } ${dragOver ? "ring-2 ring-blue-400" : ""}`}
       style={{
         gridColumn: `${col + 1} / span ${colspan}`,
@@ -559,7 +559,7 @@ function FilledCell({
     alt={cell.caption || ""}
     draggable={false}
     style={{
-      objectFit: cell.fit === "cover" ? "cover" : "contain",
+      objectFit: cell.fit === "contain" ? "contain" : "cover",
       margin: 0,
       border: "none",
       borderRadius: 0,
@@ -1616,7 +1616,7 @@ export const createImageGallery = createReactBlockSpec(
                   setCellCtx(null);
                 }}
                 className={`flex-1 px-2 py-1 text-xs rounded border transition-colors ${
-                  (ctxReal.fit ?? "contain") === "contain"
+                  ctxReal.fit === "contain"
                   ? "bg-blue-600 border-blue-500 text-white"
                   : "bg-[#0f1315] border-[#2a3136] text-gray-300 hover:border-[#3a4147]"
                 }`}
@@ -1631,7 +1631,7 @@ export const createImageGallery = createReactBlockSpec(
                   setCellCtx(null);
                 }}
                 className={`flex-1 px-2 py-1 text-xs rounded border transition-colors ${
-                  ctxReal.fit === "cover"
+                  ctxReal.fit !== "contain"
                   ? "bg-blue-600 border-blue-500 text-white"
                   : "bg-[#0f1315] border-[#2a3136] text-gray-300 hover:border-[#3a4147]"
                 }`}
