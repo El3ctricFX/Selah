@@ -1234,3 +1234,24 @@ html body.theme-has-bg [data-menu][data-menu][data-menu][data-menu] {
   --bn-colors-highlights-brown-background:  #c8895a !important;
   --bn-colors-highlights-gray-background:   #b0b0b0 !important;
 }
+
+/* ── BlockNote Links ──────────────────────────────────────────────────
+   Force BlockNote to respect our blue link styles and stop it from
+   rendering them as plain gray text. */
+.ProseMirror a,
+.bn-editor a,
+a[data-inline-content-type="link"] {
+  color: #60a5fa !important; /* The nice Tailwind blue */
+  text-decoration: underline !important;
+  text-decoration-color: rgba(96, 165, 250, 0.4) !important;
+  text-underline-offset: 3px !important;
+  cursor: pointer !important;
+  transition: all 0.15s ease !important;
+}
+
+.ProseMirror a:hover,
+.bn-editor a:hover,
+a[data-inline-content-type="link"]:hover {
+  color: #93c5fd !important; /* Lighter blue on hover */
+  text-decoration-color: rgba(147, 197, 253, 0.8) !important;
+}

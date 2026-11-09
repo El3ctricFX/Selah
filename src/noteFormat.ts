@@ -166,6 +166,7 @@ interface Segment {
     icon: string;
     image: string;
     mode: "bookmark" | "embed";
+    meta: string;
   };
   video?: {
     src: string;
@@ -345,6 +346,7 @@ function splitNoteBody(body: string): Segment[] {
           icon: unescapeAttr(attrs.icon || ""),
           image: unescapeAttr(attrs.image || ""),
           mode,
+          meta: unescapeAttr(attrs.meta || ""),
         },
       });
       continue;
@@ -498,9 +500,9 @@ function encodeColumnWidth(raw: unknown): string {
 }
 
 // ── Inline style markers ────────────────────────────────────────────────────
-const TC_START = "\uE000";
-const TC_SEP = "\uE002";
-const TC_END = "\uE001";
+const TC_START = "{{";
+const TC_SEP = "}}";
+const TC_END = "{{/}}";
 
 function hasEncodableStyles(styles: any): boolean {
   return !!(styles?.textColor || styles?.backgroundColor || styles?.underline);
@@ -514,11 +516,36 @@ function buildMarkerMeta(styles: any): string {
   return parts.join(";");
 }
 
+function hexToColorName(hex: string): string {
+  if (!hex || !hex.startsWith("#")) return hex;
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  if (isNaN(r) || isNaN(g) || isNaN(b)) return hex;
+
+  // Catch teal/cyan (like #00ffaa) and map it to green
+  if (r < 80 && g > 180 && b > 100) return "green";
+
+  if (g > 150 && r < 120 && b < 120) return "green";
+  // Loosened the blue check from < 120 to < 180 to catch pale golds like #fedf8b (b=139)
+  if (r > 200 && g > 180 && b < 180) return "yellow";
+  if (r > 200 && g < 120 && b < 120) return "red";
+  if (r > 200 && g > 100 && g < 200 && b < 120) return "orange";
+  if (r < 120 && g > 100 && b > 150) return "blue";
+  if (r > 150 && g < 120 && b > 150) return "purple";
+  if (r > 200 && g < 150 && b > 150) return "pink";
+  if (r < 100 && g < 100 && b < 100) return "gray";
+  return "default";
+}
+
 function parseMarkerMeta(meta: string): {
   textColor?: string;
   backgroundColor?: string;
   underline?: boolean;
 } {
+  if (meta.startsWith("#")) {
+    return { textColor: hexToColorName(meta) };
+  }
   if (!meta.includes("=")) {
     return { textColor: meta || undefined };
   }
@@ -532,7 +559,7 @@ function parseMarkerMeta(meta: string): {
     if (eq === -1) continue;
     const key = kv.slice(0, eq).trim();
     const val = kv.slice(eq + 1).trim();
-    if (key === "c") result.textColor = val;
+    if (key === "c") result.textColor = hexToColorName(val);
     else if (key === "b") result.backgroundColor = val;
     else if (key === "u") result.underline = val === "1" || val === "true";
   }
@@ -621,7 +648,31 @@ function expandColorMarkers(text: string, baseStyles: any): any[] {
     });
     i = end + TC_END.length;
   }
-  return runs;
+
+  // Fallback: catch raw `c=#hex` or `c=colorname` strings that lost their invisible markers
+  const out: any[] = [];
+  for (const run of runs) {
+    if (run.type === "text" && run.text.includes("c=")) {
+      const parts = run.text.split(/(c=#[0-9a-fA-F]{3,6}|c=[a-zA-Z]+)/);
+      for (let j = 0; j < parts.length; j++) {
+        if (j % 2 === 1) {
+          const colorStr = parts[j].replace("c=", "");
+          const color = hexToColorName(colorStr);
+          if (parts[j + 1] !== undefined) {
+            out.push({ type: "text", text: parts[j + 1], styles: { ...run.styles, textColor: color } });
+            j++;
+          } else {
+            out.push({ type: "text", text: parts[j], styles: run.styles });
+          }
+        } else if (parts[j]) {
+          out.push({ type: "text", text: parts[j], styles: run.styles });
+        }
+      }
+    } else {
+      out.push(run);
+    }
+  }
+  return out;
 }
 
 function sameStyles(a: any, b: any): boolean {
@@ -677,6 +728,7 @@ function decodeColorsInBlock(block: any): any {
 }
 
 function decodeColorsInBlocks(blocks: any[]): any[] {
+  if (!Array.isArray(blocks)) return [];
   return blocks.map(decodeColorsInBlock);
 }
 
@@ -684,6 +736,7 @@ function decodeColorsInBlocks(blocks: any[]): any[] {
 const IMG_WIDTH_RE = /[?&]w=(\d+)$/;
 
 function extractImageWidths(blocks: any[]): any[] {
+  if (!Array.isArray(blocks)) return [];
   return blocks.map((b) => {
     let next = b;
     if (b?.type === "image" && typeof b.props?.url === "string") {
@@ -743,6 +796,44 @@ function mergeQuoteLines(text: string): string {
   return out.join('\n');
 }
 
+function injectLinks(blocks: any[], links: { url: string, label: string }[]): any[] {
+  for (const b of blocks) {
+    if (Array.isArray(b.content)) {
+      const newContent: any[] = [];
+      for (const node of b.content) {
+        if (node.type === "text" && node.text.includes("SELAHPLACEHOLDERLINK")) {
+          const parts = node.text.split(/(SELAHPLACEHOLDERLINK\d+)/);
+          for (let i = 0; i < parts.length; i++) {
+            if (i % 2 === 1) {
+              const match = parts[i].match(/\d+/);
+              if (match) {
+                const idx = parseInt(match[0]);
+                const linkData = links[idx];
+                if (linkData) {
+                  newContent.push({
+                    type: "link",
+                    href: linkData.url,
+                    content: [{ type: "text", text: linkData.label, styles: {} }]
+                  });
+                }
+              }
+            } else if (parts[i]) {
+              newContent.push({ ...node, text: parts[i] });
+            }
+          }
+        } else {
+          newContent.push(node);
+        }
+      }
+      b.content = newContent;
+    }
+    if (Array.isArray(b.children)) {
+      injectLinks(b.children, links);
+    }
+  }
+  return blocks;
+}
+
 async function parseBodyToBlocks(
   editor: BlockNoteEditor<any, any, any>,
   body: string
@@ -767,7 +858,24 @@ async function parseBodyToBlocks(
         // Strip any trailing backslashes globally. This fixes existing notes
         // that were saved with hard-break backslashes and prevents the
         // parser from misinterpreting them as nested quotes.
-        const cleanT = mergeQuoteLines(t);
+        let cleanT = mergeQuoteLines(t);
+
+        // BlockNote silently drops nested lists if they use tabs. Convert to spaces.
+        cleanT = cleanT.replace(/\t/g, "    ");
+
+        // Remove the invisible markers so BlockNote doesn't render them as tofu boxes.
+        // We leave the raw "c=#hex" text, and our decoder fallback will catch it.
+        cleanT = cleanT.replace(/[\uE000\uE001\uE002]/g, "");
+
+        // DEEP FIX: Extract standard markdown links before BlockNote's parser can break them
+        const extractedLinks: { url: string, label: string }[] = [];
+        cleanT = cleanT.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, label, url) => {
+            // Ignore wiki links (they get processed later)
+            if (url.startsWith("[[")) return match;
+            const id = extractedLinks.length;
+            extractedLinks.push({ url: url.replace(/^<|>$/g, ""), label });
+            return `SELAHPLACEHOLDERLINK${id}`;
+        });
 
         const divRegex = /<div\s+align="(center|right|left|justify)">([\s\S]*?)<\/div>/g;
         let divMatch;
@@ -778,7 +886,7 @@ async function parseBodyToBlocks(
             if (prevText.trim()) {
               const parsed = await editor.tryParseMarkdownToBlocks(prevText);
               const decoded = decodeColorsInBlocks(parsed);
-              blocks.push(...extractImageWidths(decoded));
+              blocks.push(...extractImageWidths(injectLinks(decoded, extractedLinks)));
             }
           }
           const align = divMatch[1];
@@ -790,7 +898,7 @@ async function parseBodyToBlocks(
               ...b,
               props: { ...b.props, textAlignment: align },
             }));
-            blocks.push(...extractImageWidths(aligned));
+            blocks.push(...extractImageWidths(injectLinks(aligned, extractedLinks)));
           }
           divLastIndex = divRegex.lastIndex;
         }
@@ -799,7 +907,7 @@ async function parseBodyToBlocks(
           if (restText.trim()) {
             const parsed = await editor.tryParseMarkdownToBlocks(restText);
             const decoded = decodeColorsInBlocks(parsed);
-            blocks.push(...extractImageWidths(decoded));
+            blocks.push(...extractImageWidths(injectLinks(decoded, extractedLinks)));
           }
         }
       };
@@ -863,6 +971,7 @@ async function parseBodyToBlocks(
           icon: b.icon,
           image: b.image,
           mode: b.mode,
+          meta: b.meta,
         },
       });
     } else if (seg.kind === "video") {

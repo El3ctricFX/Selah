@@ -36,7 +36,41 @@ type NoteHit = {
   tags: string[];
   folderLabel: string;
   categoryName: string;
+  created: string;
+  snippet: string;
 };
+
+function formatPrettyDate(iso: string, fallbackName: string = "", folder: string = ""): string {
+  // 1. Check if the filename is a text date like "October 17, 2026"
+  const cleanName = fallbackName.replace(/\.selah$/i, "");
+  const parsedNameDate = Date.parse(cleanName);
+  if (!isNaN(parsedNameDate) && cleanName.match(/(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|\d{4})/i)) {
+    return new Date(parsedNameDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  }
+
+  // 2. Look for YYYY-MM-DD or YYYY/MM/DD in the filename or folder path
+  const textToSearch = `${folder} ${fallbackName}`;
+  const match = textToSearch.match(/(\d{4})[-/](\d{2})[-/](\d{2})/);
+  if (match) {
+    const d = new Date(`${match[1]}-${match[2]}-${match[3]}T12:00:00`);
+    if (!isNaN(d.getTime())) {
+      return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+    }
+  }
+
+  // 3. Fallback to the raw ISO timestamp, forcing local noon if it's just a date
+  if (iso) {
+    const dateOnly = iso.match(/^(\d{4}-\d{2}-\d{2})/);
+    if (dateOnly) {
+       const d = new Date(`${dateOnly[1]}T12:00:00`);
+       if (!isNaN(d.getTime())) return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+    } else {
+       const d = new Date(iso);
+       if (!isNaN(d.getTime())) return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+    }
+  }
+  return "";
+}
 
 function greetingForHour(h: number): { text: string; emoji: string } {
   if (h < 5) return { text: "Peaceful night", emoji: "🌙" };
@@ -65,7 +99,7 @@ async function walkNotes(
       } else if (e.name.endsWith(".selah")) {
         try {
           const raw = await readTextFile(full);
-          const { frontmatter } = parseNoteFile(raw);
+          const { frontmatter, body } = parseNoteFile(raw);
           const base = e.name.replace(/\.selah$/, "");
           const fullNorm = full.replace(/\\/g, "/");
           const rootNorm = rootDir.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -78,14 +112,14 @@ async function walkNotes(
             path: full,
             name: e.name,
             title: (frontmatter.title as string) || base,
-                   icon: (frontmatter.icon as string) || "",
-                   tags: Array.isArray(frontmatter.tags)
-                   ? (frontmatter.tags as any[]).filter(
-                     (t): t is string => typeof t === "string"
-                   )
-                   : [],
-                   folderLabel,
-                   categoryName,
+            icon: (frontmatter.icon as string) || "",
+            tags: Array.isArray(frontmatter.tags)
+              ? (frontmatter.tags as any[]).filter((t): t is string => typeof t === "string")
+              : [],
+            folderLabel,
+            categoryName,
+            created: (frontmatter.date as string) || (frontmatter.created as string) || "",
+            snippet: (body || "").replace(/\s+/g, " ").trim().slice(0, 500),
           });
         } catch {}
       }
@@ -188,7 +222,10 @@ export default function HomeView({
       n.title.toLowerCase().includes(q) ||
       n.name.toLowerCase().includes(q) ||
       n.tags.some((t) => t.toLowerCase().includes(q)) ||
-      n.folderLabel.toLowerCase().includes(q)
+      n.folderLabel.toLowerCase().includes(q) ||
+      n.categoryName.toLowerCase().includes(q) ||
+      n.snippet.toLowerCase().includes(q) ||
+      formatPrettyDate(n.created, n.name, n.folderLabel).toLowerCase().includes(q)
     )
     .slice(0, 30);
   }, [notes, query]);
@@ -417,13 +454,9 @@ export default function HomeView({
             {r.title}
             </div>
             <div className="text-[10px] text-gray-500 truncate flex items-center gap-1.5 mt-0.5">
-            <span>{r.categoryName}</span>
-            {r.folderLabel && (
-              <>
+              <span>{r.categoryName}</span>
               <span className="text-gray-700">·</span>
-              <span>{r.folderLabel}</span>
-              </>
-            )}
+              <span>{formatPrettyDate(r.created, r.name, r.folderLabel) || r.folderLabel}</span>
             </div>
             </div>
             {r.tags.length > 0 && (

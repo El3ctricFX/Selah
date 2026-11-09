@@ -604,12 +604,14 @@ export default function NotesView({
     );
     if (!ok) return;
     try {
-      notifyNoteDeleted(note.path);
       const { noteTrashed } = await trashNoteWithAssets(note.path);
       if (!noteTrashed) {
         await confirmAsync("Could not delete the file. It might be locked by another app.");
         return;
       }
+      // Tell all open views to refresh
+      window.dispatchEvent(new CustomEvent('file-changed', { detail: { path: note.path } }));
+      notifyNoteDeleted(note.path);
       await load();
     } catch (e) { console.error("[notes] delete failed:", e); }
   };

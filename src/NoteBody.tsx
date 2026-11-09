@@ -2715,6 +2715,12 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
 
         if (isNewFileRef.current && !body.trim()) return;
 
+        // Prevent the file from being recreated if it was deleted while we were editing
+        if (!isNewFileRef.current) {
+          const stillExists = await fsExists(path);
+          if (!stillExists) return;
+        }
+
         let fm: Frontmatter = { ...frontmatterRef.current };
         try {
           const raw = await readTextFile(path);

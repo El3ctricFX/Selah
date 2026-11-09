@@ -987,7 +987,7 @@ function NotesTree({
     const folders: string[] = [];
     const notes: NoteEntry[] = [];
     for (const e of entries) {
-      if (!e.name || e.name.startsWith('.')) continue;
+      if (!e.name || e.name.startsWith('.') || e.name === 'assets' || e.name === '_attachments') continue;
       if (e.isDirectory) { folders.push(e.name); continue; }
       if (!e.name.endsWith('.selah')) continue;
 
@@ -1174,8 +1174,9 @@ function NotesTree({
     const ok = await confirmAsync(`Move the folder "${folderName}" and everything inside it to the trash?`);
     if (!ok) return;
     try {
-      notifyNoteDeleted(folderPath);
       await moveToTrash(folderPath);
+      window.dispatchEvent(new CustomEvent('file-changed', { detail: { path: folderPath } }));
+      notifyNoteDeleted(folderPath);
       const n = { ...expandedRef.current };
       delete n[folderPath];
       expandedRef.current = n;
@@ -1200,12 +1201,14 @@ function NotesTree({
     );
     if (!ok) return;
     try {
-      notifyNoteDeleted(note.path);
       const { noteTrashed } = await trashNoteWithAssets(note.path);
       if (!noteTrashed) {
         await confirmAsync('Could not delete the file. It might be locked by another app.');
         return;
       }
+      // Tell all open views to refresh
+      window.dispatchEvent(new CustomEvent('file-changed', { detail: { path: note.path } }));
+      notifyNoteDeleted(note.path);
       await reload();
     } catch (e) { console.error('[notes-tree] delete failed:', e); }
   };
@@ -1944,7 +1947,7 @@ function JournalTree({
     try {
       if (!(await exists(dir))) return [];
       const entries = await readDir(dir);
-      const ys = entries.filter((e) => e.isDirectory).map((e) => e.name).sort((a, b) => Number(b) - Number(a));
+      const ys = entries.filter((e) => e.isDirectory && /^\d{4}$/.test(e.name)).map((e) => e.name).sort((a, b) => Number(b) - Number(a));
       const status: Record<string, { icon: string; color: string } | null> = {};
       for (const y of ys) {
         const candidates = [await join(dir, y, `_${y}-Year.selah`), await join(dir, y, `_${y}-Year.md`)];
@@ -1966,7 +1969,7 @@ function JournalTree({
     try {
       if (!(await exists(fullPath))) return [];
       const entries = await readDir(fullPath);
-      return entries.filter((e) => e.isDirectory).map((e) => e.name).sort((a, b) => Number(a) - Number(b));
+      return entries.filter((e) => e.isDirectory && /^\d{1,2}$/.test(e.name)).map((e) => e.name).sort((a, b) => Number(a) - Number(b));
     } catch { return []; }
   };
 
@@ -2037,8 +2040,11 @@ function JournalTree({
           : normalizedChanged.slice(normalizedCatDir.length + 1);
       const parts = rel.split('/').filter(Boolean);
 
+      // Always refresh the years list so newly imported years appear immediately
+      const freshYears = await readYears();
+      setYears(freshYears);
+
       if (parts.length === 0) {
-        setYears(await readYears());
         return;
       }
 
@@ -2304,8 +2310,8 @@ function JournalTree({
     for (const p of [await join(dir, year, `_${year}-Year.selah`), await join(dir, year, `_${year}-Year.md`)]) {
       try {
         if (await exists(p)) {
-          notifyNoteDeleted(p);
           await trashNoteWithAssets(p);
+          notifyNoteDeleted(p);
           break;
         }
       } catch {}
@@ -2322,8 +2328,8 @@ function JournalTree({
     if (!ok) return;
     const dir = await categoryDir(category);
     const yearPath = await join(dir, year);
-    notifyNoteDeleted(yearPath);
     await moveToTrash(yearPath);
+    notifyNoteDeleted(yearPath);
     setYears((p) => (p || []).filter((y) => y !== year));
     setMonths((p) => { const n = { ...p }; delete n[year]; return n; });
     setYearNotes((p) => { const n = { ...p }; delete n[year]; return n; });
@@ -2344,12 +2350,12 @@ function JournalTree({
     const dir = await categoryDir(category);
     const monthPath = await join(dir, year, month);
     const fullPath = await join(monthPath, file);
-    notifyNoteDeleted(fullPath);
     const { noteTrashed } = await trashNoteWithAssets(fullPath);
     if (!noteTrashed) {
       await confirmAsync('Could not delete the file. It might be locked by another app.');
       return;
     }
+    notifyNoteDeleted(fullPath);
     setDays((p) => ({
       ...p,
       [`${year}/${month}`]: (p[`${year}/${month}`] || []).filter((d) => d.file !== file),
@@ -2463,8 +2469,8 @@ function JournalTree({
     if (!ok) return;
     const dir = await categoryDir(category);
     const monthPath = await join(dir, year, month);
-    notifyNoteDeleted(monthPath);
     await moveToTrash(monthPath);
+    notifyNoteDeleted(monthPath);
     setMonths((p) => ({ ...p, [year]: (p[year] || []).filter((m) => m !== month) }));
     setDays((p) => { const n = { ...p }; delete n[`${year}/${month}`]; return n; });
     setExpandedMonths((p) => { const n = { ...p }; delete n[`${year}/${month}`]; return n; });
