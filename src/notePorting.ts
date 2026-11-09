@@ -530,21 +530,21 @@ export function pluginTypesIn(body: string): string[] {
 
             const converted = mapOutsideCode(bodyWithEmbeds, (t) => {
                 // 0.3 Convert raw HTML color spans into Selah safe text markers
-                t = t.replace(/<span\s+([^>]*)style="[^"]*color:\s*rgba?\(\s*(\d+),\s*(\d+),\s*(\d+)(?:,\s*[\d.]+)?\s*\)[^"]*"([^>]*)>([\s\S]*?)<\/span>/gi, (match, attr1, r, g, b, attr2, innerText) => {
+                t = t.replace(/<span\s+([^>]*)style="[^"]*color:\s*rgba?\(\s*(\d+),\s*(\d+),\s*(\d+)(?:,\s*[\d.]+)?\s*\)[^"]*"([^>]*)>([\s\S]*?)<\/span>/gi, (_match, _attr1, r, g, b, _attr2, innerText) => {
                     const hex = "#" + ((1 << 24) + (parseInt(r) << 16) + (parseInt(g) << 8) + parseInt(b)).toString(16).slice(1);
                     return `{{c=${hex}}}${innerText}{{/}}`;
                 });
-                t = t.replace(/<span\s+([^>]*)style="[^"]*color:\s*(#[0-9a-fA-F]{3,6})[^"]*"([^>]*)>([\s\S]*?)<\/span>/gi, (match, attr1, hex, attr2, innerText) => {
+                t = t.replace(/<span\s+([^>]*)style="[^"]*color:\s*(#[0-9a-fA-F]{3,6})[^"]*"([^>]*)>([\s\S]*?)<\/span>/gi, (_match, _attr1, hex, _attr2, innerText) => {
                     return `{{c=${hex}}}${innerText}{{/}}`;
                 });
 
                 // 0.35 Convert standard HTML links (<a>) to Markdown links
-                t = t.replace(/<a\s+[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>/gi, (match, href, text) => {
+                t = t.replace(/<a\s+[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>/gi, (_match, href, text) => {
                     return `[${text}](${href})`;
                 });
 
                 // 0.36 Convert HTML iframes (like YouTube embeds) to Selah Embeds
-                t = t.replace(/<iframe([^>]*)src="([^"]+)"([^>]*)>(?:<\/iframe>)?/gi, (match, attr1, src, attr2) => {
+                t = t.replace(/<iframe([^>]*)src="([^"]+)"([^>]*)>(?:<\/iframe>)?/gi, (_match, _attr1, src, _attr2) => {
                     let url = src;
                     let image = "";
                     let title = "YouTube Video";
@@ -579,7 +579,7 @@ export function pluginTypesIn(body: string): string[] {
 
                 // 0.4 Convert Bible Callouts into Selah Scripture blocks
                 // Fixed regex to capture all blockquote lines regardless of Windows \r\n line endings
-                t = t.replace(/^>\s*\[!bible\]\s*(?:\[([^\]]+)\])?(?:\([^)]+\))?[^\n]*\r?\n((?:>.*(?:\r?\n|$))+)/gmi, (match, title, content) => {
+                t = t.replace(/^>\s*\[!bible\]\s*(?:\[([^\]]+)\])?(?:\([^)]+\))?[^\n]*\r?\n((?:>.*(?:\r?\n|$))+)/gmi, (_match, title, content) => {
                     let ref = (title || "").split(" - ")[0].trim();
                     if (!ref) ref = "Scripture";
 
@@ -597,7 +597,7 @@ export function pluginTypesIn(body: string): string[] {
                 });
 
                 // 0.5 Convert DMS Callouts into Selah DmArchive blocks
-                t = t.replace(/(?:^|\n)>\s*\[!(NOTE|INFO|DMS|ARCHIVE|MESSAGE)\]\s*(?:DMS|Archive|Messages|.*)?[^\n]*\n([\s\S]*?)(?=\n[^>]|$)/gi, (match, type, content) => {
+                t = t.replace(/(?:^|\n)>\s*\[!(NOTE|INFO|DMS|ARCHIVE|MESSAGE)\]\s*(?:DMS|Archive|Messages|.*)?[^\n]*\n([\s\S]*?)(?=\n[^>]|$)/gi, (_match, type, content) => {
                     const imageRegex = /!\[\[([^\]]+)\]\]|!\[[^\]]*\]\(([^)]+)\)/g;
                     const images: string[] = [];
                     let m;
@@ -607,7 +607,7 @@ export function pluginTypesIn(body: string): string[] {
 
                     if (images.length === 0) {
                         // No images? Just format as a clean blockquote.
-                        const cleanContent = content.split('\n').map(l => l.replace(/^>\s*/, '')).join('\n');
+                        const cleanContent = content.split('\n').map((l: string) => l.replace(/^>\s*/, '')).join('\n');
                         return `> **${type}**\n> ${cleanContent.replace(/\n/g, '\n> ')}`;
                     }
 
@@ -678,7 +678,7 @@ export function pluginTypesIn(body: string): string[] {
                     return m;
                 });
             // 3. Wiki links  [[Note#Heading|Text]]  → [[Note|Text]]
-            t = t.replace(/\[\[([^\]\n|]+)(?:\|([^\]\n]*))?\]\]/g, (m, target: string, disp?: string) => {
+            t = t.replace(/\[\[([^\]\n|]+)(?:\|([^\]\n]*))?\]\]/g, (_m, target: string, disp?: string) => {
                 const name = target.split("#")[0].split("^")[0].trim().split("/").pop() || "";
                 if (!name) return disp || target.replace(/^#/, "");
                 const f = nameMap.get(normName(name)) ?? name;
