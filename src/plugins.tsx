@@ -84,7 +84,7 @@ export interface PluginCategoryTypeDef {
      * "default" = shows Selah's sidebar tree next to the plugin.
      * "full"    = currently behaves the same as "default" (sidebar is never hidden).
      */
-    layout?: "default" | "full";
+    layout?: "default" | "full" | "entries";
     /** Draw into `container`. May return (or resolve to) a cleanup function. */
     render: (
         container: HTMLElement,

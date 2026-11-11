@@ -410,7 +410,7 @@ import { REGISTRY_REPO } from "./registry";
             {/* Plugin Configuration Modal */}
             {configuring && (
                 <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-                    <div className="bg-[#0f1315] border border-[#2a3136] rounded-xl shadow-2xl w-full max-w-md flex flex-col overflow-hidden">
+                    <div className="bg-[#0f1315] border border-[#2a3136] rounded-xl shadow-2xl w-full max-w-2xl flex flex-col overflow-hidden">
                         <div className="flex items-center justify-between px-5 py-4 border-b border-[#2a3136] bg-[#131819]">
                             <h2 className="text-sm font-semibold text-gray-100 flex items-center gap-2">
                                 <Settings size={16} className="text-blue-400" />

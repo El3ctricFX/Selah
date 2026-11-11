@@ -823,7 +823,7 @@ export default function Sidebar(props: SidebarProps) {
             promptAsync={promptAsync}
           />
         )}
-        {activeCategory?.mode === 'entries' && (
+        {(activeCategory?.mode === 'entries' || (activeCategory?.mode?.startsWith('plugin:') && pluginTypeFor(activeCategory.mode)?.layout === 'entries')) && (
           <EntriesTree
             key={activeCategory.id}
             category={activeCategory}
@@ -836,7 +836,7 @@ export default function Sidebar(props: SidebarProps) {
             promptAsync={promptAsync}
           />
         )}
-        {(activeCategory?.mode === 'notes' || (activeCategory?.mode?.startsWith('plugin:') && pluginTypeFor(activeCategory.mode)?.layout !== 'full')) && (
+        {(activeCategory?.mode === 'notes' || (activeCategory?.mode?.startsWith('plugin:') && (!pluginTypeFor(activeCategory.mode)?.layout || pluginTypeFor(activeCategory.mode)?.layout === 'default'))) && (
           <NotesTree
             key={activeCategory.id}
             category={activeCategory}
