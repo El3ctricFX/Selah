@@ -21,6 +21,7 @@ import JournalTimeline from "./JournalTimeline";
 import PhotoLightbox from "./PhotoLightbox";
 import ThumbImg from "./ThumbImg";
 import { useNoteMode } from "./useNoteMode";
+import { usePaneActive } from "./paneContext";
 import { useModal } from "./Modal";
 import { parseNoteFile, type Frontmatter } from "./noteFormat";
 import { saveImageToNoteAssets, assetsDirForNote, coverValueToRelative, setProxyPref } from "./imageAssets";
@@ -32,6 +33,7 @@ import { moveJournalNoteToDate } from "./journalDateMove";
 interface JournalViewProps {
   vaultPath: string;
   journalDir: string;
+  categoryName?: string;
   initialDate?: { year: number; month: number; day: number };
   initialMode?: "day" | "month";
   focusMode?: boolean;
@@ -158,6 +160,7 @@ function stringToFmValue(s: string): unknown {
 export default function JournalView({
   vaultPath,
   journalDir,
+  categoryName,
   initialDate,
   initialMode,
   focusMode = false,
@@ -178,6 +181,9 @@ export default function JournalView({
   const currentPath = mode === "day" ? dayPath : monthPath;
 
   const { mode: noteMode, toggle: toggleNoteMode } = useNoteMode();
+  const paneActive = usePaneActive();
+  const paneActiveRef = useRef(paneActive);
+  paneActiveRef.current = paneActive;
   const { modal, confirmAsync } = useModal();
   const noteBodyRef = useRef<NoteBodyHandle>(null);
 
@@ -600,6 +606,7 @@ useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (viewMode !== "day") return;
       if (lightbox) return;
+      if (!paneActiveRef.current) return;
       const active = document.activeElement as HTMLElement | null;
       if (
         active?.closest(".ProseMirror") ||
@@ -1187,7 +1194,7 @@ useEffect(() => {
         <div className="flex items-center justify-between px-6 pt-4 pb-3 border-b border-[#2a3136] flex-shrink-0 gap-3">
           <div className="flex items-center space-x-2 text-sm font-medium text-gray-300 whitespace-nowrap flex-shrink-0">
             <CalendarDays size={16} className="text-gray-400 flex-shrink-0" />
-            <span>Daily Journal</span>
+            <span>{categoryName || "Daily Journal"}</span>
           </div>
 
           <div className="flex items-center space-x-2 flex-nowrap overflow-x-auto">

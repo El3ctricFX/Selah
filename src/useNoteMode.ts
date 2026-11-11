@@ -1,5 +1,6 @@
 // src/useNoteMode.ts
-import { useEffect, useState } from "react";
+import { useContext, useEffect, useState } from "react";
+import { ForceReadContext } from "./paneContext";
 
 const MODE_KEY = "note-mode";
 const MODE_EVENT = "note-mode-changed";
@@ -9,6 +10,7 @@ export type NoteMode = "edit" | "read";
 // Shared edit/read mode. Persisted to localStorage, broadcast across
 // components so every toggle button and every NoteBody stays in sync.
 export function useNoteMode() {
+  const forcedRead = useContext(ForceReadContext);
   const [mode, setModeState] = useState<NoteMode>(
     () => (localStorage.getItem(MODE_KEY) as NoteMode) || "edit"
   );
@@ -28,5 +30,5 @@ export function useNoteMode() {
 
   const toggle = () => setMode(mode === "edit" ? "read" : "edit");
 
-  return { mode, setMode, toggle };
+  return { mode: forcedRead ? ("read" as NoteMode) : mode, setMode, toggle };
 }

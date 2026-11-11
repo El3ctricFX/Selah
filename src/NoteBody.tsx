@@ -91,6 +91,7 @@ import { createDmArchive } from "./DmArchive";
 import { isReliablyEmbeddable } from "./embeds";
 import { getPluginSlashItems, getPluginBlockSpecs } from "./plugins";
 import { useNoteMode } from "./useNoteMode";
+import { usePaneActive } from "./paneContext";
 import { useTheme } from "./theme";
 import { NoteContext } from "./NoteContext";
 import ImageEditorModal from "./ImageEditorModal";
@@ -863,6 +864,8 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
 
       const onKeyDown = (e: KeyboardEvent) => {
         const ctrl = e.ctrlKey || e.metaKey;
+
+        if (!wrapperRef.current?.contains(e.target as Node)) return;
 
         // Markdown input-rule scroll guard.
         //
@@ -2230,6 +2233,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
           const blockOuter = t.closest(".bn-block-outer");
           const blockId = blockOuter?.getAttribute("data-id");
 
+          if (blockId && !editor.getBlock(blockId)) return;
           let idsToDrag = [...selectedRef.current];
           if (blockId && !idsToDrag.includes(blockId)) {
             idsToDrag = [blockId];
@@ -2739,6 +2743,9 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         lastSaveAtRef.current = Date.now();
         dirtyRef.current = false;
         onSaved?.();
+        window.dispatchEvent(
+          new CustomEvent("note-body-saved", { detail: { path } })
+        );
 
         if (isNewFileRef.current) {
           isNewFileRef.current = false;
@@ -3068,6 +3075,10 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
               ? payload.paths
               : [];
               if (paths.length === 0) return;
+
+              const hit = c ? document.elementFromPoint(c.x, c.y) : null;
+              const paneEl = wrapperRef.current?.closest("[data-pane]");
+              if (paneEl && hit && !paneEl.contains(hit)) return;
 
               void saveAndInsertFilePaths(paths, target);
               return;
@@ -3534,9 +3545,14 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       } catch {}
     }, [pendingImageDelete, path]);
 
+    const paneActive = usePaneActive();
+    const paneActiveRef = useRef(paneActive);
+    paneActiveRef.current = paneActive;
+
     // 1. Ctrl+F (Find) & Ctrl+R (Replace) listener
     useEffect(() => {
       const handleKeyDown = (e: KeyboardEvent) => {
+        if (!paneActiveRef.current) return;
         if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
           e.preventDefault();
           e.stopPropagation();

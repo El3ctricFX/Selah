@@ -1,5 +1,6 @@
 // src/Editor.tsx
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useContext, useEffect, useMemo, useRef, useState } from "react";
+import { ForceReadContext } from "./paneContext";
 import { createPortal } from "react-dom";
 import { rename, readTextFile, readDir } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
@@ -221,6 +222,24 @@ export default function Editor({
     window.addEventListener("note-rewritten", onRewritten);
     return () => window.removeEventListener("note-rewritten", onRewritten);
   }, [activeNote.path]);
+  // Read-only mirror pane: reload when the other pane saves this same note.
+  const forceReadPane = useContext(ForceReadContext);
+  useEffect(() => {
+    if (!forceReadPane) return;
+    const norm = (p: string) => p.replace(/\\/g, "/");
+    let t: ReturnType<typeof setTimeout> | null = null;
+    const onSaved = (e: Event) => {
+      const p = (e as CustomEvent).detail?.path as string | undefined;
+      if (!p || norm(p) !== norm(activeNote.path)) return;
+      if (t) clearTimeout(t);
+      t = setTimeout(() => setSourceNonce((n) => n + 1), 600);
+    };
+    window.addEventListener("note-body-saved", onSaved);
+    return () => {
+      if (t) clearTimeout(t);
+      window.removeEventListener("note-body-saved", onSaved);
+    };
+  }, [forceReadPane, activeNote.path]);
   const [newPropKey, setNewPropKey] = useState("");
   const [newPropValue, setNewPropValue] = useState("");
   const [copied, setCopied] = useState(false);

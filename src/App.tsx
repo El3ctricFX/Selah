@@ -4,7 +4,8 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { PanelLeftOpen } from "lucide-react";
+import { PanelLeftOpen, Columns2 } from "lucide-react";
+import PaneShell from "./PaneShell";
 import Editor from "./Editor";
 import Sidebar, { type Category } from "./Sidebar";
 import JournalView from "./JournalView";
@@ -31,7 +32,7 @@ type ViewSnapshot = { view: ActiveView; categoryId: string | null };
 
 type ActiveView =
   | { kind: "note"; path: string; name: string }
-  | { kind: "journal"; dir: string; focus?: JournalFocus; focusMode?: "day" | "month" }
+  | { kind: "journal"; dir: string; name: string; focus?: JournalFocus; focusMode?: "day" | "month" }
   | { kind: "gallery"; dir: string; name: string }
   | { kind: "plugin"; dir: string; name: string; icon: string; categoryId: string; mode: string }
     | { kind: "abba"; dir: string; name: string; icon: string; focusSection?: string; focusNoteId?: string }
@@ -61,8 +62,41 @@ function parseJournalDayFilename(
 
 export default function App() {
   const [vaultPath, setVaultPath] = useState<string | null>(null);
-  const [activeView, setActiveView] = useState<ActiveView>(null);
-  const [activeCategoryId, setActiveCategoryId] = useState<string | null>(null);
+  // ── Split panes ──────────────────────────────────────────────────────
+  // `activeView` / `setActiveView` now mean "the FOCUSED pane's view", so
+  // every existing call (sidebar clicks, back/forward, etc.) keeps working.
+  const [mainView, setMainView] = useState<ActiveView>(null);
+  const [splitView, setSplitView] = useState<ActiveView>(null);
+  const [splitOpen, setSplitOpen] = useState(false);
+  const [focusedPane, setFocusedPane] = useState<"main" | "split">("main");
+  const mainViewRef = useRef<ActiveView>(null);
+  const splitViewRef = useRef<ActiveView>(null);
+  const splitOpenRef = useRef(false);
+  const focusedPaneRef = useRef<"main" | "split">("main");
+  const paneNonceRef = useRef({ main: 0, split: 0 });
+  mainViewRef.current = mainView;
+  splitViewRef.current = splitView;
+  splitOpenRef.current = splitOpen;
+  focusedPaneRef.current = focusedPane;
+
+  const activeView: ActiveView =
+    splitOpen && focusedPane === "split" ? splitView : mainView;
+  const setActiveView = (v: React.SetStateAction<ActiveView>) => {
+    if (focusedPaneRef.current === "split" && splitOpenRef.current) setSplitView(v);
+    else setMainView(v);
+  };
+  const [mainCategoryId, setMainCategoryId] = useState<string | null>(null);
+  const [splitCategoryId, setSplitCategoryId] = useState<string | null>(null);
+  const mainCategoryIdRef = useRef<string | null>(null);
+  const splitCategoryIdRef = useRef<string | null>(null);
+  mainCategoryIdRef.current = mainCategoryId;
+  splitCategoryIdRef.current = splitCategoryId;
+
+  const activeCategoryId = splitOpen && focusedPane === "split" ? splitCategoryId : mainCategoryId;
+  const setActiveCategoryId = (id: React.SetStateAction<string | null>) => {
+    if (focusedPaneRef.current === "split" && splitOpenRef.current) setSplitCategoryId(id);
+    else setMainCategoryId(id);
+  };
   const [journalNonce, setJournalNonce] = useState(0);
   const [focusMode, setFocusMode] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -249,7 +283,7 @@ export default function App() {
             setActiveView({ kind: "notes", dir: `${vaultPath}/${owner.dirName}`, name: owner.name, icon: owner.icon, categoryId: owner.id });
           } else if (owner.mode === "journal") {
             setActiveCategoryId(owner.id);
-            setActiveView({ kind: "journal", dir: `${vaultPath}/${owner.dirName}` });
+            setActiveView({ kind: "journal", dir: `${vaultPath}/${owner.dirName}`, name: owner.name });
           } else if (owner.mode === "gallery") {
             setActiveCategoryId(owner.id);
             setActiveView({ kind: "gallery", dir: `${vaultPath}/${owner.dirName}`, name: owner.name });
@@ -292,6 +326,7 @@ export default function App() {
   const forwardRef = useRef<ViewSnapshot[]>([]);
   const prevSnapshotRef = useRef<ViewSnapshot | null>(null);
   const suppressHistoryRef = useRef(false);
+  const prevPaneRef = useRef<"main" | "split">("main");
   const activeViewRef = useRef<ActiveView>(null);
   const activeCategoryRef = useRef<string | null>(null);
 
@@ -314,7 +349,9 @@ export default function App() {
     const suppressed = suppressHistoryRef.current;
     suppressHistoryRef.current = false;
 
-    if (prev && !suppressed) {
+    const paneSwitched = prevPaneRef.current !== focusedPane;
+    prevPaneRef.current = focusedPane;
+    if (prev && !suppressed && !paneSwitched) {
       const viewChanged = !viewsEqual(prev.view, activeView);
       const catChanged = prev.categoryId !== activeCategoryId;
       if (viewChanged || catChanged) {
@@ -324,7 +361,7 @@ export default function App() {
       }
     }
     prevSnapshotRef.current = snap;
-  }, [activeView, activeCategoryId]);
+  }, [activeView, activeCategoryId, focusedPane]);
 
   const goBack = useCallback(() => {
     const hist = historyRef.current;
@@ -430,6 +467,55 @@ export default function App() {
         return () => window.removeEventListener("keydown", onKey);
       }, [goBack, goForward]);
 
+  // ── Split pane controls ──────────────────────────────────────────────
+  useEffect(() => {
+    // New vault → start with a single clean pane.
+    setMainView(null);
+    setSplitView(null);
+    setMainCategoryId(null);
+    setSplitCategoryId(null);
+    setSplitOpen(false);
+    setFocusedPane("main");
+  }, [vaultPath]);
+
+  const openSplit = () => {
+    if (splitOpenRef.current) return;
+    setSplitView(activeViewRef.current); // duplicate the focused view
+    setSplitCategoryId(mainCategoryIdRef.current); // duplicate the focused category
+    setSplitOpen(true);
+    setFocusedPane("split");             // next sidebar click opens on the right
+  };
+
+  const closePane = (pane: "main" | "split") => {
+    if (pane === "main") {
+      setMainView(splitViewRef.current); // promote right pane
+      setMainCategoryId(splitCategoryIdRef.current); // promote right category
+    }
+    setSplitOpen(false);
+    setSplitView(null);
+    setFocusedPane("main");
+  };
+
+  const swapPanes = () => {
+    const m = mainViewRef.current;
+    const s = splitViewRef.current;
+    setMainView(s);
+    setSplitView(m);
+  };
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === "\\") {
+        e.preventDefault();
+        if (splitOpenRef.current) closePane("split");
+        else openSplit();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleSelectVault = async () => {
     const selected = await open({
       directory: true,
@@ -440,8 +526,12 @@ export default function App() {
       const path = selected as string;
       setVaultPath(path);
       addRecentVault(path);
-      setActiveView(null);
-      setActiveCategoryId(null);
+      setMainView(null);
+      setSplitView(null);
+      setMainCategoryId(null);
+      setSplitCategoryId(null);
+      setSplitOpen(false);
+      setFocusedPane("main");
       setFocusMode(false);
       setSidebarCollapsed(false);
     }
@@ -450,16 +540,24 @@ export default function App() {
   const handleOpenRecentVault = (path: string) => {
     setVaultPath(path);
     addRecentVault(path);
-    setActiveView(null);
-    setActiveCategoryId(null);
+    setMainView(null);
+    setSplitView(null);
+    setMainCategoryId(null);
+    setSplitCategoryId(null);
+    setSplitOpen(false);
+    setFocusedPane("main");
     setFocusMode(false);
     setSidebarCollapsed(false);
   };
 
   const handleReturnToWelcome = () => {
     setVaultPath(null);
-    setActiveView(null);
-    setActiveCategoryId(null);
+    setMainView(null);
+    setSplitView(null);
+    setMainCategoryId(null);
+    setSplitCategoryId(null);
+    setSplitOpen(false);
+    setFocusedPane("main");
     setFocusMode(false);
     setSidebarCollapsed(false);
   };
@@ -478,37 +576,56 @@ export default function App() {
   const dirOf = (cat: Category) =>
     cat.dirName ? `${vaultPath}/${cat.dirName}` : vaultPath;
 
-  const journalKey =
+  const journalKeyFor = (activeView: ActiveView, pane: "main" | "split") =>
     activeView?.kind === "journal"
-      ? `${activeView.dir}-${activeView.focus?.year ?? "t"}-${activeView.focus?.month ?? "t"}-${activeView.focus?.day ?? "t"}-${activeView.focusMode ?? "day"}-${journalNonce}`
+      ? `${activeView.dir}-${activeView.focus?.year ?? "t"}-${activeView.focus?.month ?? "t"}-${activeView.focus?.day ?? "t"}-${activeView.focusMode ?? "day"}-${paneNonceRef.current[pane]}`
       : undefined;
 
   const sidebarHidden = focusMode || sidebarCollapsed;
 
-  const isEntryNote =
-    activeView?.kind === "note" &&
-    vaultCategories.some(
-      (c) =>
-        c.mode === "entries" &&
-        !!c.dirName &&
-        activeView.path.replace(/\\/g, "/").startsWith(
-          `${vaultPath.replace(/\\/g, "/").replace(/\/+$/, "")}/${c.dirName}/`
-        )
-    );
+  // The focused pane keeps the live journal nonce; the other keeps its last
+  // one, so reopening "Today" in one pane doesn't reset the other pane.
+  paneNonceRef.current[focusedPane] = journalNonce;
+  const paneList: { pane: "main" | "split"; view: ActiveView }[] = splitOpen
+    ? [{ pane: "main", view: mainView }, { pane: "split", view: splitView }]
+    : [{ pane: "main", view: mainView }];
 
-  let activeCategoryDir = vaultPath;
-  if (activeView?.kind === "note" && vaultPath) {
+  const isEntryFor = (view: ActiveView): boolean => {
+    if (view?.kind !== "note") return false;
     const normVault = vaultPath.replace(/\\/g, "/").replace(/\/+$/, "");
-    const normalized = activeView.path.replace(/\\/g, "/");
+    const p = view.path.replace(/\\/g, "/");
+    return vaultCategories.some(
+      (c) => c.mode === "entries" && !!c.dirName && p.startsWith(`${normVault}/${c.dirName}/`)
+    );
+  };
+
+  const dirFor = (view: ActiveView): string => {
+    if (view?.kind !== "note") return vaultPath;
+    const normVault = vaultPath.replace(/\\/g, "/").replace(/\/+$/, "");
+    const p = view.path.replace(/\\/g, "/");
     for (const cat of vaultCategories) {
       if (!cat.dirName) continue;
-      const prefix = `${normVault}/${cat.dirName}/`;
-      if (normalized.startsWith(prefix)) {
-        activeCategoryDir = `${vaultPath}/${cat.dirName}`;
-        break;
-      }
+      if (p.startsWith(`${normVault}/${cat.dirName}/`)) return `${vaultPath}/${cat.dirName}`;
     }
-  }
+    return vaultPath;
+  };
+
+  const sameTarget = (a: ActiveView, b: ActiveView): boolean => {
+    if (!a || !b) return false;
+    const n = (p: string) => p.replace(/\\/g, "/");
+    if (a.kind === "note") return b.kind === "note" && n(a.path) === n(b.path);
+    if (a.kind === "gallery" || a.kind === "abba" || a.kind === "plugin") {
+      return b.kind === a.kind && n(a.dir) === n((b as typeof a).dir);
+    }
+    return false;
+  };
+
+  const paneTitle = (v: ActiveView): string => {
+    if (!v) return "Home";
+    if (v.kind === "note") return v.name.replace(/\.(selah|md)$/i, "");
+    if (v.kind === "journal") return "Journal";
+    return v.name;
+  };
 
   const openNoteByPath = (path: string) => {
     const normalized = path.replace(/\\/g, "/");
@@ -546,6 +663,7 @@ export default function App() {
       setActiveView({
         kind: "journal",
         dir: journalDir,
+        name: owner ? owner.name : "Journal",
         focus: { year: dayInfo.year, month: dayInfo.month, day: dayInfo.day },
         focusMode: "day",
       });
@@ -699,7 +817,7 @@ export default function App() {
             onOpenJournalToday={(cat) => {
               setActiveCategoryId(cat.id);
               setJournalNonce((n) => n + 1);
-              setActiveView({ kind: "journal", dir: dirOf(cat) });
+              setActiveView({ kind: "journal", dir: dirOf(cat), name: cat.name });
             }}
             onOpenJournalDay={(cat, year, month, day) => {
               setActiveCategoryId(cat.id);
@@ -707,6 +825,7 @@ export default function App() {
               setActiveView({
                 kind: "journal",
                 dir: dirOf(cat),
+                name: cat.name,
                 focus: { year, month, day },
                 focusMode: "day",
               });
@@ -717,6 +836,7 @@ export default function App() {
               setActiveView({
                 kind: "journal",
                 dir: dirOf(cat),
+                name: cat.name,
                 focus: { year, month, day: 1 },
                 focusMode: "month",
               });
@@ -759,7 +879,7 @@ export default function App() {
           />
       </div>
 
-      <div className="content-shell flex-grow h-full overflow-hidden relative">
+      <div className="content-shell flex flex-row flex-grow h-full overflow-hidden relative">
         {!focusMode && sidebarCollapsed && (
           <button
             onClick={() => setSidebarCollapsed(false)}
@@ -770,6 +890,28 @@ export default function App() {
           </button>
         )}
 
+        {!splitOpen && !focusMode && (
+          <button
+            onClick={openSplit}
+            className="absolute bottom-3 right-3 z-[90] p-2 rounded bg-[#1e2327] border border-[#2a3136] text-gray-400 hover:text-gray-100 cursor-pointer opacity-60 hover:opacity-100 transition-opacity"
+            title="Split right (Ctrl+\)"
+          >
+            <Columns2 size={14} />
+          </button>
+        )}
+
+        {paneList.map(({ pane, view: activeView }) => (
+          <PaneShell
+            key={pane}
+            split={splitOpen}
+            isSecond={pane === "split"}
+            title={paneTitle(activeView)}
+            focused={focusedPane === pane}
+            forceRead={pane === "split" && sameTarget(mainView, splitView)}
+            onFocus={() => setFocusedPane(pane)}
+            onClose={() => closePane(pane)}
+            onSwap={swapPanes}
+          >
         {!activeView ? (
           <HomeView
             vaultPath={vaultPath}
@@ -778,7 +920,7 @@ export default function App() {
             onOpenJournalToday={(cat) => {
               setActiveCategoryId(cat.id);
               setJournalNonce((n) => n + 1);
-              setActiveView({ kind: "journal", dir: dirOf(cat) });
+              setActiveView({ kind: "journal", dir: dirOf(cat), name: cat.name });
             }}
             onOpenJournalDay={(cat, year, month, day) => {
               setActiveCategoryId(cat.id);
@@ -786,6 +928,7 @@ export default function App() {
               setActiveView({
                 kind: "journal",
                 dir: dirOf(cat),
+                name: cat.name,
                 focus: { year, month, day },
                 focusMode: "day",
               });
@@ -797,18 +940,19 @@ export default function App() {
           <Editor
             activeNote={activeView}
             vaultPath={vaultPath}
-            tagsDir={activeCategoryDir}
+            tagsDir={dirFor(activeView)}
             focusMode={focusMode}
             onToggleFocus={() => setFocusMode((v) => !v)}
             onOpenNoteByPath={openNoteByPath}
             setActiveNote={(note) => setActiveView({ kind: "note", ...note })}
-            entryMode={isEntryNote}
+            entryMode={isEntryFor(activeView)}
           />
         ) : activeView.kind === "journal" ? (
           <JournalView
-            key={journalKey}
+            key={journalKeyFor(activeView, pane)}
             vaultPath={vaultPath}
             journalDir={activeView.dir}
+            categoryName={activeView.name}
             initialDate={activeView.focus}
             initialMode={activeView.focusMode}
             focusMode={focusMode}
@@ -859,6 +1003,8 @@ export default function App() {
             }
           />
         )}
+          </PaneShell>
+        ))}
       </div>
 
       <ProxyToggleHost />
