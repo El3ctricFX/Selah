@@ -26,6 +26,8 @@ import { useTheme, setThemeVaultPath } from "./theme";
 import ThemeBackground from "./ThemeBackground";
 import PluginView from "./PluginView";
 import { loadPlugins, clearPlugins } from "./plugins";
+import { useTabsFeature } from "./tabsFeature";
+import TabBar, { TAB_BAR_HEIGHT } from "./TabBar";
 
 type JournalFocus = { year: number; month: number; day: number };
 type ViewSnapshot = { view: ActiveView; categoryId: string | null };
@@ -58,6 +60,24 @@ function parseJournalDayFilename(
   const year = Number(m[3]);
   if (!Number.isFinite(day) || !Number.isFinite(year)) return null;
   return { year, month: monthIdx + 1, day };
+}
+
+type TabItem = { id: string; view: ActiveView; categoryId: string | null };
+
+const newTabId = () =>
+  `tab-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+function tabLabel(view: ActiveView): { label: string; icon?: string } {
+  if (!view) return { label: "Home", icon: "🏠" };
+  const last = (p: string) =>
+    p.replace(/\\/g, "/").split("/").filter(Boolean).pop() || p;
+  if (view.kind === "note") {
+    const ym = view.name.match(/^_(\d{4})-Year\./);
+    return { label: ym ? ym[1] : view.name.replace(/\.(selah|md)$/i, "") || "Note" };
+  }
+  if (view.kind === "journal") return { label: last(view.dir) || "Journal", icon: "📅" };
+  if (view.kind === "gallery") return { label: view.name };
+  return { label: view.name, icon: view.icon };
 }
 
 export default function App() {
@@ -516,6 +536,125 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ── Tabs (optional; see Settings → General) ──────────────────────────
+  const tabsEnabled = useTabsFeature();
+  const initialTabRef = useRef<TabItem>({ id: newTabId(), view: null, categoryId: null });
+  const [tabs, setTabs] = useState<TabItem[]>([initialTabRef.current]);
+  const [activeTabId, setActiveTabId] = useState<string>(initialTabRef.current.id);
+  const tabsRef = useRef<TabItem[]>(tabs);
+  const activeTabIdRef = useRef<string>(activeTabId);
+  const closedTabsRef = useRef<TabItem[]>([]);
+  useEffect(() => { tabsRef.current = tabs; }, [tabs]);
+
+  const resetTabs = useCallback((view: ActiveView, categoryId: string | null) => {
+    const t: TabItem = { id: newTabId(), view, categoryId };
+    tabsRef.current = [t];
+    activeTabIdRef.current = t.id;
+    closedTabsRef.current = [];
+    setTabs([t]);
+    setActiveTabId(t.id);
+  }, []);
+
+  // New vault → fresh single tab.
+  useEffect(() => { resetTabs(null, null); }, [vaultPath, resetTabs]);
+
+  // Feature turned off → collapse to the current view only.
+  useEffect(() => {
+    if (!tabsEnabled) resetTabs(activeViewRef.current, activeCategoryRef.current);
+  }, [tabsEnabled, resetTabs]);
+
+  // Keep the active tab's snapshot in sync with what's on screen.
+  useEffect(() => {
+    if (!tabsEnabled) return;
+    const id = activeTabIdRef.current;
+    setTabs((prev) =>
+      prev.map((t) =>
+        t.id === id ? { ...t, view: activeView, categoryId: activeCategoryId } : t
+      )
+    );
+  }, [activeView, activeCategoryId, tabsEnabled]);
+
+  const activateTab = useCallback((t: TabItem) => {
+    void flushAll();
+    activeTabIdRef.current = t.id;
+    setActiveTabId(t.id);
+    setActiveCategoryId(t.categoryId);
+    setActiveView(t.view);
+    if (t.view?.kind === "journal") setJournalNonce((n) => n + 1);
+  }, []);
+
+  const switchTab = useCallback((id: string) => {
+    if (id === activeTabIdRef.current) return;
+    const t = tabsRef.current.find((x) => x.id === id);
+    if (t) activateTab(t);
+  }, [activateTab]);
+
+  const newTab = useCallback(() => {
+    const t: TabItem = { id: newTabId(), view: null, categoryId: null };
+    const next = [...tabsRef.current, t];
+    tabsRef.current = next;
+    setTabs(next);
+    activateTab(t);
+  }, [activateTab]);
+
+  const closeTab = useCallback((id?: string) => {
+    const list = tabsRef.current;
+    if (list.length <= 1) return;
+    const closeId = id ?? activeTabIdRef.current;
+    const idx = list.findIndex((t) => t.id === closeId);
+    if (idx < 0) return;
+    const wasActive = closeId === activeTabIdRef.current;
+    let closing = list[idx];
+    if (wasActive) {
+      closing = { ...closing, view: activeViewRef.current, categoryId: activeCategoryRef.current };
+    }
+    closedTabsRef.current = [...closedTabsRef.current, closing].slice(-20);
+    const next = list.filter((t) => t.id !== closeId);
+    tabsRef.current = next;
+    setTabs(next);
+    if (wasActive) activateTab(next[Math.min(idx, next.length - 1)]);
+  }, [activateTab]);
+
+  const reopenTab = useCallback(() => {
+    const closed = closedTabsRef.current;
+    const last = closed[closed.length - 1];
+    if (!last) return;
+    closedTabsRef.current = closed.slice(0, -1);
+    const restored: TabItem = { ...last, id: newTabId() };
+    const next = [...tabsRef.current, restored];
+    tabsRef.current = next;
+    setTabs(next);
+    activateTab(restored);
+  }, [activateTab]);
+
+  const cycleTab = useCallback((dir: 1 | -1) => {
+    const list = tabsRef.current;
+    if (list.length < 2) return;
+    const idx = list.findIndex((t) => t.id === activeTabIdRef.current);
+    activateTab(list[(idx + dir + list.length) % list.length]);
+  }, [activateTab]);
+
+  // Shortcuts — only registered while tabs are enabled.
+  useEffect(() => {
+    if (!tabsEnabled) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      const k = e.key.toLowerCase();
+      if (k === "t") {
+        e.preventDefault(); e.stopPropagation();
+        if (e.shiftKey) reopenTab(); else newTab();
+      } else if (k === "w" && !e.shiftKey) {
+        e.preventDefault(); e.stopPropagation();
+        closeTab();
+      } else if (e.key === "Tab") {
+        e.preventDefault(); e.stopPropagation();
+        cycleTab(e.shiftKey ? -1 : 1);
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [tabsEnabled, newTab, closeTab, reopenTab, cycleTab]);
+
   const handleSelectVault = async () => {
     const selected = await open({
       directory: true,
@@ -879,7 +1018,23 @@ export default function App() {
           />
       </div>
 
-      <div className="content-shell flex flex-row flex-grow h-full overflow-hidden relative">
+      <div
+        className="content-shell flex flex-row flex-grow h-full overflow-hidden relative"
+        style={{ paddingTop: tabsEnabled && !focusMode ? TAB_BAR_HEIGHT : 0 }}
+      >
+        {tabsEnabled && !focusMode && (
+          <TabBar
+            tabs={tabs.map((t) => ({
+              id: t.id,
+              ...tabLabel(t.id === activeTabId ? activeView : t.view),
+            }))}
+            activeId={activeTabId}
+            onSelect={switchTab}
+            onClose={(id) => closeTab(id)}
+            onNew={newTab}
+            leftInset={sidebarCollapsed}
+          />
+        )}
         {!focusMode && sidebarCollapsed && (
           <button
             onClick={() => setSidebarCollapsed(false)}

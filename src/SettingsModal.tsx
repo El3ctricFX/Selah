@@ -11,6 +11,7 @@ import {
 import { writeFileAtomic } from "./safeWrite";
 import { proxyFeatureEnabled, setProxyFeatureEnabled } from "./proxyFeature";
 import { pluginFeatureEnabled, setPluginFeatureEnabled } from "./pluginFeature";
+import { tabsFeatureEnabled, setTabsFeatureEnabled } from "./tabsFeature";
 import {
   HomeSettingsPanel,
   DEFAULT_HOME_SETTINGS,
@@ -510,6 +511,7 @@ function GeneralPanel({ vaultPath }: { vaultPath: string }) {
   });
   const [proxies, setProxies] = useState<boolean>(() => proxyFeatureEnabled());
   const [plugins, setPlugins] = useState<boolean>(() => pluginFeatureEnabled());
+  const [tabsOn, setTabsOn] = useState<boolean>(() => tabsFeatureEnabled());
   const [confirmOff, setConfirmOff] = useState(false);
 
   const toggleExtensions = () => {
@@ -542,6 +544,26 @@ function GeneralPanel({ vaultPath }: { vaultPath: string }) {
 
   return (
     <div className="p-5 space-y-6">
+    <div className="pb-4 border-b border-[#2a3136]">
+    <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-3">
+    Tabs
+    </div>
+    <label className="flex items-center justify-between text-xs text-gray-300 cursor-pointer py-1">
+    <span>Enable tabs</span>
+    <Switch on={tabsOn} onClick={() => {
+        const next = !tabsOn;
+        setTabsOn(next);
+        setTabsFeatureEnabled(next);
+    }} />
+    </label>
+    <p className="text-[10px] text-gray-600 mt-2 leading-snug">
+    Off by default. When on, a tab bar appears and you can keep several views open.
+    <span className="font-mono"> Ctrl+T</span> new tab ·
+    <span className="font-mono"> Ctrl+W</span> close tab ·
+    <span className="font-mono"> Ctrl+Shift+T</span> reopen closed tab ·
+    <span className="font-mono"> Ctrl+Tab</span> next tab. Turning this off closes all but your current tab.
+    </p>
+    </div>
     <div>
     <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-3">
     Sidebar
