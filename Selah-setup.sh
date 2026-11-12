@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Setup helper for Selah on Linux (especially NixOS).
 #
-# If a Selah_*_x86_64.flatpak bundle sits next to this script, running
-# `install` will install it and then make Selah appear in your app
-# launcher. Flatpak's .desktop export trigger is broken on NixOS, so
-# the launcher entry has to be created by hand once.
+# If a Selah_*_<arch>.flatpak bundle (where <arch> matches your system:
+# x86_64 for Intel/AMD, aarch64 for ARM) sits next to this script,
+# running `install` will install it and then make Selah appear in your
+# app launcher. Flatpak's .desktop export trigger is broken on NixOS,
+# so the launcher entry has to be created by hand once.
 #
 # Works with both user-side and system-side Flatpak installs.
 #
@@ -61,13 +62,32 @@ err()  { printf "%s✗%s %s\n" "$RED" "$RESET" "$1" >&2; }
 find_flatpak_file() {
   local here
   here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-  local f
-  for f in "$here"/Selah_*_x86_64.flatpak; do
-    [ -f "$f" ] && { printf "%s" "$f"; return 0; }
-  done
+  local arch f
+  case "$(uname -m)" in
+    x86_64|amd64) arch="x86_64" ;;
+    aarch64|arm64) arch="aarch64" ;;
+    *) arch="" ;;
+  esac
+
+  # Prefer a bundle whose arch matches the host.
+  if [ -n "$arch" ]; then
+    for f in "$here"/Selah_*_"${arch}".flatpak; do
+      [ -f "$f" ] && { printf "%s" "$f"; return 0; }
+    done
+  fi
+
+  # Fall back to any single .flatpak next to the script.
+  local count=0 only=""
   for f in "$here"/*.flatpak; do
-    [ -f "$f" ] && { printf "%s" "$f"; return 0; }
+    [ -f "$f" ] || continue
+    count=$((count + 1))
+    only="$f"
   done
+  if [ "$count" -eq 1 ]; then
+    printf "%s" "$only"
+    return 0
+  fi
+
   return 1
 }
 

@@ -49,9 +49,14 @@ modules:
       # package name). Keep it lowercase here so it matches what the desktop
       # file's Exec= line references — if they diverge, the launcher entry
       # silently fails to start anything.
-      - patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2 /app/usr/bin/selah
-      - patchelf --remove-rpath /app/usr/bin/selah
-      - install -Dm755 /app/usr/bin/selah /app/bin/selah
+      - |
+        case "$(uname -m)" in
+          aarch64) INTERP=/lib/ld-linux-aarch64.so.1 ;;
+          *)       INTERP=/lib64/ld-linux-x86-64.so.2 ;;
+        esac
+        patchelf --set-interpreter "$INTERP" /app/usr/bin/selah
+        patchelf --remove-rpath /app/usr/bin/selah
+        install -Dm755 /app/usr/bin/selah /app/bin/selah
 
       # The .deb drops icons under /app/usr/share/icons/... but flatpak only
       # looks in /app/share/icons/... — so copy them over. We also rename
