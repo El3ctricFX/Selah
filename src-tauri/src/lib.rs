@@ -697,6 +697,8 @@ struct ProxyProgress {
     eta_sec: i64,
 }
 
+
+
 /// Run ffprobe and return the duration of `input` in milliseconds.
 /// Returns None if ffprobe isn't available or can't parse the file.
 async fn probe_duration_ms(input: &str) -> Option<i64> {
@@ -744,15 +746,18 @@ async fn convert_to_webm(
             "-loglevel", "error",
             "-progress", "pipe:1",
             "-i", &input,
-            "-c:v", "libvpx-vp9",
-            "-crf", "32",
-            "-b:v", "0",
-            "-speed", "4",
-            "-row-mt", "1",
-            "-c:a", "libopus",
-            "-b:a", "128k",
-            // Force the container format. Without this, ffmpeg can't infer
-            // the format from the `.tmp` extension and refuses to start.
+            // Only map the first video and audio track. This prevents hangs
+            // caused by weird timecode or subtitle tracks in MP4s.
+            "-map", "0:v:0",
+            "-map", "0:a:0?",
+            "-c:v", "libvpx",
+            "-b:v", "2M",
+            "-deadline", "realtime",
+            "-cpu-used", "8",
+            "-threads", "4", // Fixed thread count, removed -row-mt which deadlocks
+            "-c:a", "libvorbis",
+            "-q:a", "4",
+            "-shortest", // Stop encoding if audio/video streams have different lengths
             "-f", "webm",
             "-y",
             &tmp_output,
@@ -785,59 +790,72 @@ async fn convert_to_webm(
 
     let mut reader = tokio::io::BufReader::new(stdout).lines();
     let start = std::time::Instant::now();
+    let mut current_ms = 0i64;
+    let mut current_speed = 0.0f64;
 
     loop {
         let line_opt = tokio::select! {
-            // Normal progress line from ffmpeg.
             next = reader.next_line() => {
                 match next {
                     Ok(Some(l)) => Some(l),
                     _ => None,
                 }
             }
-            // User hit Cancel. Kill the child, clean up, bail.
             _ = &mut cancel_rx => {
                 let _ = child.kill().await;
                 let _ = std::fs::remove_file(&tmp_output);
                 return Err("Cancelled by user".to_string());
             }
+            _ = tokio::time::sleep(tokio::time::Duration::from_secs(30)) => {
+                // If FFmpeg doesn't send a progress line for 30 seconds, it's deadlocked.
+                let _ = child.kill().await;
+                let _ = std::fs::remove_file(&tmp_output);
+                return Err("Video conversion hung (no progress for 30s). The file may be corrupt or unsupported.".to_string());
+            }
         };
 
         let Some(line) = line_opt else { break };
-        let val = match line.strip_prefix("out_time_ms=") {
-            Some(v) => v.trim(),
-            None => continue,
-        };
-        let ms: i64 = match val.parse() {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
 
-        let percent = if total_ms > 0 {
-            (ms as f64 / total_ms as f64 * 100.0).min(100.0)
-        } else {
-            0.0
-        };
+        if let Some(v) = line.strip_prefix("out_time_ms=") {
+            if let Ok(ms) = v.trim().parse::<i64>() {
+                current_ms = ms;
+            }
+        } else if let Some(v) = line.strip_prefix("speed=") {
+            let s = v.trim().trim_end_matches('x');
+            if let Ok(s) = s.parse::<f64>() {
+                current_speed = s;
+            }
+        } else if line.starts_with("progress=") {
 
-        let elapsed = start.elapsed().as_secs_f64();
-        // libvpx's lookahead buffer means `out_time_ms` races ahead of
-        // actual encoding, so early percentages are meaningless. Only
-        // compute an ETA once we have enough real data to trust it.
-        let eta_sec = if percent > 10.0 && elapsed > 15.0 {
-            let total_est = elapsed / (percent / 100.0);
-            ((total_est - elapsed).max(0.0)) as i64
-        } else {
-            -1
-        };
+            // Cap at 99% so the UI doesn't say 100% before the file is written
+            let percent = if total_ms > 0 {
+                (current_ms as f64 / total_ms as f64 * 99.0).min(99.0)
+            } else {
+                0.0
+            };
 
-        let _ = app.emit(
-            "proxy-progress",
-            ProxyProgress {
-                output: output.clone(),
-                percent,
-                eta_sec,
-            },
-        );
+            let elapsed = start.elapsed().as_secs_f64();
+
+            let eta_sec = if current_speed > 0.0 && total_ms > 0 && current_ms < total_ms {
+                let remaining_video_secs = (total_ms - current_ms) as f64 / 1000.0;
+                (remaining_video_secs / current_speed) as i64
+            } else if percent > 5.0 && elapsed > 3.0 {
+                // Fallback estimate based on how long it's taken so far
+                let total_est = elapsed / (percent / 100.0);
+                ((total_est - elapsed).max(0.0)) as i64
+            } else {
+                -1
+            };
+
+            let _ = app.emit(
+                "proxy-progress",
+                ProxyProgress {
+                    output: output.clone(),
+                             percent,
+                             eta_sec,
+                },
+            );
+        }
     }
 
     // Natural completion — remove ourselves from the cancel map so

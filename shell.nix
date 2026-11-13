@@ -22,6 +22,7 @@ pkgs.mkShell {
     gst_all_1.gst-plugins-base
     gst_all_1.gst-plugins-good
     gst_all_1.gst-plugins-bad
+    gst_all_1.gst-plugins-ugly # <--- ADDED THIS
     gst_all_1.gst-libav
     pulseaudio
     pipewire
@@ -43,11 +44,11 @@ pkgs.mkShell {
       pipewire
       alsa-lib
       mpv
-      # ── GStreamer — previously missing ──────────────────────────────
       gst_all_1.gstreamer
       gst_all_1.gst-plugins-base
       gst_all_1.gst-plugins-good
       gst_all_1.gst-plugins-bad
+      gst_all_1.gst-plugins-ugly # <--- ADDED THIS
       gst_all_1.gst-libav
     ])}:$LD_LIBRARY_PATH
 
@@ -61,6 +62,7 @@ pkgs.mkShell {
       gst-plugins-base
       gst-plugins-good
       gst-plugins-bad
+      gst-plugins-ugly # <--- ADDED THIS
       gst-libav
     ])}"
 

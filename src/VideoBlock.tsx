@@ -1,9 +1,9 @@
 // src/VideoBlock.tsx
 import { createReactBlockSpec } from "@blocknote/react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { readFile, exists } from "@tauri-apps/plugin-fs";
+import { exists } from "@tauri-apps/plugin-fs";
 import { openPath } from "@tauri-apps/plugin-opener";
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   Video as VideoIcon,
@@ -41,18 +41,6 @@ function ensureProxy(input: string, output: string): Promise<void> {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
-function mimeForVideoExt(ext: string): string {
-  switch (ext.toLowerCase()) {
-    case "webm": return "video/webm";
-    case "ogv":  return "video/ogg";
-    case "mp4":  case "m4v": return "video/mp4";
-    case "mov":  return "video/quicktime";
-    case "mkv":  return "video/x-matroska";
-    case "avi":  return "video/x-msvideo";
-    default:     return "application/octet-stream";
-  }
-}
-
 function dirname(p: string): string {
   const i = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
   return i === -1 ? p : p.substring(0, i);
@@ -70,12 +58,6 @@ function proxyPathFor(absOriginal: string): string {
   return `${dir}${sep}proxy${sep}${name}.webm`;
 }
 
-async function makeBlobUrl(absPath: string): Promise<string> {
-  const bytes = await readFile(absPath);
-  const ext = absPath.split(".").pop()?.toLowerCase() || "mp4";
-  const blob = new Blob([bytes], { type: mimeForVideoExt(ext) });
-  return URL.createObjectURL(blob);
-}
 
 function maybeNeedsProxy(absPath: string): boolean {
   const ext = absPath.split(".").pop()?.toLowerCase() || "";
@@ -84,7 +66,7 @@ function maybeNeedsProxy(absPath: string): boolean {
 
 function fmtEta(s: number): string {
   if (s < 0) return "estimating…";
-  if (s < 15) return "almost done";
+  if (s < 5) return "almost done";
   if (s < 60) return `~${s}s left`;
   const m = Math.floor(s / 60);
   const sec = s % 60;
@@ -158,6 +140,7 @@ export const createVideo = createReactBlockSpec(
         etaSec: -1,
       });
 
+
       const probeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
       const absOriginal = src ? resolveToAbsolute(src, noteDir) : "";
@@ -173,7 +156,6 @@ export const createVideo = createReactBlockSpec(
       // ── Load: prefer proxy if it exists, else the original ──────────────
       useEffect(() => {
         let cancelled = false;
-        let revoked: string | null = null;
 
         clearProbe();
         setPlayable("");
@@ -186,13 +168,11 @@ export const createVideo = createReactBlockSpec(
           return;
         }
 
-        // Conversion already running? Show progress immediately.
         if (proxyPath && inflightProxies.has(proxyPath)) {
           setPhase("generating");
           return;
         }
 
-        // Remote URL — hand straight to <video>, no probe.
         if (
           /^https?:\/\//i.test(src) &&
           !/^https?:\/\/asset\.localhost\//i.test(src)
@@ -207,7 +187,6 @@ export const createVideo = createReactBlockSpec(
           return;
         }
 
-        // If we couldn't turn src into an absolute path, fail loudly.
         if (!absOriginal || !/^([a-zA-Z]:[\\/]|\/)/.test(absOriginal)) {
           console.error("[video] could not resolve src to absolute path:", {
             src,
@@ -235,9 +214,12 @@ export const createVideo = createReactBlockSpec(
             } catch {}
 
             if (cancelled) return;
-            const url = await makeBlobUrl(toLoad);
-            if (cancelled) { URL.revokeObjectURL(url); return; }
-            revoked = url;
+
+            // Stream from disk via Tauri's asset protocol. No file is read
+            // into JS memory, so opening the note is instant regardless of
+            // the video's size, and seeking works through HTTP range
+            // requests — same model as Obsidian.
+            const url = convertFileSrc(toLoad);
             setPlayable(url);
             setUsingProxy(isProxy);
             setPhase("ready");
@@ -256,7 +238,7 @@ export const createVideo = createReactBlockSpec(
               }
             }, PROBE_TIMEOUT_MS);
           } catch (e: any) {
-            console.error("[video] could not read file:", e);
+            console.error("[video] could not open file:", e);
             if (cancelled) return;
             setErrorMsg(e?.message ?? String(e));
             setPhase("fatal");
@@ -266,7 +248,6 @@ export const createVideo = createReactBlockSpec(
         return () => {
           cancelled = true;
           clearProbe();
-          if (revoked) URL.revokeObjectURL(revoked);
         };
       }, [src, absOriginal, proxyPath, noteDir]);
 
@@ -329,7 +310,7 @@ export const createVideo = createReactBlockSpec(
           if (settled) return;
           settled = true;
           try {
-            const url = await makeBlobUrl(proxyPath);
+            const url = convertFileSrc(proxyPath);
             setPlayable(url);
             setUsingProxy(true);
             setPhase("ready");
@@ -436,23 +417,29 @@ export const createVideo = createReactBlockSpec(
               <div className="flex items-center gap-2 text-gray-300">
                 <Loader2 size={14} className="animate-spin text-blue-400" />
                 <span className="font-medium">
-                  {progress.percent >= 100
-                    ? "Loading into player…"
-                    : "Generating playback copy…"}
+                  {progress.percent >= 99.0
+                    ? "Finalizing video file…"
+                    : progress.percent > 0
+                      ? "Generating playback copy…"
+                      : "Starting conversion…"}
                 </span>
               </div>
 
               <div className="w-full max-w-md h-1.5 rounded-full bg-[#2a3136] overflow-hidden">
-                <div
-                  className="h-full bg-blue-500 transition-[width] duration-300 ease-out"
-                  style={{ width: `${Math.min(100, Math.max(0, progress.percent))}%` }}
-                />
+                {progress.percent >= 99.9 ? (
+                  <div className="h-full w-full bg-blue-500 animate-pulse" />
+                ) : (
+                  <div
+                    className="h-full bg-blue-500 transition-[width] duration-300 ease-out"
+                    style={{ width: `${Math.min(100, Math.max(0, progress.percent))}%` }}
+                  />
+                )}
               </div>
 
               <div className="flex items-center gap-3 text-[11px] text-gray-500 tabular-nums">
                 <span className="text-gray-300 font-medium">
                   {progress.percent > 0
-                    ? `${Math.round(progress.percent)}%`
+                    ? `${Math.floor(progress.percent)}%`
                     : "starting…"}
                 </span>
                 <span className="text-gray-700">·</span>
@@ -479,7 +466,7 @@ export const createVideo = createReactBlockSpec(
               >
               <X size={11} /> Cancel conversion
               </button>
-            </div>
+              </div>
           )}
 
           {phase === "unplayable" && (
