@@ -140,7 +140,6 @@ export const createVideo = createReactBlockSpec(
         percent: 0,
         etaSec: -1,
       });
-      const [isFullscreen, setIsFullscreen] = useState(false);
       const videoRef = useRef<HTMLVideoElement>(null);
 
       const toggleFullscreen = useCallback(() => {
@@ -152,13 +151,7 @@ export const createVideo = createReactBlockSpec(
         }
       }, []);
 
-      useEffect(() => {
-        const onFullscreenChange = () => {
-          setIsFullscreen(!!document.fullscreenElement);
-        };
-        document.addEventListener("fullscreenchange", onFullscreenChange);
-        return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
-      }, []);
+
 
 
       const probeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
