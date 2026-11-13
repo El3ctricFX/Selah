@@ -655,6 +655,12 @@ function newId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
 function nowIso(): string { return new Date().toISOString(); }
+/** "Now" anchored to local noon so the ISO date-prefix matches the user's
+ *  local calendar day even after UTC has rolled past midnight. */
+function todayLocalIso(): string {
+    const d = new Date();
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 12).toISOString();
+}
 
 function todayLocalInput(): string {
   const d = new Date();
@@ -1221,7 +1227,7 @@ export default function AbbaView({
   // ── Prayers ──────────────────────────────────────────────────────────────
   const createPrayer = async () => {
     const now = nowIso();
-    const p: Prayer = { id: newId("prayer"), date: now, title: "", created: now, modified: now };
+    const p: Prayer = { id: newId("prayer"), date: todayLocalIso(), title: "", created: now, modified: now };
     await ensureAbbaNoteFile(abbaDir, "prayers", p.id, {
       id: p.id, date: p.date, title: p.title, created: p.created, modified: p.modified,
     });
@@ -1242,7 +1248,7 @@ export default function AbbaView({
   const createTestimony = async () => {
     const now = nowIso();
     const t: Testimony = {
-      id: newId("testimony"), date: now, title: "", created: now, modified: now,
+      id: newId("testimony"), date: todayLocalIso(), title: "", created: now, modified: now,
     };
     await ensureAbbaNoteFile(abbaDir, "testimonies", t.id, {
       id: t.id, date: t.date, title: t.title, created: t.created, modified: t.modified,
@@ -1255,7 +1261,7 @@ export default function AbbaView({
     const abs = n.path.replace(/\\/g, "/");
     const rel = abs.startsWith(vaultRoot + "/") ? abs.slice(vaultRoot.length + 1) : abs;
     const t: Testimony = {
-      id: newId("testimony"), date: n.date || now, title: n.title,
+      id: newId("testimony"), date: n.date || todayLocalIso(), title: n.title,
       linkedNote: rel, created: now, modified: now,
     };
     await ensureAbbaNoteFile(abbaDir, "testimonies", t.id, {
@@ -1280,7 +1286,7 @@ export default function AbbaView({
   const createStudy = async () => {
     const now = nowIso();
     const s: Study = {
-      id: newId("study"), date: now, title: "", topic: "",
+      id: newId("study"), date: todayLocalIso(), title: "", topic: "",
       links: [], created: now, modified: now,
     };
     await ensureAbbaNoteFile(abbaDir, "studies", s.id, {
@@ -1304,7 +1310,7 @@ export default function AbbaView({
   const createEvent = async () => {
     const now = nowIso();
     const e: AbbaEvent = {
-      id: newId("event"), date: now, title: "", location: "",
+      id: newId("event"), date: todayLocalIso(), title: "", location: "",
       links: [], created: now, modified: now,
     };
     await ensureAbbaNoteFile(abbaDir, "events", e.id, {
@@ -2057,7 +2063,12 @@ function RichDetail({
     setTopic(v); onUpdate({ topic: v }); writeFm({ topic: v });
   };
 
-  const dateValue = date ? date.slice(0, 10) : "";
+  const dateValue = (() => {
+    if (!date) return "";
+    const d = new Date(date);
+    if (isNaN(d.getTime())) return "";
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  })();
   const showTopic = kind === "studies";
   const showLocation = kind === "events";
   const showLinks = kind === "events" || kind === "studies";
@@ -2879,7 +2890,12 @@ function SermonDetail({
   };
   const removeLink = (id: string) => onUpdate({ links: sermon.links.filter((l) => l.id !== id) });
 
-  const dateValue = sermon.date ? sermon.date.slice(0, 10) : "";
+  const dateValue = (() => {
+    if (!sermon.date) return "";
+    const d = new Date(sermon.date);
+    if (isNaN(d.getTime())) return "";
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  })();
 
   return (
     <div className="max-w-4xl mx-auto px-6 py-6">
