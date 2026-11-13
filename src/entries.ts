@@ -42,6 +42,7 @@ export function monthLabel(ymd: string): string {
 
 function makePreview(body: string): string {
     return body
+    .replace(/<!--[\s\S]*?-->/g, " ")
     .replace(/^:::.*$/gm, " ")
     .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
     .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")

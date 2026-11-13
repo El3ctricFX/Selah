@@ -98,6 +98,9 @@ function extractFirstImage(body: string, noteDir: string): string | null {
 function stripMarkdown(md: string): string {
   let s = md;
 
+  // ── 0. Drop plugin blocks (stored as HTML comments) so raw JSON never shows
+  s = s.replace(/<!--[\s\S]*?-->/g, " ");
+
   // ── 1. Keep useful text from self-contained blocks ──────────────────────
   // Video: keep the caption if the attribute exists on the same line.
   s = s.replace(
