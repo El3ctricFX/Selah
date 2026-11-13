@@ -146,9 +146,29 @@ export default function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.shiftKey && (e.key === "F" || e.key === "f")) {
-        e.preventDefault();
-        setFocusMode((v) => !v);
+      if (
+        e.shiftKey &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        (e.key === "F" || e.key === "f")
+      ) {
+        // Shift+F alone is also how you type a capital F. If the user is
+        // in any editable field (input, textarea, ProseMirror, or any
+        // contenteditable), let the keystroke through untouched.
+        const t = e.target as HTMLElement | null;
+        const editable =
+          !!t &&
+          (t.tagName === "INPUT" ||
+            t.tagName === "TEXTAREA" ||
+            t.isContentEditable ||
+            !!t.closest?.(
+              "input, textarea, [contenteditable='true'], .ProseMirror"
+            ));
+        if (!editable) {
+          e.preventDefault();
+          setFocusMode((v) => !v);
+        }
       }
       if (e.ctrlKey && !e.shiftKey && (e.key === "B" || e.key === "b")) {
         const active = document.activeElement as HTMLElement | null;

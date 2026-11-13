@@ -9,11 +9,12 @@ import {
   ChevronRight, ChevronDown, Settings, Plus, Pencil, Smile, Trash2,
   CalendarDays, Image as ImageIcon, NotebookText, Check, FileText, FolderPlus, X,
   Tag, PanelLeftClose, Church, Sparkles, Folder, FolderOpen,
-  Sliders, LogOut, Home, Calendar,
+  Sliders, LogOut, Home, Calendar, GripVertical,
 } from 'lucide-react';
 import EmojiPicker, { Theme, EmojiStyle } from 'emoji-picker-react';
 
 import { useModal } from './Modal';
+import { useNoteMode } from './useNoteMode';
 import { moveToTrash } from './trash';
 import { trashNoteWithAssets } from './deleteNote';
 import { writeFileAtomic } from './safeWrite';
@@ -200,7 +201,55 @@ export default function Sidebar(props: SidebarProps) {
   const [showExtensions, setShowExtensions] = useState<boolean>(() => {
     try { return localStorage.getItem(SHOW_EXT_KEY) === 'true'; } catch { return false; }
   });
+
+  const [draggedCatId, setDraggedCatId] = useState<string | null>(null);
+  const [dragOverCat, setDragOverCat] = useState<
+    { id: string; position: 'before' | 'after' } | null
+  >(null);
+  const justDraggedRef = useRef(false);
+
+  const reorderCategories = async (
+    fromId: string,
+    toId: string,
+    before: boolean,
+  ) => {
+    if (fromId === toId) return;
+
+    // Read fresh metadata so a concurrent change (rename, icon, etc.)
+    // isn't clobbered by an out-of-date in-memory copy.
+    let fresh: any = { ...metadata };
+    try {
+      const raw = await readTextFile(await join(vaultPath, '.vault_metadata.json'));
+      fresh = JSON.parse(raw);
+    } catch {}
+
+    const catsArr: Category[] = Array.isArray(fresh.categories)
+      ? fresh.categories
+      : categories;
+    const byId = new Map(catsArr.map((c) => [c.id, c] as const));
+
+    // Build current order: honor categoryOrder, append any orphans.
+    const baseOrder: string[] = Array.isArray(fresh.categoryOrder)
+      ? [...fresh.categoryOrder]
+      : catsArr.map((c) => c.id);
+    for (const c of catsArr) {
+      if (!baseOrder.includes(c.id)) baseOrder.push(c.id);
+    }
+
+    const filtered = baseOrder.filter((id) => id !== fromId && byId.has(id));
+    const toIdx = filtered.indexOf(toId);
+    if (toIdx === -1) return;
+
+    const insertIdx = before ? toIdx : toIdx + 1;
+    filtered.splice(insertIdx, 0, fromId);
+
+    await saveMetadata({ ...fresh, categoryOrder: filtered });
+    // `saveMetadata` fires `metadata-changed`, whose listener re-runs
+    // `loadVault`, which rebuilds `categories` in the new order.
+  };
   const { modal, promptAsync, confirmAsync } = useModal();
+  const { mode } = useNoteMode();
+  const isEdit = mode === "edit";
   const switcherRef = useRef<HTMLDivElement>(null);
   const plugins = usePlugins();
   const settingsMenuRef = useRef<HTMLDivElement>(null);
@@ -651,13 +700,7 @@ export default function Sidebar(props: SidebarProps) {
             >
               <Sparkles size={13} />
             </button>
-            <button
-              onClick={() => setSwitcherOpen(true)}
-              className="text-gray-500 hover:text-gray-200 p-1 rounded hover:bg-[#1e2327]"
-              title="New category"
-            >
-              <Plus size={13} />
-            </button>
+
             <div className="relative" ref={settingsMenuRef}>
               <button
                 onClick={() => setSettingsMenuOpen((o) => !o)}
@@ -720,16 +763,88 @@ export default function Sidebar(props: SidebarProps) {
 
           {switcherOpen && (
             <div data-menu className="absolute left-2 right-2 top-full mt-1 z-40 bg-[var(--c-bg-panel,#1e2327)] bg-opacity-100 backdrop-blur-none border border-[var(--c-border,#2a3136)] rounded-md shadow-xl py-1">
-              {categories.map((c) => (
+              {categories.map((c) => {
+                const isDragging = draggedCatId === c.id;
+                const dropPos = dragOverCat?.id === c.id ? dragOverCat.position : null;
+                return (
                 <div
                   key={c.id}
-                  className={`group/cat flex items-center justify-between px-3 py-1.5 text-sm hover:bg-[#2a3136] ${
-                    c.id === activeCategory?.id ? 'text-gray-100' : 'text-gray-300'
-                  }`}
+                  draggable={isEdit}
+                  onDragStart={(e) => {
+                    if (!isEdit) return;
+                    justDraggedRef.current = true;
+                    setDraggedCatId(c.id);
+                    try {
+                      e.dataTransfer.effectAllowed = 'move';
+                      e.dataTransfer.setData('text/plain', c.id);
+                    } catch {}
+                  }}
+                  onDragEnd={() => {
+                    setDraggedCatId(null);
+                    setDragOverCat(null);
+                    setTimeout(() => { justDraggedRef.current = false; }, 60);
+                  }}
+                  onDragOver={(e) => {
+                    if (!draggedCatId || draggedCatId === c.id) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.dataTransfer.dropEffect = 'move';
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    const position: 'before' | 'after' =
+                      e.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+                    if (
+                      !dragOverCat ||
+                      dragOverCat.id !== c.id ||
+                      dragOverCat.position !== position
+                    ) {
+                      setDragOverCat({ id: c.id, position });
+                    }
+                  }}
+                  onDragLeave={(e) => {
+                    const related = e.relatedTarget as Node | null;
+                    if (related && (e.currentTarget as Node).contains(related)) return;
+                    if (dragOverCat?.id === c.id) setDragOverCat(null);
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const fromId = draggedCatId || e.dataTransfer.getData('text/plain');
+                    if (!fromId || fromId === c.id) {
+                      setDragOverCat(null);
+                      setDraggedCatId(null);
+                      return;
+                    }
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    const before = e.clientY < rect.top + rect.height / 2;
+                    void reorderCategories(fromId, c.id, before);
+                    setDragOverCat(null);
+                    setDraggedCatId(null);
+                  }}
+                  className={`group/cat relative flex items-center justify-between pl-1 pr-3 py-1.5 text-sm hover:bg-[#2a3136] ${
+                    isDragging ? 'opacity-40' : ''
+                  } ${c.id === activeCategory?.id ? 'text-gray-100' : 'text-gray-300'}`}
                 >
+                  {dropPos === 'before' && (
+                    <div className="absolute left-0 right-0 top-0 h-0.5 bg-blue-400 pointer-events-none z-10" />
+                  )}
+                  {dropPos === 'after' && (
+                    <div className="absolute left-0 right-0 bottom-0 h-0.5 bg-blue-400 pointer-events-none z-10" />
+                  )}
+                  {isEdit && (
+                    <GripVertical
+                      size={11}
+                      className={`flex-shrink-0 mr-0.5 cursor-grab active:cursor-grabbing transition-opacity ${
+                        isDragging ? 'opacity-0' : 'opacity-40 group-hover/cat:opacity-80'
+                      }`}
+                    />
+                  )}
                   <button
-                    onClick={() => { setSwitcherOpen(false); selectCategory(c); }}
-                    className="flex items-center space-x-2 truncate flex-grow text-left"
+                    onClick={() => {
+                      if (justDraggedRef.current) return;
+                      setSwitcherOpen(false);
+                      selectCategory(c);
+                    }}
+                    className="flex items-center space-x-2 truncate flex-grow text-left min-w-0"
                   >
                     <span>{c.icon}</span>
                     <span className="truncate">{c.name}</span>
@@ -771,7 +886,9 @@ export default function Sidebar(props: SidebarProps) {
                   )}
                   </div>
                 </div>
-              ))}
+              );
+              })}
+              {isEdit && (
               <div className="border-t border-[#2a3136] mt-1 pt-1">
                 <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wider">New category</div>
                 <button onClick={() => createCategory('journal')} className="w-full flex items-center space-x-2 px-3 py-1.5 text-sm text-gray-300 hover:bg-[#2a3136] text-left">
@@ -801,6 +918,7 @@ export default function Sidebar(props: SidebarProps) {
                   </button>
                 ))}
               </div>
+              )}
             </div>
           )}
         </div>

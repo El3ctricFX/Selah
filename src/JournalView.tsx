@@ -1159,7 +1159,7 @@ useEffect(() => {
       {focusMode && (
         <button type="button" onClick={onToggleFocus}
           className="fixed top-3 right-3 z-[95] p-2 rounded bg-[#1e2327]/80 border border-[#2a3136] text-gray-400 hover:text-gray-100 hover:bg-[#1e2327] cursor-pointer shadow-lg transition-colors"
-          title="Exit focus mode (Esc or Ctrl+Shift+F)">
+          title="Exit focus mode (Esc or Shift+F)">
           <Minimize2 size={14} />
         </button>
       )}
