@@ -35,7 +35,7 @@ type ViewSnapshot = { view: ActiveView; categoryId: string | null };
 
 type ActiveView =
   | { kind: "note"; path: string; name: string }
-  | { kind: "journal"; dir: string; name: string; focus?: JournalFocus; focusMode?: "day" | "month" }
+  | { kind: "journal"; dir: string; name: string; focus?: JournalFocus; focusMode?: "day" | "month" | "year" }
   | { kind: "gallery"; dir: string; name: string }
   | { kind: "plugin"; dir: string; name: string; icon: string; categoryId: string; mode: string }
     | { kind: "abba"; dir: string; name: string; icon: string; focusSection?: string; focusNoteId?: string }
@@ -461,7 +461,8 @@ export default function App() {
             pv.focus &&
             pv.focus.year === d.year &&
             pv.focus.month === d.month &&
-            pv.focus.day === d.day
+            pv.focus.day === d.day &&
+            (pv.focusMode ?? "day") === (d.mode ?? "day")
           ) return;
 
           prevSnapshotRef.current = {
@@ -469,7 +470,7 @@ export default function App() {
             view: {
               ...pv,
               focus: { year: d.year, month: d.month, day: d.day },
-              focusMode: "day",
+              focusMode: d.mode === "month" || d.mode === "year" ? d.mode : "day",
             },
           };
         };
@@ -794,6 +795,22 @@ export default function App() {
     // what routes it to the journal view. We accept it either when the
     // owning category is explicitly a journal, or when there's no owner
     // at all (legacy vaults, or files at the vault root).
+    const monthNote = name.match(/^_(\d{4})-(\d{2})-Month\.(selah|md)$/);
+    const yearNote = name.match(/^_(\d{4})-Year\.(selah|md)$/);
+    if ((monthNote || yearNote) && owner?.mode === "journal") {
+      setActiveCategoryId(owner.id);
+      setJournalNonce((n) => n + 1);
+      setActiveView({
+        kind: "journal",
+        dir: `${vaultPath}/${owner.dirName}`,
+        name: owner.name,
+        focus: monthNote
+          ? { year: Number(monthNote[1]), month: Number(monthNote[2]), day: 1 }
+          : { year: Number(yearNote![1]), month: 1, day: 1 },
+        focusMode: monthNote ? "month" : "year",
+      });
+      return;
+    }
     const dayInfo = parseJournalDayFilename(name);
     if (dayInfo && (!owner || owner.mode === "journal")) {
       const journalDir = owner
@@ -984,6 +1001,21 @@ export default function App() {
             }}
             onOpenNote={(cat, note) => {
               setActiveCategoryId(cat.id);
+              const ym = note.name.match(/^_(\d{4})-Year\.(selah|md)$/);
+              if (ym && cat.mode === "journal") {
+                const y = Number(ym[1]);
+                const now = new Date();
+                const same = now.getFullYear() === y;
+                setJournalNonce((n) => n + 1);
+                setActiveView({
+                  kind: "journal",
+                  dir: dirOf(cat),
+                  name: cat.name,
+                  focus: { year: y, month: same ? now.getMonth() + 1 : 1, day: same ? now.getDate() : 1 },
+                  focusMode: "year",
+                });
+                return;
+              }
               setActiveView({ kind: "note", ...note });
             }}
             onOpenGallery={(cat) => {

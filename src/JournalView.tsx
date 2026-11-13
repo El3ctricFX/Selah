@@ -35,7 +35,7 @@ interface JournalViewProps {
   journalDir: string;
   categoryName?: string;
   initialDate?: { year: number; month: number; day: number };
-  initialMode?: "day" | "month";
+  initialMode?: "day" | "month" | "year";
   focusMode?: boolean;
   onToggleFocus?: () => void;
   onOpenNoteByPath?: (path: string) => void;
@@ -172,13 +172,15 @@ export default function JournalView({
       ? new Date(initialDate.year, initialDate.month - 1, initialDate.day)
       : new Date()
   );
-  const [mode, setMode] = useState<"day" | "month">(initialMode || "day");
+  const [mode, setMode] = useState<"day" | "month" | "year">(initialMode || "day");
   const [viewMode, setViewMode] = useState<"day" | "timeline">("day");
   const [dayPath, setDayPath] = useState<string | null>(null);
   const [monthPath, setMonthPath] = useState<string | null>(null);
+  const [yearPath, setYearPath] = useState<string | null>(null);
 
   // Must be defined before the effects below reference it in their deps.
-  const currentPath = mode === "day" ? dayPath : monthPath;
+  const currentPath =
+    mode === "day" ? dayPath : mode === "month" ? monthPath : yearPath;
 
   const { mode: noteMode, toggle: toggleNoteMode } = useNoteMode();
   const paneActive = usePaneActive();
@@ -244,7 +246,17 @@ export default function JournalView({
       if (p && currentPath && norm(p) === norm(currentPath)) setSourceNonce((n) => n + 1);
     };
     window.addEventListener("note-rewritten", onRewritten);
-    return () => window.removeEventListener("note-rewritten", onRewritten);
+    const onDeleted = (e: Event) => {
+      const p = (e as CustomEvent).detail?.path as string | undefined;
+      if (p && currentPath && norm(p) === norm(currentPath)) {
+        setTimeout(() => setSourceNonce((n) => n + 1), 300);
+      }
+    };
+    window.addEventListener("note-deleted", onDeleted);
+    return () => {
+      window.removeEventListener("note-rewritten", onRewritten);
+      window.removeEventListener("note-deleted", onDeleted);
+    };
   }, [currentPath]);
   const [newPropKey, setNewPropKey] = useState("");
   const [newPropValue, setNewPropValue] = useState("");
@@ -560,6 +572,7 @@ useEffect(() => {
       const monthDir = await join(journalDir, String(year), pad(month + 1));
       const dPath = await join(monthDir, `${dayName}.selah`);
       const mPath = await join(monthDir, `_${year}-${pad(month + 1)}-Month.selah`);
+      const yPath = await join(journalDir, String(year), `_${year}-Year.selah`);
 
       try { await mkdir(monthDir, { recursive: true }); } catch (e) {
         console.error("[journal] could not create month dir:", monthDir, e);
@@ -578,15 +591,15 @@ useEffect(() => {
         }
       } catch {}
       if (mounted) {
-        setDayPath(dPath); setMonthPath(mPath);
+        setDayPath(dPath); setMonthPath(mPath); setYearPath(yPath);
         window.dispatchEvent(new CustomEvent("folder-changed", { detail: { path: monthDir } }));
         window.dispatchEvent(new CustomEvent("journal-date-changed", {
-          detail: { year, month: month + 1, day, dir: journalDir },
+          detail: { year, month: month + 1, day, dir: journalDir, mode },
         }));
       }
     })();
     return () => { mounted = false; };
-  }, [journalDir, year, month, day, dayName]);
+  }, [journalDir, year, month, day, dayName, mode]);
 
   const shiftDay = (delta: number) => {
     const d = new Date(date); d.setDate(d.getDate() + delta);
@@ -1285,7 +1298,16 @@ useEffect(() => {
             className={`text-sm transition-colors cursor-pointer ${
               mode === "month" ? "text-gray-100 font-semibold" : "text-gray-500 hover:text-gray-300"
             }`}>
-            {monthName} {year}
+            {monthName}
+          </button>
+          <button
+            onClick={() => setMode("year")}
+            className={`text-sm transition-colors cursor-pointer -ml-4 ${
+              mode === "year" ? "text-gray-100 font-semibold" : "text-gray-500 hover:text-gray-300"
+            }`}
+            title="Year note"
+          >
+            {year}
           </button>
           <button onClick={() => shiftMonth(1)} className="text-gray-500 hover:text-gray-200 cursor-pointer">
             <ChevronRight size={16} />
@@ -1293,7 +1315,7 @@ useEffect(() => {
         </div>
       )}
 
-      {viewMode === "day" && !focusMode && (
+      {viewMode === "day" && !focusMode && mode === "day" && (
         <div className="flex items-center justify-center space-x-6 py-3 flex-shrink-0">
           <button onClick={() => shiftDay(-1)} className="text-gray-500 hover:text-gray-200 cursor-pointer">
             <ChevronLeft size={18} />

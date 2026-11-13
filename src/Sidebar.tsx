@@ -669,7 +669,7 @@ export default function Sidebar(props: SidebarProps) {
                 <Settings size={13} />
               </button>
               {settingsMenuOpen && (
-                <div data-menu className="absolute right-0 top-full mt-1 z-40 bg-[#1e2327] border border-[#2a3136] rounded-md shadow-xl py-1 w-44">
+                <div data-menu className="absolute right-0 top-full mt-1 z-40 bg-[var(--c-bg-panel,#1e2327)] bg-opacity-100 backdrop-blur-none border border-[var(--c-border,#2a3136)] rounded-md shadow-xl py-1 w-44">
                   <button
                     onClick={() => {
                       setSettingsMenuOpen(false);
@@ -719,7 +719,7 @@ export default function Sidebar(props: SidebarProps) {
           </button>
 
           {switcherOpen && (
-            <div data-menu className="absolute left-2 right-2 top-full mt-1 z-40 bg-[#1e2327] border border-[#2a3136] rounded-md shadow-xl py-1">
+            <div data-menu className="absolute left-2 right-2 top-full mt-1 z-40 bg-[var(--c-bg-panel,#1e2327)] bg-opacity-100 backdrop-blur-none border border-[var(--c-border,#2a3136)] rounded-md shadow-xl py-1">
               {categories.map((c) => (
                 <div
                   key={c.id}
@@ -1633,7 +1633,7 @@ function NotesTree({
 
       {ctx && (
         <div
-          data-menu className="fixed z-50 bg-[#1e2327] border border-[#2a3136] rounded shadow-xl py-1 w-60"
+          data-menu className="fixed z-50 bg-[var(--c-bg-panel,#1e2327)] bg-opacity-100 backdrop-blur-none border border-[var(--c-border,#2a3136)] rounded shadow-xl py-1 w-60"
           style={{ top: ctx.y, left: ctx.x }}
           onClick={(e) => e.stopPropagation()}
         >
@@ -1902,6 +1902,7 @@ function JournalTree({
   const [expandedMonths, setExpandedMonths] = useState<Record<string, boolean>>({});
   const [days, setDays] = useState<Record<string, Day[]>>({});
   const [yearNotes, setYearNotes] = useState<Record<string, { icon: string; color: string } | null>>({});
+  const [monthNotes, setMonthNotes] = useState<Record<string, boolean>>({});
   const [ctx, setCtx] = useState<Ctx>(null);
   const [picker, setPicker] = useState<PickerState>(null);
   const [currentDate, setCurrentDate] = useState<{ year: number; month: number; day: number } | null>(null);
@@ -2073,6 +2074,10 @@ function JournalTree({
         const key = `${year}/${month}`;
         const ds = await readDays(year, month);
         setDays((p) => ({ ...p, [key]: ds }));
+
+        const mnPath = await join(catDir, year, month, `_${year}-${month}-Month.selah`);
+        const hasMonthNote = await exists(mnPath);
+        setMonthNotes((p) => ({ ...p, [key]: hasMonthNote }));
       }
     };
 
@@ -2096,6 +2101,14 @@ function JournalTree({
         return;
       }
 
+      if (parts.length === 3 && /^_.+-Month\.(selah|md)$/.test(parts[2])) {
+        const key = `${year}/${month}`;
+        const mnPath = await join(catDir, year, month, `_${year}-${month}-Month.selah`);
+        const hasMonthNote = await exists(mnPath);
+        setMonthNotes((prev) => ({ ...prev, [key]: hasMonthNote }));
+        return;
+      }
+
       const key = `${year}/${month}`;
       const ds = await readDays(year, month);
       setDays((prev) => ({ ...prev, [key]: ds }));
@@ -2116,14 +2129,26 @@ function JournalTree({
       if (!detail) return;
       const dirName = category.dirName;
       if (dirName && detail.dir && !String(detail.dir).endsWith(dirName)) return;
-      setCurrentDate({ year: detail.year, month: detail.month, day: detail.day });
+      setCurrentDate(
+        detail.mode === "month" || detail.mode === "year"
+          ? { year: detail.year, month: detail.month, day: 0 }
+          : { year: detail.year, month: detail.month, day: detail.day }
+      );
       const yearStr = String(detail.year);
       const monthStr = pad(detail.month);
       setExpandedYears((p) => ({ ...p, [yearStr]: true }));
-      setExpandedMonths((p) => ({ ...p, [`${yearStr}/${monthStr}`]: true }));
+      if (detail.mode !== "month" && detail.mode !== "year") {
+        setExpandedMonths((p) => ({ ...p, [`${yearStr}/${monthStr}`]: true }));
+      }
       (async () => {
         const ms = await readMonths(yearStr);
         setMonths((p) => ({ ...p, [yearStr]: ms }));
+        const dir = await categoryDir(category);
+        const mn: Record<string, boolean> = {};
+        for (const m of ms) {
+          mn[`${yearStr}/${m}`] = await exists(await join(dir, yearStr, m, `_${yearStr}-${m}-Month.selah`));
+        }
+        setMonthNotes((p) => ({ ...p, ...mn }));
         const ds = await readDays(yearStr, monthStr);
         setDays((p) => ({ ...p, [`${yearStr}/${monthStr}`]: ds }));
       })();
@@ -2148,6 +2173,13 @@ function JournalTree({
     setExpandedYears((p) => ({ ...p, [year]: true }));
     const ms = await readMonths(year);
     setMonths((p) => ({ ...p, [year]: ms }));
+
+    const dir = await categoryDir(category);
+    const mn: Record<string, boolean> = {};
+    for (const m of ms) {
+      mn[`${year}/${m}`] = await exists(await join(dir, year, m, `_${year}-${m}-Month.selah`));
+    }
+    setMonthNotes((p) => ({ ...p, ...mn }));
   };
 
   const toggleMonth = async (year: string, month: string) => {
@@ -2493,7 +2525,7 @@ function JournalTree({
     >
       {ctx && (
         <div
-          data-menu className="fixed z-50 bg-[#1e2327] border border-[#2a3136] rounded shadow-xl py-1 w-60"
+          data-menu className="fixed z-50 bg-[var(--c-bg-panel,#1e2327)] bg-opacity-100 backdrop-blur-none border border-[var(--c-border,#2a3136)] rounded shadow-xl py-1 w-60"
           style={{ top: ctx.y, left: ctx.x }}
           onClick={(e) => e.stopPropagation()}
         >
@@ -2514,6 +2546,11 @@ function JournalTree({
                   <FileText size={13} /> <span>Add year note</span>
                 </button>
               )}
+              {yearNotes[ctx.year] && (
+                <button onClick={() => { const y = ctx.year; setCtx(null); deleteYearNote(y); }} className="w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-[#2a3136] flex items-center space-x-2 border-b border-[#2a3136]">
+                  <Trash2 size={13} /> <span>Delete year note</span>
+                </button>
+              )}
               <button onClick={() => { const y = ctx.year; setCtx(null); createMonth(y); }} className="w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-[#2a3136] flex items-center space-x-2 border-b border-[#2a3136]">
                 <Plus size={13} /> <span>Add month</span>
               </button>
@@ -2531,6 +2568,37 @@ function JournalTree({
 
           {ctx.kind === 'month' && (
             <>
+              {monthNotes[`${ctx.year}/${ctx.month}`] ? (
+                <button onClick={() => { const { year, month } = ctx; setCtx(null); onOpenMonth(category, Number(year), Number(month)); }} className="w-full text-left px-4 py-2 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center space-x-2 border-b border-[#2a3136]">
+                  <FileText size={13} /> <span>Open month note</span>
+                </button>
+              ) : (
+                <button onClick={() => {
+                  const { year, month } = ctx;
+                  setCtx(null);
+                  void (async () => {
+                    const dir = await categoryDir(category);
+                    const monthPath = await join(dir, year, month);
+                    await ensureFolder(monthPath, 'month');
+                    const notePath = await join(monthPath, `_${year}-${month}-Month.selah`);
+                    try { await readTextFile(notePath); } catch {
+                      await writeTextFile(notePath, `---\ncreated: ${new Date().toISOString()}\n---\n\n`);
+                    }
+                    setMonthNotes((p) => ({ ...p, [`${year}/${month}`]: true }));
+                    window.dispatchEvent(new CustomEvent('folder-changed', { detail: { path: monthPath } }));
+                    onOpenMonth(category, Number(year), Number(month));
+                  })();
+                }} className="w-full text-left px-4 py-2 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center space-x-2 border-b border-[#2a3136]">
+                  <FileText size={13} /> <span>Add month note</span>
+                </button>
+              )}
+
+              {monthNotes[`${ctx.year}/${ctx.month}`] && (
+                <button onClick={deleteMonthNote} className="w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-[#2a3136] flex items-center space-x-2 border-b border-[#2a3136]">
+                  <Trash2 size={13} /> <span>Delete month note</span>
+                </button>
+              )}
+
               <button onClick={() => { const { year, month } = ctx; setCtx(null); createDayEntry(year, month); }} className="w-full text-left px-4 py-2 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center space-x-2 border-b border-[#2a3136]">
                 <Plus size={13} /> <span>Add entry</span>
               </button>
@@ -2539,9 +2607,6 @@ function JournalTree({
               </button>
               <button onClick={() => { const { year, month } = ctx; openPicker('color', { folderKey: monthKey(year, month), label: `${monthLabel(month)} ${year}` }, ctx.x, ctx.y); }} className="w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-[#2a3136] flex items-center space-x-2 border-b border-[#2a3136]">
                 <Pencil size={13} /> <span>Change color</span>
-              </button>
-              <button onClick={deleteMonthNote} className="w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-[#2a3136] flex items-center space-x-2 border-b border-[#2a3136]">
-                <Trash2 size={13} /> <span>Delete month note (→ trash)</span>
               </button>
               <button onClick={deleteEntireMonth} className="w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-[#2a3136] flex items-center space-x-2">
                 <Trash2 size={13} /> <span>Move month to trash</span>
@@ -2642,31 +2707,26 @@ function JournalTree({
             <div
               onClick={() => toggleYear(year)}
               onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setCtx({ kind: 'year', year, x: e.clientX, y: e.clientY }); }}
-              className="flex items-center space-x-2 py-1.5 px-2 rounded cursor-pointer hover:bg-[#1e2327] text-xs uppercase tracking-wider"
+              className="group flex items-center space-x-2 py-1.5 px-2 rounded cursor-pointer hover:bg-[#1e2327] text-xs uppercase tracking-wider"
               style={yRainbow ? undefined : { color: yColor }}
             >
               {expandedYears[year] ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
               {yMeta?.icon && <span className="text-sm">{yMeta.icon}</span>}
               <span className={yRainbow ? 'folder-rainbow-text' : ''}>{year}</span>
+              {yearNotes[year] && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); openYearNote(year); }}
+                  className="ml-auto shrink-0 opacity-0 group-hover:opacity-100 transition-all duration-200 text-[10px] uppercase tracking-wide text-gray-400 hover:text-cyan-200 hover:bg-cyan-500/20 hover:shadow-[0_0_12px_rgba(6,182,212,0.4)] border border-transparent hover:border-cyan-400/30 px-2 py-0.5 rounded"
+                  title="Open year note"
+                >
+                  Year
+                </button>
+              )}
             </div>
 
             {expandedYears[year] && (
               <>
-                {yearNotes[year] && (() => {
-                  const yn = yearNotes[year]!;
-                  const ynRainbow = isRainbowColor(yn.color);
-                  return (
-                    <button
-                      onClick={() => openYearNote(year)}
-                      onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setCtx({ kind: 'yearNote', year, x: e.clientX, y: e.clientY }); }}
-                      className="w-full text-left py-1 pl-6 pr-2 rounded text-sm hover:bg-[#1e2327] flex items-center space-x-2"
-                      style={ynRainbow ? undefined : { color: yn.color ? FOLDER_COLORS[yn.color]?.text || '#9ca3af' : '#6b7280' }}
-                    >
-                      {yn.icon ? <span className="text-sm">{yn.icon}</span> : <FileText size={11} />}
-                      <span className={ynRainbow ? 'folder-rainbow-text' : ''}>Year note</span>
-                    </button>
-                  );
-                })()}
+
 
                 {months[year] === undefined && <div className="pl-6 pr-2 py-1 text-xs text-gray-600 italic">Loading…</div>}
                 {months[year] !== undefined && months[year].length === 0 && <div className="pl-6 pr-2 py-1 text-xs text-gray-600 italic">No months yet</div>}
@@ -2689,7 +2749,9 @@ function JournalTree({
                           {mMeta?.icon && <span className="text-sm">{mMeta.icon}</span>}
                           <span className={mRainbow ? 'folder-rainbow-text' : ''}>{monthLabel(month)}</span>
                         </div>
-                        <button onClick={() => onOpenMonth(category, Number(year), Number(month))} className="opacity-0 group-hover:opacity-100 text-[10px] uppercase tracking-wide text-gray-500 hover:text-gray-200" title="Open month note">Month</button>
+                        {monthNotes[key] && (
+                          <button onClick={() => onOpenMonth(category, Number(year), Number(month))} className="shrink-0 opacity-0 group-hover:opacity-100 transition-all duration-200 text-[10px] uppercase tracking-wide text-gray-400 hover:text-fuchsia-200 hover:bg-fuchsia-500/20 hover:shadow-[0_0_12px_rgba(217,70,239,0.4)] border border-transparent hover:border-fuchsia-400/30 px-2 py-0.5 rounded" title="Open month note">Month</button>
+                        )}
                       </div>
 
                       {expandedMonths[key] && days[key] === undefined && <div className="pl-12 pr-2 py-1 text-xs text-gray-600 italic">Loading…</div>}
@@ -2948,7 +3010,7 @@ function EntriesTree({
     {ctx && (
       <div
         data-menu
-        className="fixed z-50 bg-[#1e2327] border border-[#2a3136] rounded shadow-xl py-1 w-60"
+        className="fixed z-50 bg-[var(--c-bg-panel,#1e2327)] bg-opacity-100 backdrop-blur-none border border-[var(--c-border,#2a3136)] rounded shadow-xl py-1 w-60"
         style={{ top: ctx.y, left: ctx.x }}
         onClick={(e) => e.stopPropagation()}
         onContextMenu={(e) => e.preventDefault()}
