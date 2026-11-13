@@ -1596,15 +1596,24 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
             if (typeof pw === "number" && pw > 0) previewWidth = pw;
 
             if (typeof bp?.name === "string") {
-              try {
-                const parsed = JSON.parse(bp.name);
-                if (parsed.originalUrl) originalUrl = parsed.originalUrl;
-                if (parsed.lastCrop) lastCrop = parsed.lastCrop;
-                if (parsed.lastRotation) lastRotation = parsed.lastRotation;
-              } catch (e) {
-                // Legacy fallback for old images
-                if (bp.name.startsWith("asset://") || bp.name.startsWith("http")) {
-                  originalUrl = bp.name;
+              if (bp.name.startsWith("b64:")) {
+                try {
+                  const parsed = JSON.parse(atob(bp.name.slice(4)));
+                  if (parsed.originalUrl) originalUrl = parsed.originalUrl;
+                  if (parsed.lastCrop) lastCrop = parsed.lastCrop;
+                  if (parsed.lastRotation) lastRotation = parsed.lastRotation;
+                } catch (e) {}
+              } else {
+                try {
+                  const parsed = JSON.parse(bp.name);
+                  if (parsed.originalUrl) originalUrl = parsed.originalUrl;
+                  if (parsed.lastCrop) lastCrop = parsed.lastCrop;
+                  if (parsed.lastRotation) lastRotation = parsed.lastRotation;
+                } catch (e) {
+                  // Legacy fallback for old images
+                  if (bp.name.startsWith("asset://") || bp.name.startsWith("http")) {
+                    originalUrl = bp.name;
+                  }
                 }
               }
             }
@@ -5294,10 +5303,10 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
             editor.updateBlock(editingImage.blockId, {
               props: {
                 url: newUrl,
-                name: JSON.stringify({
+                name: "b64:" + btoa(JSON.stringify({
                   originalUrl: editingImage.originalUrl || editingImage.url,
                   lastCrop: percentCrop
-                })
+                }))
               } as any
             });
 
