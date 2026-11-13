@@ -746,18 +746,18 @@ async fn convert_to_webm(
             "-loglevel", "error",
             "-progress", "pipe:1",
             "-i", &input,
-            // Only map the first video and audio track. This prevents hangs
-            // caused by weird timecode or subtitle tracks in MP4s.
             "-map", "0:v:0",
             "-map", "0:a:0?",
+            // Force the universal pixel format
+            "-pix_fmt", "yuv420p",
             "-c:v", "libvpx",
             "-b:v", "2M",
             "-deadline", "realtime",
             "-cpu-used", "8",
-            "-threads", "4", // Fixed thread count, removed -row-mt which deadlocks
+            "-threads", "4",
             "-c:a", "libvorbis",
             "-q:a", "4",
-            "-shortest", // Stop encoding if audio/video streams have different lengths
+            "-shortest",
             "-f", "webm",
             "-y",
             &tmp_output,
@@ -885,8 +885,17 @@ async fn convert_to_webm(
         });
     }
 
+    if let Ok(meta) = std::fs::metadata(&tmp_output) {
+        if meta.len() == 0 {
+            let _ = std::fs::remove_file(&tmp_output);
+            return Err("FFmpeg generated an empty file. The video codec may be unsupported.".to_string());
+        }
+    }
+
     std::fs::rename(&tmp_output, &output)
-        .map_err(|e| format!("rename failed: {}", e))?;
+    .map_err(|e| format!("rename failed: {}", e))?;
+
+
 
     let _ = app.emit(
         "proxy-progress",
@@ -903,7 +912,19 @@ async fn convert_to_webm(
 #[cfg(target_os = "linux")]
 fn setup_linux_webkit_env() {
     std::env::set_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1");
+
+    // Absolute fallback: force software rendering. This completely bypasses
+    // the Nvidia GPU and Hyprland compositor, fixing all black screen issues.
+    std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
+    std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
     std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+
+    // NixOS Fix: Pass the full GStreamer plugin path to WebKit.
+    if let Ok(paths) = std::env::var("GST_PLUGIN_SYSTEM_PATH_1_0") {
+        let existing = std::env::var("GST_PLUGIN_PATH_1_0").unwrap_or_default();
+        std::env::set_var("GST_PLUGIN_PATH_1_0", format!("{}:{}", paths, existing));
+        std::env::set_var("GST_PLUGIN_SYSTEM_PATH", paths);
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -912,30 +933,27 @@ pub fn run() {
     setup_linux_webkit_env();
 
     let mut builder = tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_fs::init())
-        .plugin(tauri_plugin_opener::init());
+    .plugin(tauri_plugin_dialog::init())
+    .plugin(tauri_plugin_fs::init())
+    .plugin(tauri_plugin_opener::init());
 
-    // libmpv is only linked in on Linux and Windows. On macOS the crate
-    // isn't compiled at all (see Cargo.toml's target-specific dep), so the
-    // plugin registration has to be gated the same way.
     #[cfg(not(target_os = "macos"))]
     {
         builder = builder.plugin(tauri_plugin_libmpv::init());
     }
 
     builder
-        .invoke_handler(tauri::generate_handler![
-            move_to_trash,
-            fetch_link_metadata,
-            fetch_image_data_url,
-            ensure_dir,
-            convert_to_webm,
-            cancel_video_transcode,
-            read_clipboard_image_png,
-            read_clipboard_uri_list,
-            fetch_bible_verse
-        ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+    .invoke_handler(tauri::generate_handler![
+        move_to_trash,
+        fetch_link_metadata,
+        fetch_image_data_url,
+        ensure_dir,
+        convert_to_webm,
+        cancel_video_transcode,
+        read_clipboard_image_png,
+        read_clipboard_uri_list,
+        fetch_bible_verse
+    ])
+    .run(tauri::generate_context!())
+    .expect("error while running tauri application");
 }

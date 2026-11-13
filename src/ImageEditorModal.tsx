@@ -97,6 +97,8 @@ export default function ImageEditorModal({
 
   useEffect(() => {
     let cancelled = false;
+    let createdBlobUrl: string | null = null;
+
     (async () => {
       try {
         const abs = assetUrlToAbsolutePath(imageUrl);
@@ -104,6 +106,7 @@ export default function ImageEditorModal({
           const bytes = await readFile(abs);
           const blob = new Blob([bytes as any], { type: "image/png" });
           const url = URL.createObjectURL(blob);
+          createdBlobUrl = url;
           if (!cancelled) {
             setBaseUrl(url);
             setDisplayUrl(url);
@@ -122,7 +125,13 @@ export default function ImageEditorModal({
         }
       }
     })();
-    return () => { cancelled = true; };
+
+    return () => {
+      cancelled = true;
+      if (createdBlobUrl) {
+        URL.revokeObjectURL(createdBlobUrl);
+      }
+    };
   }, [imageUrl]);
 
   const handleRotate = async () => {

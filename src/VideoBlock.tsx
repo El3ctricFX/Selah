@@ -1,7 +1,7 @@
 // src/VideoBlock.tsx
 import { createReactBlockSpec } from "@blocknote/react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { exists } from "@tauri-apps/plugin-fs";
+import { exists, remove, readFile } from "@tauri-apps/plugin-fs";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -12,6 +12,7 @@ import {
   Loader2,
   Wand2,
   AlertTriangle,
+  Maximize2, // <-- Add this line
 } from "lucide-react";
 import { useNoteMode } from "./useNoteMode";
 import { useNoteContext } from "./NoteContext";
@@ -139,6 +140,25 @@ export const createVideo = createReactBlockSpec(
         percent: 0,
         etaSec: -1,
       });
+      const [isFullscreen, setIsFullscreen] = useState(false);
+      const videoRef = useRef<HTMLVideoElement>(null);
+
+      const toggleFullscreen = useCallback(() => {
+        if (!videoRef.current) return;
+        if (document.fullscreenElement) {
+          document.exitFullscreen().catch(console.error);
+        } else {
+          videoRef.current.requestFullscreen().catch(console.error);
+        }
+      }, []);
+
+      useEffect(() => {
+        const onFullscreenChange = () => {
+          setIsFullscreen(!!document.fullscreenElement);
+        };
+        document.addEventListener("fullscreenchange", onFullscreenChange);
+        return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
+      }, []);
 
 
       const probeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -215,12 +235,15 @@ export const createVideo = createReactBlockSpec(
 
             if (cancelled) return;
 
-            // Stream from disk via Tauri's asset protocol. No file is read
-            // into JS memory, so opening the note is instant regardless of
-            // the video's size, and seeking works through HTTP range
-            // requests — same model as Obsidian.
-            const url = convertFileSrc(toLoad);
-            setPlayable(url);
+            if (isProxy) {
+              // Use a Blob URL for the proxy to bypass NixOS WebKit asset:// issues
+              const bytes = await readFile(toLoad);
+              const blob = new Blob([bytes as any], { type: "video/webm" });
+              setPlayable(URL.createObjectURL(blob));
+            } else {
+              // Stream the original file from disk
+              setPlayable(convertFileSrc(toLoad));
+            }
             setUsingProxy(isProxy);
             setPhase("ready");
 
@@ -228,8 +251,9 @@ export const createVideo = createReactBlockSpec(
             probeTimerRef.current = setTimeout(() => {
               probeTimerRef.current = null;
               if (isProxy) {
-                setPhase("fatal");
-                setErrorMsg("Playback copy failed to decode.");
+                remove(proxyPath).catch(() => {});
+                setPhase("unplayable");
+                setErrorMsg("Playback copy was corrupt and has been removed. Please generate it again.");
               } else if (maybeNeedsProxy(absOriginal)) {
                 setPhase("unplayable");
               } else {
@@ -285,8 +309,10 @@ export const createVideo = createReactBlockSpec(
       const onVideoError = useCallback(() => {
         clearProbe();
         if (usingProxy) {
-          setPhase("fatal");
-          setErrorMsg("Playback copy failed to decode.");
+          // The proxy exists but is corrupted. Delete it so the user can try again.
+          remove(proxyPath).catch(() => {});
+          setPhase("unplayable");
+          setErrorMsg("Playback copy was corrupt and has been removed. Please generate it again.");
           return;
         }
         if (maybeNeedsProxy(absOriginal)) {
@@ -295,7 +321,7 @@ export const createVideo = createReactBlockSpec(
           setPhase("fatal");
           setErrorMsg("This file could not be played.");
         }
-      }, [usingProxy, absOriginal]);
+      }, [usingProxy, absOriginal, proxyPath]);
 
       // ── Generate the proxy ──────────────────────────────────────────────
       const generateProxy = useCallback(async () => {
@@ -310,15 +336,19 @@ export const createVideo = createReactBlockSpec(
           if (settled) return;
           settled = true;
           try {
-            const url = convertFileSrc(proxyPath);
+            // Read the proxy into a Blob to guarantee WebKit gets the right MIME type
+            const bytes = await readFile(proxyPath);
+            const blob = new Blob([bytes as any], { type: "video/webm" });
+            const url = URL.createObjectURL(blob);
             setPlayable(url);
             setUsingProxy(true);
             setPhase("ready");
             clearProbe();
             probeTimerRef.current = setTimeout(() => {
               probeTimerRef.current = null;
-              setPhase("fatal");
-              setErrorMsg("Playback copy failed to decode.");
+              remove(proxyPath).catch(() => {});
+              setPhase("unplayable");
+              setErrorMsg("Playback copy was corrupt and has been removed. Please generate it again.");
             }, PROBE_TIMEOUT_MS);
           } catch (e: any) {
             console.error("[video] proxy read failed:", e);
@@ -364,7 +394,13 @@ export const createVideo = createReactBlockSpec(
           console.error("[video] ensureProxy rejected:", e);
           if (!settled) {
             settled = true;
-            setErrorMsg(e?.message ?? String(e));
+            const msg = e?.message ?? String(e);
+            // If the user clicked "Cancel conversion", the Rust backend
+            // rejects with this string. We should stay on the unplayable screen.
+            if (msg.includes("Cancelled by user")) {
+              return;
+            }
+            setErrorMsg(msg);
             setPhase("fatal");
           }
         }
@@ -400,9 +436,23 @@ export const createVideo = createReactBlockSpec(
 
       const showFooter = !isReadMode || !!caption;
 
+      const videoElement = phase === "ready" && playable && (
+        <video
+          ref={videoRef}
+          key={playable}
+          src={playable}
+          controls
+          preload="metadata"
+          className="bg-black block w-full max-h-[520px]"
+          onLoadedMetadata={onVideoLoadedMetadata}
+          onError={onVideoError}
+          onDoubleClick={toggleFullscreen}
+        />
+      );
+
       return (
         <div
-          className="my-2 w-full rounded-md border border-[#2a3136] bg-[#0f1315] overflow-hidden relative group"
+          className="my-2 w-full rounded-md border border-[#2a3136] bg-[#0f1315] relative group overflow-hidden"
           contentEditable={false}
           onMouseDown={(e) => { if (e.button === 2) { e.stopPropagation(); e.nativeEvent.stopImmediatePropagation(); } }}
         >
@@ -520,16 +570,9 @@ export const createVideo = createReactBlockSpec(
             </div>
           )}
 
-          {phase === "ready" && playable && (
-            <video
-              src={playable}
-              controls
-              preload="metadata"
-              className="w-full max-h-[520px] bg-black block"
-              onLoadedMetadata={onVideoLoadedMetadata}
-              onError={onVideoError}
-            />
-          )}
+          {videoElement}
+
+
 
           {phase === "ready" && !showFooter && (
             <button
@@ -581,6 +624,15 @@ export const createVideo = createReactBlockSpec(
                   proxy
                 </span>
               )}
+
+              <button
+                type="button"
+                onClick={toggleFullscreen}
+                className="p-1 rounded text-gray-500 hover:text-gray-200 hover:bg-[#2a3136] transition-colors"
+                title="Expand video"
+              >
+                <Maximize2 size={11} />
+              </button>
 
               <button
                 type="button"
