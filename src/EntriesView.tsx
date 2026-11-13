@@ -270,9 +270,11 @@ export default function EntriesView({ sectionDir, sectionName, sectionIcon, onOp
               try {
                 const raw = await readTextFile(dateTimePickerItem.path);
                 const { frontmatter, body } = parseNoteFile(raw);
+                const d = new Date(iso);
+                const localYmd = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
                 const fm: any = {
                   ...frontmatter,
-                  date: iso.slice(0, 10),
+                  date: localYmd,
                   created: iso,
                 };
                 if (frontmatter.freezeModified !== true) {

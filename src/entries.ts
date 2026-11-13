@@ -68,7 +68,10 @@ export async function listEntries(dir: string): Promise<EntryItem[]> {
             const createdMs = typeof fm.created === "string" ? new Date(fm.created).getTime() : 0;
             const created = Number.isFinite(createdMs) ? createdMs : 0;
             let date = typeof fm.date === "string" ? fm.date.slice(0, 10) : "";
-            if (!date && created) date = new Date(created).toISOString().slice(0, 10);
+            if (!date && created) {
+                const d = new Date(created);
+                date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+            }
             const plain = makePreview(body);
             out.push({
                 path: full,
