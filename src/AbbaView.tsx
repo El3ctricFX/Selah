@@ -31,6 +31,7 @@ import {
 } from "./abbaAssets";
 import { parseNoteFile, serializeNoteFile } from "./noteFormat";
 import { moveToTrash } from "./trash";
+import { getDefaultTemplateBody } from "./templates";
 
 // ─── URL normalization ──────────────────────────────────────────────────────
 function normalizeUrl(raw: string): string {
@@ -215,7 +216,8 @@ async function ensureAbbaNoteFile(
   await mkdir(dir, { recursive: true });
   const path = abbaNotePath(abbaDir, section, id);
   if (!(await fsExists(path))) {
-    await writeTextFile(path, serializeNoteFile(initialFm as any, ""));
+    const tpl = initialFm.linkedNote ? "" : await getDefaultTemplateBody(abbaDir, { section });
+    await writeTextFile(path, serializeNoteFile(initialFm as any, tpl));
   }
   return path;
 }

@@ -33,6 +33,7 @@ import { moveJournalNoteToDate, parseFlexibleDate } from './journalDateMove';
 import DateTimePickerModal from "./DateTimePickerModal";
 import { listEntries, createEntry, formatEntryDate, type EntryItem } from './entries';
 import { usePlugins, pluginTypeFor } from './plugins';
+import { getDefaultTemplateBody } from './templates';
 
 export interface Category {
   id: string;
@@ -1129,7 +1130,7 @@ function NotesTree({
 
       const full = await join(folderPath, fileName);
       const now = new Date().toISOString();
-      await writeTextFile(full, `---\ncreated: ${now}\nmodified: ${now}\n---\n\n`);
+      await writeTextFile(full, `---\ncreated: ${now}\nmodified: ${now}\n---\n\n${await getDefaultTemplateBody(folderPath)}`);
       if (folderPath !== rootPathRef.current) expandFolder(folderPath);
       await reload(folderPath !== rootPathRef.current ? [folderPath] : []);
       onOpenNote(category, { path: full, name: fileName });
@@ -2277,7 +2278,7 @@ function JournalTree({
       }
     } catch {}
     try {
-      await writeTextFile(filePath, `---\ncreated: ${new Date().toISOString()}\n---\n\n`);
+      await writeTextFile(filePath, `---\ncreated: ${new Date().toISOString()}\n---\n\n${await getDefaultTemplateBody(monthPath, { date: new Date(y, m - 1, dayNum, 12) })}`);
     } catch (e) { await confirmAsync(`Write failed: ${String(e)}`); return; }
     const ds = await readDays(year, month);
     setDays((p) => ({ ...p, [`${year}/${month}`]: ds }));

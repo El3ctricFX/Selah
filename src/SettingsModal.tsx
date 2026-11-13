@@ -4,7 +4,7 @@ import { readTextFile } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import { getVersion } from "@tauri-apps/api/app";
 import {
-    X, Home, Palette, Info, Puzzle, Database,
+    X, Home, Palette, Info, Puzzle, Database, FileText,
   GripHorizontal, Eye, EyeOff, Crosshair, Sliders,
   ExternalLink, Heart, Code2, MessageCircle,
 } from "lucide-react";
@@ -20,8 +20,9 @@ import {
 import AppearancePanel from "./AppearancePanel";
 import PluginsPanel from "./PluginsPanel";
 import DataPanel from "./DataPanel";
+import TemplatesPanel from "./TemplatesPanel";
 
-type SectionId = "home" | "general" | "appearance" | "plugins" | "data" | "about";
+type SectionId = "home" | "general" | "appearance" | "plugins" | "data" | "templates" | "about";
 
 type Section = {
   id: SectionId;
@@ -36,6 +37,7 @@ const SECTIONS: Section[] = [
   { id: "appearance", label: "Appearance", icon: Palette,  description: "Themes, light mode, custom CSS" },
   { id: "plugins",    label: "Plugins",    icon: Puzzle,   description: "Extend Selah with your own tools" },
   { id: "data",       label: "Data",       icon: Database, description: "Export and import notes" },
+  { id: "templates", label: "Templates", icon: FileText, description: "Reusable starting points for new notes" },
   { id: "about",      label: "About",      icon: Info,     description: "Version and info" },
 ];
 
@@ -443,6 +445,8 @@ export default function SettingsModal({
               <PluginsPanel vaultPath={vaultPath} />
             ) : section === "data" ? (
               <DataPanel vaultPath={vaultPath} />
+            ) : section === "templates" ? (
+              <TemplatesPanel vaultPath={vaultPath} />
             ) : (
               <AboutPanel />
             )}

@@ -16,6 +16,7 @@ import { useModal } from "./Modal";
 import { parseNoteFile, serializeNoteFile } from "./noteFormat";
 import { moveToTrash } from "./trash";
 import { trashNoteWithAssets } from "./deleteNote";
+import { getDefaultTemplateBody } from "./templates";
 import TagPickerModal from "./TagPickerModal";
 import { scanAllVaultTags, invalidateTagCache } from "./TagEditor";
 import { makeFolderKey, type FolderMetaMap } from "./folderMeta";
@@ -580,7 +581,7 @@ export default function NotesView({
       const fileName = uniqueNoteName();
       const fullPath = await join(dir, fileName);
       const now = new Date().toISOString();
-      await writeTextFile(fullPath, `---\ncreated: ${now}\nmodified: ${now}\n---\n\n`);
+      await writeTextFile(fullPath, `---\ncreated: ${now}\nmodified: ${now}\n---\n\n${await getDefaultTemplateBody(dir)}`);
       await load();
       onOpenNote({ path: fullPath, name: fileName });
     } catch (e) { console.error("[notes] create failed:", e); }

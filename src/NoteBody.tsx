@@ -130,6 +130,13 @@ import {
 } from "./linkMeta";
 import { writeFileAtomic } from "./safeWrite";
 import { registerFlusher } from "./flushRegistry";
+import {
+  loadTemplateData,
+  expandTemplate,
+  getDefaultTemplateBody,
+  journalDayFromPath,
+  type NoteTemplate,
+} from "./templates";
 
 import "@blocknote/core/fonts/inter.css";
 import "@blocknote/mantine/style.css";
@@ -659,6 +666,9 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
     const [matches, setMatches] = useState<{ from: number; to: number }[]>([]);
     const [currentIndex, setCurrentIndex] = useState(0);
     const [linkPickerOpen, setLinkPickerOpen] = useState(false);
+    const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
+    const [templateList, setTemplateList] = useState<NoteTemplate[]>([]);
+    const templateRefIdRef = useRef<string | null>(null);
     const [linkQuery, setLinkQuery] = useState("");
     const [resolveLink, setResolveLink] = useState<{
       targetName: string;
@@ -3385,6 +3395,8 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
           } catch {
             isNewFileRef.current = true;
             raw = `---\ncreated: ${new Date().toISOString()}\n---\n\n`;
+            const jd = journalDayFromPath(path);
+            if (jd) raw += await getDefaultTemplateBody(noteDirOf(path), { date: jd });
           }
 
           const { frontmatter, body } = parseNoteFile(raw);
@@ -3954,6 +3966,37 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
                                           icon: <span className="text-base">🔗</span>,
     });
 
+    const openTemplatePicker = useCallback(async () => {
+      try {
+        templateRefIdRef.current = editor.getTextCursorPosition?.().block?.id ?? null;
+      } catch {
+        templateRefIdRef.current = null;
+      }
+      const d = await loadTemplateData();
+      setTemplateList(d.templates);
+      setTemplatePickerOpen(true);
+    }, [editor]);
+
+    const insertTemplateMenuItem = () => ({
+      title: "Insert template",
+      subtext: "Add one of your saved templates here",
+      onItemClick: () => { void openTemplatePicker(); },
+      aliases: ["template", "templates", "preset"],
+      group: "Basic blocks",
+      icon: <span className="text-base">📋</span>,
+    });
+
+    const insertTemplate = async (t: NoteTemplate) => {
+      setTemplatePickerOpen(false);
+      try {
+        const body = expandTemplate(t.body, journalDayFromPath(path) ?? new Date());
+        const blocks = await noteBodyToBlocks(editor, body);
+        insertBlocksSmart(blocks, templateRefIdRef.current);
+      } catch (e) {
+        console.error("[template] insert failed:", e);
+      }
+    };
+
     const insertImageMenuItem = useCallback(
       () => ({
         title: "Upload image",
@@ -4232,6 +4275,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
                                       insertAudioMenuItem(),
                                       insertFileMenuItem(),
                                       insertScriptureMenuItem(),
+                                      insertTemplateMenuItem(),
                                       insertImageGalleryMenuItem(),
 
         ];
@@ -5011,6 +5055,39 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
           </div>
         );
       })()}
+
+      {templatePickerOpen && (
+        <div
+          className="fixed inset-0 z-[300] bg-black/60 flex items-start justify-center pt-24"
+          onClick={() => setTemplatePickerOpen(false)}
+        >
+          <div
+            className="bg-[#1e2327] border border-[#2a3136] rounded-lg shadow-2xl w-[420px] max-w-[92vw] flex flex-col overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-3 py-2 border-b border-[#2a3136] bg-[#1a1e21] text-xs text-gray-300">
+              Insert a template
+            </div>
+            <div className="max-h-[50vh] overflow-y-auto">
+              {templateList.length === 0 && (
+                <div className="px-3 py-3 text-xs text-gray-500 italic">
+                  No templates yet. Create one or add a preset in Settings → Templates.
+                </div>
+              )}
+              {templateList.map((t) => (
+                <button
+                  key={t.id}
+                  onMouseDown={(e) => { e.preventDefault(); void insertTemplate(t); }}
+                  className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-[#2a3136] flex items-center gap-2"
+                >
+                  <span className="w-5 text-center flex-shrink-0">{t.icon || "📝"}</span>
+                  <span className="truncate">{t.name}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {linkPickerOpen && (
         <div

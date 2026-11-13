@@ -2,6 +2,7 @@
 import { readDir, readTextFile, writeTextFile, mkdir } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import { parseNoteFile } from "./noteFormat";
+import { getDefaultTemplateBody } from "./templates";
 
 export interface EntryItem {
     path: string;
@@ -97,7 +98,7 @@ export async function createEntry(dir: string): Promise<{ path: string; fileName
     const now = new Date().toISOString();
     await writeTextFile(
         path,
-        `---\ndate: ${todayYmd()}\ncreated: ${now}\nmodified: ${now}\n---\n\n`
+        `---\ndate: ${todayYmd()}\ncreated: ${now}\nmodified: ${now}\n---\n\n${await getDefaultTemplateBody(dir)}`
     );
     return { path, fileName };
 }

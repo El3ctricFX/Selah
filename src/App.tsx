@@ -24,6 +24,7 @@ import { flushAll } from "./flushRegistry";
 import { migrateVaultPaths } from "./vaultMigration";
 import { useTheme, setThemeVaultPath } from "./theme";
 import ThemeBackground from "./ThemeBackground";
+import { setTemplateVault, getDefaultTemplateBody } from "./templates";
 import PluginView from "./PluginView";
 import { loadPlugins, clearPlugins } from "./plugins";
 import { useTabsFeature } from "./tabsFeature";
@@ -134,6 +135,7 @@ export default function App() {
   // localStorage, now in the currently-open vault's metadata).
   useEffect(() => {
     void setThemeVaultPath(vaultPath);
+    setTemplateVault(vaultPath);
   }, [vaultPath]);
 
   const {
@@ -859,7 +861,7 @@ export default function App() {
     const fileName = `Untitled-${Date.now()}.selah`;
     const fullPath = `${dir}/${fileName}`;
     try {
-      await writeTextFile(fullPath, `---\ncreated: ${now}\nmodified: ${now}\n---\n\n`);
+      await writeTextFile(fullPath, `---\ncreated: ${now}\nmodified: ${now}\n---\n\n${await getDefaultTemplateBody(dir)}`);
       openNoteByPath(fullPath);
     } catch (e) {
       console.error("[app] failed to create note:", e);
