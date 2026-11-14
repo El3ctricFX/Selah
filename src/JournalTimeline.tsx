@@ -1,10 +1,11 @@
 // src/JournalTimeline.tsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { readDir, readTextFile } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { parseNoteFile } from "./noteFormat";
 import ThumbImg from "./ThumbImg";
+import { ChevronDown } from "lucide-react";
 
 interface TimelineEntry {
   path: string;
@@ -268,6 +269,20 @@ export default function JournalTimeline({ journalDir, onOpenDay }: Props) {
     return timelineCache.get(journalDir) ?? null;
   });
   const [activeYear, setActiveYear] = useState<number | null>(null);
+  const [activeMonth, setActiveMonth] = useState<number | null>(null);
+  const [monthDropdownOpen, setMonthDropdownOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!monthDropdownOpen) return;
+    const onClickOutside = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setMonthDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, [monthDropdownOpen]);
 
   useEffect(() => {
     let mounted = true;
@@ -330,10 +345,24 @@ export default function JournalTimeline({ journalDir, onOpenDay }: Props) {
     );
   }, [entries]);
 
+  const availableMonths = useMemo(() => {
+    if (!entries || activeYear === null) return [];
+    const months = new Set<number>();
+    for (const e of entries) {
+      if (e.year === activeYear) months.add(e.month);
+    }
+    return Array.from(months).sort((a, b) => a - b);
+  }, [entries, activeYear, activeMonth]);
+
   const grouped = useMemo(() => {
     if (!entries) return [];
-    const filtered =
+    let filtered =
       activeYear == null ? entries : entries.filter((e) => e.year === activeYear);
+
+    if (activeMonth !== null) {
+      filtered = filtered.filter((e) => e.month === activeMonth);
+    }
+
     const map = new Map<string, TimelineEntry[]>();
     for (const e of filtered) {
       const key = `${e.year}-${String(e.month).padStart(2, "0")}`;
@@ -346,7 +375,7 @@ export default function JournalTimeline({ journalDir, onOpenDay }: Props) {
         const [y, m] = key.split("-").map(Number);
         return { year: y, month: m, entries: list };
       });
-  }, [entries, activeYear]);
+  }, [entries, activeYear, activeMonth]);
 
   if (entries === null) {
     return (
@@ -367,12 +396,23 @@ export default function JournalTimeline({ journalDir, onOpenDay }: Props) {
     );
   }
 
+  const totalFiltered = entries.filter((e) => {
+    if (activeYear !== null && e.year !== activeYear) return false;
+    if (activeMonth !== null && e.month !== activeMonth) return false;
+    return true;
+  }).length;
+
   return (
     <div className="h-full overflow-y-auto bg-[#0f1315]">
       <div className="max-w-6xl mx-auto px-8 py-8">
+
+        {/* Year Filter & Month Dropdown */}
         <div className="flex items-center gap-2 mb-8 flex-wrap">
           <button
-            onClick={() => setActiveYear(null)}
+            onClick={() => {
+              setActiveYear(null);
+              setActiveMonth(null);
+            }}
             className={`px-3 py-1 rounded-full text-xs transition-colors cursor-pointer ${
               activeYear === null
                 ? "bg-blue-600 text-white"
@@ -384,7 +424,10 @@ export default function JournalTimeline({ journalDir, onOpenDay }: Props) {
           {years.map((y) => (
             <button
               key={y}
-              onClick={() => setActiveYear(y)}
+              onClick={() => {
+                setActiveYear(y);
+                setActiveMonth(null);
+              }}
               className={`px-3 py-1 rounded-full text-xs transition-colors cursor-pointer ${
                 activeYear === y
                   ? "bg-blue-600 text-white"
@@ -394,12 +437,68 @@ export default function JournalTimeline({ journalDir, onOpenDay }: Props) {
               {y}
             </button>
           ))}
-          <div className="ml-auto text-[11px] text-gray-600">
-            {activeYear == null
-              ? `${entries.length} entries`
-              : `${
-                  entries.filter((e) => e.year === activeYear).length
-                } entries in ${activeYear}`}
+
+          <div className="ml-auto flex items-center gap-3">
+            {/* Month Dropdown - only shows if a year is selected */}
+            {activeYear !== null && availableMonths.length > 0 && (
+              <div className="relative flex items-center" ref={dropdownRef}>
+                <button
+                  type="button"
+                  onClick={() => setMonthDropdownOpen((o) => !o)}
+                  className="flex items-center justify-between gap-2 bg-[var(--c-elevated)] border border-[var(--c-border)] rounded-full pl-3 pr-2.5 py-1 text-xs text-[var(--c-text)] hover:border-[var(--c-border-lighter)] cursor-pointer outline-none transition-colors min-w-[100px]"
+                >
+                  <span>{activeMonth ? MONTH_NAMES[activeMonth - 1] : "All Months"}</span>
+                  <ChevronDown
+                    size={12}
+                    className={`text-[var(--c-text-muted)] pointer-events-none transition-transform ${
+                      monthDropdownOpen ? "rotate-180" : ""
+                    }`}
+                  />
+                </button>
+
+                {monthDropdownOpen && (
+                  <div className="absolute top-full right-0 mt-1.5 w-[120px] bg-[var(--c-elevated)] border border-[var(--c-border)] rounded-md shadow-2xl py-1 z-50 max-h-64 overflow-y-auto">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveMonth(null);
+                        setMonthDropdownOpen(false);
+                      }}
+                      className={`w-full text-left px-3 py-1.5 text-xs transition-colors ${
+                        activeMonth === null
+                          ? "text-[var(--c-accent)] font-medium bg-[var(--c-surface-alt)]"
+                          : "text-[var(--c-text)] hover:bg-[var(--c-surface-alt)]"
+                      }`}
+                    >
+                      All Months
+                    </button>
+                    {availableMonths.map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        onClick={() => {
+                          setActiveMonth(m);
+                          setMonthDropdownOpen(false);
+                        }}
+                        className={`w-full text-left px-3 py-1.5 text-xs transition-colors ${
+                          activeMonth === m
+                            ? "text-[var(--c-accent)] font-medium bg-[var(--c-surface-alt)]"
+                            : "text-[var(--c-text)] hover:bg-[var(--c-surface-alt)]"
+                        }`}
+                      >
+                        {MONTH_NAMES[m - 1]}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="text-[11px] text-gray-600 min-w-[80px] text-right">
+              {activeYear == null
+                ? `${totalFiltered} entries`
+                : `${totalFiltered} entries in ${activeYear}${activeMonth ? ` · ${MONTH_NAMES[activeMonth - 1]}` : ""}`}
+            </div>
           </div>
         </div>
 
