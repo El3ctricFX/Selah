@@ -6,10 +6,9 @@ import { getVersion } from "@tauri-apps/api/app";
 import {
     X, Home, Palette, Info, Puzzle, Database, FileText,
   GripHorizontal, Eye, EyeOff, Crosshair, Sliders,
-  ExternalLink, Heart, Code2, MessageCircle, RefreshCw,
+  ExternalLink, Heart, Code2, MessageCircle,
 } from "lucide-react";
-import { clearTimelineCache, getTimelineCacheSize } from "./JournalTimeline";
-import { clearSearchCache, getSearchCacheSize } from "./GlobalSearch";
+// (Deleted cache imports)
 import { writeFileAtomic } from "./safeWrite";
 import { proxyFeatureEnabled, setProxyFeatureEnabled } from "./proxyFeature";
 import {
@@ -519,9 +518,6 @@ function Switch({ on, onClick }: { on: boolean; onClick: () => void }) {
 }
 
 function GeneralPanel({ vaultPath }: { vaultPath: string }) {
-  const [confirmClearCacheOpen, setConfirmClearCacheOpen] = useState(false);
-  const [cacheStats, setCacheStats] = useState({ timeline: 0, search: 0 });
-
   const [showExtensions, setShowExtensions] = useState<boolean>(() => {
     try { return localStorage.getItem("sidebar-show-extensions") === "true"; }
     catch { return false; }
