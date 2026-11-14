@@ -531,7 +531,7 @@ async function auditNote(
   const referencedProxy = new Set<string>();
 
   // Safety net: raw text of the note, decoded and with markdown escapes removed.
-  const noteText = (raw + "\n" + safeDecode(raw)).replace(/\\/g, "");
+  const noteText = (raw + "\n" + safeDecode(raw)).replace(/\\/g, "").normalize("NFC");
 
   for (const ref of refs) {
     if (!ref) continue;
@@ -559,7 +559,7 @@ async function auditNote(
     // directly OR references its WebP proxy / the video block derives its proxy.
     if (referencedProxy.has(`${name}.webp`) || referencedProxy.has(`${name}.webm`)) continue;
     if (keepList.includes(name)) continue;
-    if (noteText.includes(name)) continue;
+    if (noteText.includes(name.normalize("NFC"))) continue;
     report.unusedFiles.push({
       absPath: await join(assetsDir, name), notePath, size, inProxy: false,
     });

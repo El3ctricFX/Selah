@@ -36,6 +36,7 @@ interface JournalViewProps {
   categoryName?: string;
   initialDate?: { year: number; month: number; day: number };
   initialMode?: "day" | "month" | "year";
+  initialViewMode?: "day" | "timeline";
   focusMode?: boolean;
   onToggleFocus?: () => void;
   onOpenNoteByPath?: (path: string) => void;
@@ -163,6 +164,7 @@ export default function JournalView({
   categoryName,
   initialDate,
   initialMode,
+  initialViewMode,
   focusMode = false,
   onToggleFocus,
   onOpenNoteByPath,
@@ -173,7 +175,7 @@ export default function JournalView({
       : new Date()
   );
   const [mode, setMode] = useState<"day" | "month" | "year">(initialMode || "day");
-  const [viewMode, setViewMode] = useState<"day" | "timeline">("day");
+  const [viewMode, setViewMode] = useState<"day" | "timeline">(initialViewMode || "day");
   const [dayPath, setDayPath] = useState<string | null>(null);
   const [monthPath, setMonthPath] = useState<string | null>(null);
   const [yearPath, setYearPath] = useState<string | null>(null);

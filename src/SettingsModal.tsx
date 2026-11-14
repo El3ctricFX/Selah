@@ -6,8 +6,10 @@ import { getVersion } from "@tauri-apps/api/app";
 import {
     X, Home, Palette, Info, Puzzle, Database, FileText,
   GripHorizontal, Eye, EyeOff, Crosshair, Sliders,
-  ExternalLink, Heart, Code2, MessageCircle,
+  ExternalLink, Heart, Code2, MessageCircle, RefreshCw,
 } from "lucide-react";
+import { clearTimelineCache, getTimelineCacheSize } from "./JournalTimeline";
+import { clearSearchCache, getSearchCacheSize } from "./GlobalSearch";
 import { writeFileAtomic } from "./safeWrite";
 import { proxyFeatureEnabled, setProxyFeatureEnabled } from "./proxyFeature";
 import {
@@ -517,6 +519,9 @@ function Switch({ on, onClick }: { on: boolean; onClick: () => void }) {
 }
 
 function GeneralPanel({ vaultPath }: { vaultPath: string }) {
+  const [confirmClearCacheOpen, setConfirmClearCacheOpen] = useState(false);
+  const [cacheStats, setCacheStats] = useState({ timeline: 0, search: 0 });
+
   const [showExtensions, setShowExtensions] = useState<boolean>(() => {
     try { return localStorage.getItem("sidebar-show-extensions") === "true"; }
     catch { return false; }
@@ -654,6 +659,41 @@ function GeneralPanel({ vaultPath }: { vaultPath: string }) {
     When you turn this off, you'll be asked whether to delete the existing
     proxies or keep them.
     </p>
+
+    {confirmClearCacheOpen && (
+      <div className="fixed inset-0 z-[800] bg-black/70 flex items-center justify-center p-6">
+        <div className="bg-[#1e2327] border border-[#2a3136] rounded-lg shadow-2xl w-[400px] p-5">
+          <h3 className="text-sm font-medium text-gray-100 mb-2">Clear Memory Cache?</h3>
+          <p className="text-xs text-gray-400 mb-4">
+            This will clear the following from memory:
+            <br /><br />
+            • <strong>{cacheStats.timeline}</strong> notes from the Journal Timeline
+            <br />
+            • <strong>{cacheStats.search}</strong> notes from Global Search
+            <br /><br />
+            The app will re-read these notes from your disk the next time you use these features.
+          </p>
+          <div className="flex justify-end gap-2 mt-4">
+            <button
+              onClick={() => setConfirmClearCacheOpen(false)}
+              className="px-3 py-1.5 text-xs text-gray-400 hover:text-gray-200 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => {
+                clearTimelineCache();
+                clearSearchCache();
+                setConfirmClearCacheOpen(false);
+              }}
+              className="px-3 py-1.5 text-xs bg-red-600 hover:bg-red-500 text-white rounded font-medium transition-colors"
+            >
+              Clear Cache
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
 
     {confirmOff && (
       <div className="mt-3 rounded-md border border-[#2a3136] bg-[#0f1315] p-3">

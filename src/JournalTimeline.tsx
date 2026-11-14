@@ -41,6 +41,18 @@ function invalidateTimelineCache(journalDir?: string) {
   else timelineCache.clear();
 }
 
+export function clearTimelineCache() {
+  timelineCache.clear();
+}
+
+export function getTimelineCacheSize(): number {
+  let count = 0;
+  for (const entries of timelineCache.values()) {
+    count += entries.length;
+  }
+  return count;
+}
+
 function safeDecode(s: string): string {
   try {
     return decodeURIComponent(s);
@@ -268,8 +280,32 @@ export default function JournalTimeline({ journalDir, onOpenDay }: Props) {
   const [entries, setEntries] = useState<TimelineEntry[] | null>(() => {
     return timelineCache.get(journalDir) ?? null;
   });
-  const [activeYear, setActiveYear] = useState<number | null>(null);
-  const [activeMonth, setActiveMonth] = useState<number | null>(null);
+  const getSavedFilters = (dir: string) => {
+    try {
+      const saved = localStorage.getItem(`timeline-filters:${dir}`);
+      if (saved) {
+        const p = JSON.parse(saved);
+        return { year: p.year ?? null, month: p.month ?? null };
+      }
+    } catch {}
+    return { year: null, month: null };
+  };
+
+  const initialFilters = getSavedFilters(journalDir);
+  const [activeYear, setActiveYear] = useState<number | null>(initialFilters.year);
+  const [activeMonth, setActiveMonth] = useState<number | null>(initialFilters.month);
+
+  useEffect(() => {
+    const saved = getSavedFilters(journalDir);
+    setActiveYear(saved.year);
+    setActiveMonth(saved.month);
+  }, [journalDir]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(`timeline-filters:${journalDir}`, JSON.stringify({ year: activeYear, month: activeMonth }));
+    } catch {}
+  }, [journalDir, activeYear, activeMonth]);
   const [monthDropdownOpen, setMonthDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -286,11 +322,10 @@ export default function JournalTimeline({ journalDir, onOpenDay }: Props) {
 
   useEffect(() => {
     let mounted = true;
-    // Always re-parse on mount. The parser is pure and files are on disk;
-    // the cost is a handful of small reads. The payoff is that a stale
-    // cache (from an HMR reload during development, or a note edited while
-    // this view was unmounted) can never leave us showing old snippets.
-    invalidateTimelineCache(journalDir);
+    // We intentionally do NOT invalidate the cache here.
+    // If the user navigates away and comes back, the cache holds the data
+    // so the timeline renders instantly instead of re-reading thousands of files.
+    // The listeners below handle invalidating/updating when files actually change.
     (async () => {
       const result = await loadAllEntries(journalDir);
       if (mounted) setEntries(result);
@@ -503,7 +538,7 @@ export default function JournalTimeline({ journalDir, onOpenDay }: Props) {
         </div>
 
         {grouped.map((group) => (
-          <div key={`${group.year}-${group.month}`} className="mb-10">
+          <div key={`${group.year}-${group.month}`} className="mb-10" style={{ contentVisibility: 'auto', containIntrinsicSize: '0 500px' }}>
             <div className="text-[11px] uppercase tracking-wider text-gray-500 mb-3 flex items-center gap-3">
               <span>
                 {MONTH_NAMES[group.month - 1]} {group.year}
@@ -553,6 +588,7 @@ function JournalCard({
             src={entry.image}
             alt=""
             allowThumb={entry.proxiesOn}
+            loading="lazy"
             className="w-full h-full object-cover group-hover:scale-[1.03] transition-transform duration-300"
             onError={(e) => {
               (e.currentTarget as HTMLImageElement).style.display = "none";

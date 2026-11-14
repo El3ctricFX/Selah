@@ -7,7 +7,37 @@
     <title>Tauri + React + Typescript</title>
   </head>
 
-  <body>
+  <body style="margin: 0; padding: 0; overflow: hidden;">
+    <script>
+      // Prevent theme flash by applying the saved theme CSS variables immediately
+      (function() {
+        try {
+          const raw = localStorage.getItem("selah-theme-v1");
+          if (!raw) return;
+          const theme = JSON.parse(raw);
+          if (theme && theme.colors && theme.colors.bg) {
+            const root = document.documentElement;
+
+            // Inject the background and text colors directly as CSS variables
+            // so App.css's `var(--c-bg) !important` resolves correctly on the first paint.
+            root.style.setProperty("--c-bg", theme.colors.bg);
+            root.style.setProperty("--c-text", theme.colors.text || "#d1d5db");
+
+            // Set base background on HTML to cover the initial white void
+            root.style.backgroundColor = theme.colors.bg;
+
+            // Set color scheme and data-theme attribute
+            const isLight = theme.mode === "light";
+            root.style.colorScheme = isLight ? "light" : "dark";
+            if (theme.mode) {
+              root.setAttribute("data-theme", theme.mode);
+            }
+          }
+        } catch (e) {
+          // Ignore errors
+        }
+      })();
+    </script>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

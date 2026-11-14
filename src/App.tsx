@@ -29,13 +29,14 @@ import PluginView from "./PluginView";
 import { loadPlugins, clearPlugins } from "./plugins";
 import { useTabsFeature } from "./tabsFeature";
 import TabBar, { TAB_BAR_HEIGHT } from "./TabBar";
+import GlobalSearch from "./GlobalSearch";
 
 type JournalFocus = { year: number; month: number; day: number };
 type ViewSnapshot = { view: ActiveView; categoryId: string | null };
 
 type ActiveView =
   | { kind: "note"; path: string; name: string }
-  | { kind: "journal"; dir: string; name: string; focus?: JournalFocus; focusMode?: "day" | "month" | "year" }
+  | { kind: "journal"; dir: string; name: string; focus?: JournalFocus; focusMode?: "day" | "month" | "year"; viewMode?: "day" | "timeline" }
   | { kind: "gallery"; dir: string; name: string }
   | { kind: "plugin"; dir: string; name: string; icon: string; categoryId: string; mode: string }
     | { kind: "abba"; dir: string; name: string; icon: string; focusSection?: string; focusNoteId?: string }
@@ -122,6 +123,7 @@ export default function App() {
   const [focusMode, setFocusMode] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [vaultCategories, setVaultCategories] = useState<
   Array<{ id: string; name: string; icon: string; mode: string; dirName: string }>
   >([]);
@@ -265,6 +267,17 @@ export default function App() {
     console.warn("[app] migration failed:", e)
     );
   }, [vaultPath]);
+
+  useEffect(() => {
+    const handleGlobalSearch = (e: KeyboardEvent) => {
+      if (e.ctrlKey && (e.key === " " || e.code === "Space")) {
+        e.preventDefault();
+        setGlobalSearchOpen(true);
+      }
+    };
+    window.addEventListener("keydown", handleGlobalSearch, true);
+    return () => window.removeEventListener("keydown", handleGlobalSearch, true);
+  }, []);
 
   // Load this vault's plugins whenever the vault changes or the feature is toggled.
   useEffect(() => {
@@ -740,7 +753,7 @@ export default function App() {
 
   const journalKeyFor = (activeView: ActiveView, pane: "main" | "split") =>
     activeView?.kind === "journal"
-      ? `${activeView.dir}-${activeView.focus?.year ?? "t"}-${activeView.focus?.month ?? "t"}-${activeView.focus?.day ?? "t"}-${activeView.focusMode ?? "day"}-${paneNonceRef.current[pane]}`
+      ? `${activeView.dir}-${activeView.focus?.year ?? "t"}-${activeView.focus?.month ?? "t"}-${activeView.focus?.day ?? "t"}-${activeView.focusMode ?? "day"}-${activeView.viewMode ?? "day"}-${paneNonceRef.current[pane]}`
       : undefined;
 
   const sidebarHidden = focusMode || sidebarCollapsed;
@@ -997,6 +1010,11 @@ export default function App() {
               setJournalNonce((n) => n + 1);
               setActiveView({ kind: "journal", dir: dirOf(cat), name: cat.name });
             }}
+            onOpenJournalTimeline={(cat) => {
+              setActiveCategoryId(cat.id);
+              setJournalNonce((n) => n + 1);
+              setActiveView({ kind: "journal", dir: dirOf(cat), name: cat.name, viewMode: "timeline" });
+            }}
             onOpenJournalDay={(cat, year, month, day) => {
               setActiveCategoryId(cat.id);
               setJournalNonce((n) => n + 1);
@@ -1164,6 +1182,7 @@ export default function App() {
             categoryName={activeView.name}
             initialDate={activeView.focus}
             initialMode={activeView.focusMode}
+            initialViewMode={activeView.viewMode}
             focusMode={focusMode}
             onToggleFocus={() => setFocusMode((v) => !v)}
             onOpenNoteByPath={openNoteByPath}
@@ -1217,6 +1236,12 @@ export default function App() {
         ))}
       </div>
 
+      <GlobalSearch
+        open={globalSearchOpen}
+        onClose={() => setGlobalSearchOpen(false)}
+        vaultPath={vaultPath}
+        onOpenNote={openNoteByPath}
+      />
       <ProxyToggleHost />
       <SettingsModal
         open={settingsOpen}

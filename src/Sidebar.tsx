@@ -9,7 +9,7 @@ import {
   ChevronRight, ChevronDown, Settings, Plus, Pencil, Smile, Trash2,
   CalendarDays, Image as ImageIcon, NotebookText, Check, FileText, FolderPlus, X,
   Tag, PanelLeftClose, Church, Sparkles, Folder, FolderOpen,
-  Sliders, LogOut, Home, Calendar, GripVertical,
+  Sliders, LogOut, Home, Calendar, GripVertical, LayoutGrid,
 } from 'lucide-react';
 import EmojiPicker, { Theme, EmojiStyle } from 'emoji-picker-react';
 
@@ -53,6 +53,7 @@ interface SidebarProps {
   onOpenJournalDay: (cat: Category, year: number, month: number, day: number) => void;
   onOpenJournalMonth: (cat: Category, year: number, month: number) => void;
   onOpenJournalToday: (cat: Category) => void;
+  onOpenJournalTimeline: (cat: Category) => void;
   onOpenNote: (cat: Category, note: { path: string; name: string }) => void;
   onOpenGallery: (cat: Category) => void;
   onOpenAbba: (cat: Category) => void;
@@ -187,7 +188,7 @@ const SHOW_EXT_KEY = 'sidebar-show-extensions';
 export default function Sidebar(props: SidebarProps) {
   const {
     vaultPath, activeCategoryId, activeView,
-    onSelectCategory, onOpenJournalDay, onOpenJournalMonth, onOpenJournalToday,
+    onSelectCategory, onOpenJournalDay, onOpenJournalMonth, onOpenJournalToday, onOpenJournalTimeline,
     onOpenNote, onOpenGallery, onOpenAbba, onOpenNotes, onOpenEntries, onSwitchVault,
     onOpenSettings, onGoHome, onCollapse,
   } = props;
@@ -937,6 +938,7 @@ export default function Sidebar(props: SidebarProps) {
             onOpenDay={onOpenJournalDay}
             onOpenMonth={onOpenJournalMonth}
             onOpenToday={onOpenJournalToday}
+            onOpenTimeline={onOpenJournalTimeline}
             onOpenNote={onOpenNote}
             confirmAsync={confirmAsync}
             promptAsync={promptAsync}
@@ -1997,6 +1999,7 @@ function JournalTree({
   onOpenDay,
   onOpenMonth,
   onOpenToday,
+  onOpenTimeline,
   onOpenNote,
   confirmAsync,
   promptAsync,
@@ -2010,6 +2013,7 @@ function JournalTree({
   onOpenDay: (cat: Category, year: number, month: number, day: number) => void;
   onOpenMonth: (cat: Category, year: number, month: number) => void;
   onOpenToday: (cat: Category) => void;
+  onOpenTimeline: (cat: Category) => void;
   onOpenNote: (cat: Category, note: { path: string; name: string }) => void;
   confirmAsync: (msg: string) => Promise<boolean>;
   promptAsync: (msg: string, defaultValue?: string) => Promise<string | null>;
@@ -2254,10 +2258,7 @@ function JournalTree({
       );
       const yearStr = String(detail.year);
       const monthStr = pad(detail.month);
-      setExpandedYears((p) => ({ ...p, [yearStr]: true }));
-      if (detail.mode !== "month" && detail.mode !== "year") {
-        setExpandedMonths((p) => ({ ...p, [`${yearStr}/${monthStr}`]: true }));
-      }
+      // Removed auto-expansion so the tree stays closed by default
       (async () => {
         const ms = await readMonths(yearStr);
         setMonths((p) => ({ ...p, [yearStr]: ms }));
@@ -2808,10 +2809,16 @@ function JournalTree({
         document.body
       )}
 
-      <button onClick={() => onOpenToday(category)} className="w-full text-left px-3 py-1.5 rounded text-sm text-gray-300 hover:bg-[#1e2327] flex items-center space-x-2 mb-1">
-        <CalendarDays size={13} className="text-gray-500" />
-        <span>Today</span>
-      </button>
+      <div className="flex items-center gap-1.5 mb-2 px-1">
+        <button onClick={() => onOpenToday(category)} className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded text-xs bg-[#1e2327] hover:bg-[#2a3136] text-gray-300 transition-colors">
+          <CalendarDays size={12} className="text-gray-500" />
+          <span>Today</span>
+        </button>
+        <button onClick={() => onOpenTimeline(category)} className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded text-xs bg-[#1e2327] hover:bg-[#2a3136] text-gray-300 transition-colors">
+          <LayoutGrid size={12} className="text-gray-500" />
+          <span>Timeline</span>
+        </button>
+      </div>
 
       {years === null && <div className="px-3 py-2 text-xs text-gray-600">Loading…</div>}
       {years?.length === 0 && <div className="px-3 py-2 text-xs text-gray-600">Right-click here to add a folder.</div>}
