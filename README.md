@@ -54,18 +54,15 @@ Selah is in active development. The list below describes the project's direction
 
 ## 🖼️ Screenshots
 
-Screenshots of the live application will be added here as the interface stabilizes. The images should show the real app, not mockups.
-
-soon to be added
-
-<!--
-To add screenshots, save genuine app captures in the screenshots/ directory, then uncomment and update this example:
-
 <div align="center">
-  <img src="screenshots/main-window.png" alt="Selah main window" width="800" />
-  <p><em>Selah's main workspace</em></p>
+  <img src="public/Readme/main.png" width="49%" />
+  <img src="public/Readme/journal.png" width="49%" />
+  <br /><br />
+  <img src="public/Readme/Abba.png" width="49%" />
+  <img src="public/Readme/notes.png" width="49%" />
+  <br /><br />
+  <img src="public/Readme/study.png" width="49%" />
 </div>
--->
 
 ## 🛠️ Built with
 
