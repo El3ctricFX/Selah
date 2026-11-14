@@ -2,7 +2,7 @@
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import type { Node as PMNode } from "@tiptap/pm/model";
-import { getSpell, isSpellcheckEnabled, getIgnoreList, getNoteIgnoreList } from "./spellcheck";
+import { getSpell, isSpellcheckEnabled, getIgnoreList } from "./spellcheck";
 
 export const SpellPluginKey = new PluginKey("spellcheck");
 
@@ -43,7 +43,6 @@ function isSkippableWord(raw: string): boolean {
  */
 export async function computeSpellDecorations(
     doc: PMNode,
-    notePath: string,
     frontmatterIgnore: string[] = []
 ): Promise<DecorationSet> {
     if (!isSpellcheckEnabled()) return DecorationSet.empty;

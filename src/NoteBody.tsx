@@ -2889,7 +2889,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
           const ignored = Array.isArray(frontmatterRef.current.spellIgnore)
             ? (frontmatterRef.current.spellIgnore as string[])
             : [];
-          const decos = await computeSpellDecorations(tiptap.state.doc, path, ignored);
+          const decos = await computeSpellDecorations(tiptap.state.doc, ignored);
           if (myRun !== spellRunRef.current) return;
           applySpellDecorations(tiptap.view, decos);
         } catch (e) {
