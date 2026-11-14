@@ -82,11 +82,13 @@ export default function TagEditor({
   allTags,
   onChange,
   readOnly,
+  onTagClick,
 }: {
   tags: string[];
   allTags: string[];
   onChange: (next: string[]) => void;
   readOnly?: boolean;
+  onTagClick?: (tag: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
@@ -154,7 +156,14 @@ export default function TagEditor({
           className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-[#1e2327] border border-[#2a3136] text-gray-300 hover:border-[#3a4147] transition-colors"
         >
           <TagIcon size={9} className="text-gray-500 flex-shrink-0" />
-          <span className="truncate max-w-[140px]" title={tag}>{tag}</span>
+          <button
+            type="button"
+            onClick={() => onTagClick?.(tag)}
+            className={`truncate max-w-[140px] ${onTagClick ? "hover:text-blue-300 cursor-pointer" : ""}`}
+            title={onTagClick ? `Filter by "${tag}"` : tag}
+          >
+            {tag}
+          </button>
           {!readOnly && (
             <button
               type="button"

@@ -1284,6 +1284,13 @@ export default function Editor({
             allTags={allVaultTags}
             onChange={handleTagsChange}
             readOnly={mode !== "edit"}
+            onTagClick={(tag) => {
+              window.dispatchEvent(
+                new CustomEvent("entry-tag-clicked", {
+                  detail: { tag }
+                })
+              );
+            }}
           />
         </div>
 

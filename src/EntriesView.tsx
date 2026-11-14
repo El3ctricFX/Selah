@@ -18,10 +18,11 @@ interface Props {
     sectionDir: string;
     sectionName: string;
     sectionIcon: string;
+    categoryId?: string;
     onOpenNote: (note: { path: string; name: string }) => void;
 }
 
-export default function EntriesView({ sectionDir, sectionName, sectionIcon, onOpenNote }: Props) {
+export default function EntriesView({ sectionDir, sectionName, sectionIcon, categoryId, onOpenNote }: Props) {
     const [items, setItems] = useState<EntryItem[] | null>(null);
     const [query, setQuery] = useState("");
     const [ctx, setCtx] = useState<{ item: EntryItem; x: number; y: number } | null>(null);
@@ -474,13 +475,23 @@ export default function EntriesView({ sectionDir, sectionName, sectionIcon, onOp
                     {it.tags && it.tags.length > 0 && (
                         <div className="flex flex-wrap gap-1 mt-1.5">
                         {it.tags.slice(0, 3).map((t) => (
-                            <span
+                            <button
                             key={t}
-                            className="text-[10px] px-1.5 py-0.5 rounded bg-[#1e2327] border border-[#2a3136] text-gray-400 truncate max-w-[80px]"
-                            title={t}
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                if (categoryId) {
+                                    window.dispatchEvent(
+                                        new CustomEvent("entry-tag-clicked", {
+                                            detail: { categoryId, tag: t }
+                                        })
+                                    );
+                                }
+                            }}
+                            className="text-[10px] px-1.5 py-0.5 rounded bg-[#1e2327] border border-[#2a3136] text-gray-400 hover:text-blue-300 hover:border-blue-500/50 truncate max-w-[80px] transition-colors cursor-pointer"
+                            title={`Filter by "${t}"`}
                             >
                             {t}
-                            </span>
+                            </button>
                         ))}
                         {it.tags.length > 3 && (
                             <span className="text-[10px] text-gray-500" title={it.tags.join(", ")}>

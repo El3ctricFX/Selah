@@ -2945,6 +2945,19 @@ function EntriesTree({
     };
   }, [tagMenuOpen]);
 
+  // Listen for tag clicks from the main Entries view or from a note's TagEditor
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.tag && (!detail.categoryId || detail.categoryId === category.id)) {
+        setTagFilter(detail.tag);
+        setTagMenuOpen(false);
+      }
+    };
+    window.addEventListener("entry-tag-clicked", handler);
+    return () => window.removeEventListener("entry-tag-clicked", handler);
+  }, [category.id]);
+
   useEffect(() => {
     if (!ctx) return;
     const close = () => setCtx(null);

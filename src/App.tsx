@@ -1176,6 +1176,7 @@ export default function App() {
             sectionDir={activeView.dir}
             sectionName={activeView.name}
             sectionIcon={activeView.icon}
+            categoryId={activeView.categoryId}
             onOpenNote={(note) =>
               setActiveView({ kind: "note", path: note.path, name: note.name })
             }
