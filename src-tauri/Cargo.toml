@@ -1,6 +1,6 @@
 [package]
 name = "selah"
-version = "0.3.1"
+version = "0.3.2"
 description = "A local-first personal archive"
 authors = ["El3ctricFX"]
 edition = "2021"
