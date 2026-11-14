@@ -140,12 +140,9 @@ export function serializeNoteFile(fm: Frontmatter, body: string): string {
   }
   const fmBlock = lines.length ? `---\n${lines.join("\n")}\n---\n\n` : "";
 
-  // Normalize ONLY the trailing newlines: collapse a run of them to a
-  // single newline. Everything else — leading whitespace, trailing spaces
-  // on the last line, blank lines mid-file — is preserved verbatim. The
-  // old code called `trimEnd()`, which silently deleted trailing blank
-  // lines and spaces on every save.
-  const normalizedBody = body.replace(/\n+$/, "");
+  // Normalize leading and trailing newlines to prevent accumulating
+  // blank lines between the frontmatter and the body on every save.
+  const normalizedBody = body.replace(/^\n+/, "").replace(/\n+$/, "");
   return normalizedBody ? `${fmBlock}${normalizedBody}\n` : fmBlock;
 }
 

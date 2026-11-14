@@ -1098,6 +1098,17 @@ body.theme-separate-tints.theme-scope-sidebar.theme-has-bg .content-shell [class
   cursor: w-resize;
 }
 
+/* Spell check squiggle */
+.spell-error {
+  text-decoration: underline wavy #f87171 !important;
+  text-decoration-skip-ink: none;
+  text-underline-offset: 3px;
+  cursor: context-menu;
+}
+.spell-error:hover {
+  background-color: rgba(248, 113, 113, 0.1);
+}
+
 /* Find and Replace Highlights */
 .search-match {
   background-color: rgba(59, 130, 246, 0.3);

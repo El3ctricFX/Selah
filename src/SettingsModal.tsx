@@ -10,6 +10,14 @@ import {
 } from "lucide-react";
 import { writeFileAtomic } from "./safeWrite";
 import { proxyFeatureEnabled, setProxyFeatureEnabled } from "./proxyFeature";
+import {
+  isSpellcheckEnabled,
+  setSpellcheckEnabled,
+  getCustomDictionary,
+  addToCustomDictionary,
+  removeFromCustomDictionary,
+} from "./spellcheck/spellcheck";
+import { BookOpen } from "lucide-react";
 import { pluginFeatureEnabled, setPluginFeatureEnabled } from "./pluginFeature";
 import { tabsFeatureEnabled, setTabsFeatureEnabled } from "./tabsFeature";
 import {
@@ -514,6 +522,8 @@ function GeneralPanel({ vaultPath }: { vaultPath: string }) {
     catch { return false; }
   });
   const [proxies, setProxies] = useState<boolean>(() => proxyFeatureEnabled());
+  const [spellOn, setSpellOn] = useState<boolean>(() => isSpellcheckEnabled());
+  const [dictionaryOpen, setDictionaryOpen] = useState(false);
   const [plugins, setPlugins] = useState<boolean>(() => pluginFeatureEnabled());
   const [tabsOn, setTabsOn] = useState<boolean>(() => tabsFeatureEnabled());
   const [confirmOff, setConfirmOff] = useState(false);
@@ -601,6 +611,37 @@ function GeneralPanel({ vaultPath }: { vaultPath: string }) {
 
     <div className="border-t border-[#2a3136] pt-4">
     <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-3">
+    Spell check
+    </div>
+    <label className="flex items-center justify-between text-xs text-gray-300 cursor-pointer py-1">
+    <span>Underline misspelled words</span>
+    <Switch on={spellOn} onClick={() => {
+        const next = !spellOn;
+        setSpellOn(next);
+        setSpellcheckEnabled(next);
+    }} />
+    </label>
+    <p className="text-[10px] text-gray-600 mt-2 leading-snug mb-3">
+    Right-click an underlined word for suggestions. Only runs in edit mode.
+    </p>
+
+    {spellOn && (
+      <button
+        type="button"
+        onClick={() => setDictionaryOpen(true)}
+        className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-[#2a3136] hover:bg-[#30363d] border border-[#30363d] rounded text-gray-200 transition-colors cursor-pointer"
+      >
+        <BookOpen size={13} /> Manage Dictionary…
+      </button>
+    )}
+
+    {dictionaryOpen && (
+      <DictionaryModal onClose={() => setDictionaryOpen(false)} />
+    )}
+    </div>
+
+    <div className="border-t border-[#2a3136] pt-4">
+    <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-3">
     Images
     </div>
     <label className="flex items-center justify-between text-xs text-gray-300 cursor-pointer py-1">
@@ -653,7 +694,108 @@ function GeneralPanel({ vaultPath }: { vaultPath: string }) {
   );
 }
 
+// ── Dictionary Management Modal ───────────────────────────────────────────
 
+function DictionaryModal({ onClose }: { onClose: () => void }) {
+  const [custom, setCustom] = useState<string[]>([]);
+  const [draft, setDraft] = useState("");
+
+  const refresh = () => {
+    setCustom(getCustomDictionary());
+  };
+
+  useEffect(() => {
+    refresh();
+    // Re-fetch when the global spellchecker state changes (e.g., from right-click)
+    const handler = () => refresh();
+    window.addEventListener("spellcheck-changed", handler);
+    return () => window.removeEventListener("spellcheck-changed", handler);
+  }, []);
+
+  const handleAdd = () => {
+    const word = draft.trim().toLowerCase();
+    if (!word) return;
+    addToCustomDictionary(word);
+    setDraft("");
+  };
+
+  return (
+    <div
+    className="fixed inset-0 z-[800] bg-black/70 flex items-center justify-center p-6"
+    onClick={onClose}
+    >
+    <div
+    data-opaque
+    className="bg-[#1e2327] border border-[#2a3136] rounded-lg shadow-2xl w-[600px] max-w-[94vw] h-[70vh] flex flex-col overflow-hidden"
+    onClick={(e) => e.stopPropagation()}
+    >
+    <div className="flex items-center gap-2 px-4 py-3 border-b border-[#2a3136] bg-[#1a1e21] flex-shrink-0">
+    <BookOpen size={14} className="text-blue-400" />
+    <span className="text-sm font-medium text-gray-100">Custom Dictionary</span>
+    <button
+    onClick={onClose}
+    className="ml-auto text-gray-500 hover:text-gray-300 p-0.5"
+    title="Close"
+    >
+    <X size={14} />
+    </button>
+    </div>
+
+    <div className="p-4 border-b border-[#2a3136] bg-[#161a1d] flex-shrink-0 flex items-center gap-2">
+    <input
+    autoFocus
+    type="text"
+    value={draft}
+    onChange={(e) => setDraft(e.target.value)}
+    onKeyDown={(e) => {
+      if (e.key === "Enter") handleAdd();
+      if (e.key === "Escape") onClose();
+    }}
+    placeholder="Type a word to add…"
+    className="flex-1 bg-[#0f1315] border border-[#30363d] rounded px-3 py-2 text-sm text-gray-100 outline-none focus:ring-1 focus:ring-blue-500"
+    />
+    <button
+    onClick={handleAdd}
+    disabled={!draft.trim()}
+    className="px-4 py-2 text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white rounded font-medium"
+    >
+    Add Word
+    </button>
+    </div>
+
+    <div className="flex-1 overflow-y-auto flex flex-col">
+    {/* Custom Dictionary Column */}
+    <div className="flex-1 p-4">
+    <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-3 flex items-center justify-between">
+    <span>Custom Dictionary ({custom.length})</span>
+    </div>
+    {custom.length === 0 ? (
+      <p className="text-xs text-gray-600 italic">No custom words added.</p>
+    ) : (
+      <div className="flex flex-wrap gap-1.5">
+      {custom.map((w) => (
+        <span
+        key={w}
+        className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-[#0f1315] border border-[#30363d] text-gray-300"
+        >
+        {w}
+        <button
+        onClick={() => removeFromCustomDictionary(w)}
+        className="text-gray-500 hover:text-red-400 ml-0.5"
+        title="Remove word"
+        >
+        <X size={10} />
+        </button>
+        </span>
+      ))}
+      </div>
+    )}
+    </div>
+    </div>
+    </div>
+    </div>
+  );
+}
 
 function AboutPanel() {
   const [version, setVersion] = useState<string>("");

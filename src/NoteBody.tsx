@@ -89,6 +89,16 @@ import { createScripture } from "./ScriptureBlock";
 import { createAttachment } from "./FileBlock";
 import { createDmArchive } from "./DmArchive";
 import { isReliablyEmbeddable } from "./embeds";
+import {
+  spellPlugin,
+  computeSpellDecorations,
+  applySpellDecorations,
+  clearSpellDecorations,
+} from "./spellcheck/spellPlugin";
+import { isSpellcheckEnabled } from "./spellcheck/spellcheck";
+import SpellSuggestions, {
+  type SpellSuggestionsState,
+} from "./spellcheck/SpellSuggestions";
 import { getPluginSlashItems, getPluginBlockSpecs } from "./plugins";
 import { useNoteMode } from "./useNoteMode";
 import { usePaneActive } from "./paneContext";
@@ -684,6 +694,11 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
     } | null>(null);
     const pasteMenuRef = useRef<HTMLDivElement>(null);
 
+    const [spellSuggestions, setSpellSuggestions] =
+      useState<SpellSuggestionsState | null>(null);
+    const spellTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const spellRunRef = useRef(0);
+
     const [imageMenu, setImageMenu] = useState<ImageMenuState | null>(null);
     const [editingImage, setEditingImage] = useState<{
       blockId: string;
@@ -1166,6 +1181,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       try {
         tiptap.registerPlugin(noteLinkPlugin);
         tiptap.registerPlugin(searchPlugin);
+        tiptap.registerPlugin(spellPlugin);
       } catch (e) {
         console.warn("[note-links] registerPlugin failed:", e);
       }
@@ -2723,6 +2739,38 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       return run;
     };
 
+    const updateFrontmatterDirect = async (patch: Partial<Frontmatter>) => {
+      if (disposedRef.current) return;
+      await queueWrite(async () => {
+        let raw: string | null = null;
+        try { raw = await readTextFile(path); } catch { raw = null; }
+        if (raw === null) {
+          frontmatterRef.current = { ...frontmatterRef.current, ...patch };
+          isNewFileRef.current = false;
+          await writeFileAtomic(path, serializeNoteFile(frontmatterRef.current, ""));
+          lastSaveAtRef.current = Date.now();
+          window.dispatchEvent(new CustomEvent("file-changed", { detail: { path } }));
+          return;
+        }
+        const { frontmatter: onDisk, body } = parseNoteFile(raw);
+        const merged: Frontmatter = { ...onDisk, ...patch };
+        if (merged.freezeModified !== true) merged.modified = new Date().toISOString();
+        for (const k of Object.keys(merged)) {
+          if (merged[k] === "" || merged[k] === undefined || merged[k] === null) {
+            delete merged[k];
+          }
+        }
+        frontmatterRef.current = merged;
+        try {
+          await writeFileAtomic(path, serializeNoteFile(merged, body));
+          lastSaveAtRef.current = Date.now();
+          window.dispatchEvent(new CustomEvent("file-changed", { detail: { path } }));
+        } catch (e) {
+          console.error("Failed to update frontmatter", e);
+        }
+      });
+    };
+
     const saveBody = async () => {
       if (!editor) return;
       if (disposedRef.current) return;
@@ -2779,6 +2827,35 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
     };
 
     saveBodyRef.current = saveBody;
+
+    // ── Spell check scheduling ─────────────────────────────────────────
+    // Debounced. Cancels any prior run via a monotonic id so a slow run
+    // can't race a fast one and overwrite the newer decorations.
+    const scheduleSpellcheck = useCallback(() => {
+      if (spellTimerRef.current) {
+        clearTimeout(spellTimerRef.current);
+        spellTimerRef.current = null;
+      }
+      if (mode !== "edit" || !isSpellcheckEnabled()) return;
+
+      const myRun = ++spellRunRef.current;
+      spellTimerRef.current = setTimeout(async () => {
+        spellTimerRef.current = null;
+        if (myRun !== spellRunRef.current) return;
+        const tiptap: any = (editor as any)?._tiptapEditor;
+        if (!tiptap?.state?.doc) return;
+        try {
+          const ignored = Array.isArray(frontmatterRef.current.spellIgnore)
+            ? (frontmatterRef.current.spellIgnore as string[])
+            : [];
+          const decos = await computeSpellDecorations(tiptap.state.doc, path, ignored);
+          if (myRun !== spellRunRef.current) return;
+          applySpellDecorations(tiptap.view, decos);
+        } catch (e) {
+          console.error("[spellcheck] run failed:", e);
+        }
+      }, 400);
+    }, [editor, mode]);
 
     const scheduleSave = () => {
       dirtyRef.current = true;
@@ -3704,65 +3781,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       rearm: () => {
         disposedRef.current = false;
       },
-      updateFrontmatter: async (patch) => {
-        // If this editor has been disposed (note deleted, moved, or the
-        // pane switched to a different note), do NOT recreate the file on
-        // disk. Without this guard, a late UI action — a slider drag
-        // ending, a cover picker closing — can bring a just-trashed file
-        // back as an empty stub.
-        if (disposedRef.current) return;
-
-        await queueWrite(async () => {
-          let raw: string | null = null;
-          try {
-            raw = await readTextFile(path);
-          } catch {
-            raw = null;
-          }
-
-          if (raw === null) {
-            frontmatterRef.current = { ...frontmatterRef.current, ...patch };
-            isNewFileRef.current = false;
-            await writeFileAtomic(
-              path,
-              serializeNoteFile(frontmatterRef.current, "")
-            );
-            lastSaveAtRef.current = Date.now();
-            window.dispatchEvent(
-              new CustomEvent("file-changed", { detail: { path } })
-            );
-            return;
-          }
-
-          const { frontmatter: onDisk, body } = parseNoteFile(raw);
-          const merged: Frontmatter = {
-            ...onDisk,
-            ...patch,
-          };
-          if (merged.freezeModified !== true) {
-            merged.modified = new Date().toISOString();
-          }
-          for (const k of Object.keys(merged)) {
-            if (
-              merged[k] === "" ||
-              merged[k] === undefined ||
-              merged[k] === null
-            ) {
-              delete merged[k];
-            }
-          }
-          frontmatterRef.current = merged;
-          try {
-            await writeFileAtomic(path, serializeNoteFile(merged, body));
-            lastSaveAtRef.current = Date.now();
-            window.dispatchEvent(
-              new CustomEvent("file-changed", { detail: { path } })
-            );
-          } catch (e) {
-            console.error("Failed to update frontmatter", e);
-          }
-        });
-      },
+      updateFrontmatter: updateFrontmatterDirect,
     }));
 
     // Register with the app-wide flusher so window-close saves us.
@@ -3771,6 +3790,81 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       return unreg;
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
+
+    // ── Spell check: run on entry to edit mode, clear in read mode ─────
+    useEffect(() => {
+      if (!editor) return;
+      const tiptap: any = (editor as any)._tiptapEditor;
+      if (!tiptap?.view) return;
+      if (mode !== "edit" || !isSpellcheckEnabled()) {
+        clearSpellDecorations(tiptap.view);
+        if (spellTimerRef.current) {
+          clearTimeout(spellTimerRef.current);
+          spellTimerRef.current = null;
+        }
+        return;
+      }
+      scheduleSpellcheck();
+    }, [editor, mode, scheduleSpellcheck]);
+
+    // Re-run when the user adds/removes a word, or toggles the setting.
+    useEffect(() => {
+      const handler = () => scheduleSpellcheck();
+      window.addEventListener("spellcheck-changed", handler);
+      return () =>
+        window.removeEventListener("spellcheck-changed", handler);
+    }, [scheduleSpellcheck]);
+
+    // Clean up the pending timer on unmount.
+    useEffect(() => {
+      return () => {
+        if (spellTimerRef.current) {
+          clearTimeout(spellTimerRef.current);
+          spellTimerRef.current = null;
+        }
+      };
+    }, []);
+
+    // ── Right-click a squiggle → show suggestions ──────────────────────
+    useEffect(() => {
+      if (!editor || mode !== "edit") return;
+      const el = wrapperRef.current;
+      if (!el) return;
+
+      const onCtx = (e: MouseEvent) => {
+        const target = e.target as HTMLElement;
+        if (!target.classList?.contains("spell-error")) return;
+        const word = target.getAttribute("data-word");
+        if (!word) return;
+
+        const tiptap: any = (editor as any)._tiptapEditor;
+        const view = tiptap?.view;
+        if (!view) return;
+
+        // Find the inline range of the marked span within the doc.
+        let from = -1;
+        try {
+          from = view.posAtDOM(target, 0);
+        } catch {
+          return;
+        }
+        if (from < 0) return;
+        const to = from + word.length;
+
+        e.preventDefault();
+        e.stopPropagation();
+        setSpellSuggestions({
+          x: e.clientX,
+          y: e.clientY,
+          word,
+          from,
+          to,
+        });
+      };
+
+      el.addEventListener("contextmenu", onCtx, true);
+      return () => el.removeEventListener("contextmenu", onCtx, true);
+    }, [editor, mode]);
 
     const handleContentChange = () => {
       if (isLoading) return;
@@ -3802,6 +3896,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       }
 
       scheduleSave();
+      scheduleSpellcheck();
     };
 
     const resolveImageDelete = async (
@@ -4550,6 +4645,40 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
 
     return (
       <NoteContext.Provider value={noteContextValue}>
+      {spellSuggestions && (
+        <SpellSuggestions
+        state={spellSuggestions}
+        onClose={() => setSpellSuggestions(null)}
+        onChanged={scheduleSpellcheck}
+        onIgnoreWord={(word) => {
+          const current = Array.isArray(frontmatterRef.current.spellIgnore)
+          ? (frontmatterRef.current.spellIgnore as string[])
+          : [];
+          const lower = word.toLowerCase();
+          if (!current.includes(lower)) {
+            const next = [...current, lower];
+
+            // Update the ref synchronously so the spellchecker sees it immediately
+            frontmatterRef.current.spellIgnore = next;
+
+            // Call the new local function, not the parent's ref!
+            void updateFrontmatterDirect({ spellIgnore: next });
+          }
+        }}
+          onReplace={(replacement, from, to) => {
+            const tiptap: any = (editor as any)._tiptapEditor;
+            try {
+              tiptap
+                ?.chain()
+                .focus()
+                .insertContentAt({ from, to }, replacement)
+                .run();
+            } catch (e) {
+              console.error("[spellcheck] replace failed:", e);
+            }
+          }}
+        />
+      )}
       <div
       ref={wrapperRef}
       className={mode === "read" ? "note-read-mode" : ""}

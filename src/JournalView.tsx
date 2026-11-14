@@ -1525,10 +1525,18 @@ useEffect(() => {
       )}
 
       {propertiesOpen && (
-        <div className="fixed inset-0 z-[150] bg-black/60 flex items-start justify-center pt-20"
-          onClick={() => setPropertiesOpen(false)}>
-          <div className="bg-[#1e2327] border border-[#2a3136] rounded-lg shadow-2xl w-[560px] max-h-[75vh] overflow-hidden flex flex-col"
-            onClick={(e) => e.stopPropagation()}>
+        <div
+          className="fixed inset-0 z-[150] bg-black/60 flex items-start justify-center pt-20"
+          onMouseDown={(e) => {
+            (e.currentTarget as any)._mousedownOnBackdrop = (e.target === e.currentTarget);
+          }}
+          onMouseUp={(e) => {
+            if ((e.currentTarget as any)._mousedownOnBackdrop && e.target === e.currentTarget) {
+              setPropertiesOpen(false);
+            }
+          }}
+        >
+          <div className="bg-[#1e2327] border border-[#2a3136] rounded-lg shadow-2xl w-[560px] max-h-[75vh] overflow-hidden flex flex-col">
             <div className="flex items-center justify-between px-3 py-2 border-b border-[#2a3136] bg-[#1a1e21]">
               <div className="flex items-center gap-2 text-sm font-medium text-gray-100">
                 <List size={14} /><span>Properties</span>
@@ -1581,10 +1589,18 @@ useEffect(() => {
       )}
 
       {sourceOpen && (
-        <div className="fixed inset-0 z-[150] bg-black/70 flex items-start justify-center pt-16"
-          onClick={() => setSourceOpen(false)}>
-          <div className="bg-[#0f1315] border border-[#2a3136] rounded-lg shadow-2xl w-[820px] max-w-[92vw] max-h-[80vh] overflow-hidden flex flex-col"
-            onClick={(e) => e.stopPropagation()}>
+        <div
+          className="fixed inset-0 z-[150] bg-black/70 flex items-start justify-center pt-16"
+          onMouseDown={(e) => {
+            (e.currentTarget as any)._mousedownOnBackdrop = (e.target === e.currentTarget);
+          }}
+          onMouseUp={(e) => {
+            if ((e.currentTarget as any)._mousedownOnBackdrop && e.target === e.currentTarget) {
+              setSourceOpen(false);
+            }
+          }}
+        >
+          <div className="bg-[#0f1315] border border-[#2a3136] rounded-lg shadow-2xl w-[820px] max-w-[92vw] max-h-[80vh] overflow-hidden flex flex-col">
             <div className="flex items-center justify-between px-3 py-2 border-b border-[#2a3136] bg-[#1a1e21] flex-shrink-0">
               <div className="flex items-center gap-2 text-sm font-medium text-gray-100 min-w-0">
                 <Code2 size={14} className="flex-shrink-0" /><span className="flex-shrink-0">Source</span>
