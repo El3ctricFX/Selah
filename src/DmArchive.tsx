@@ -1,6 +1,6 @@
 // src/DmArchive.tsx
 import { createReactBlockSpec } from "@blocknote/react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
@@ -321,6 +321,42 @@ export const createDmArchive = createReactBlockSpec(
         e.stopPropagation();
         setLightboxIdx(i);
       };
+
+      // Listen for drops from the NoteBody plugin
+      useEffect(() => {
+        const handleDrop = async (e: Event) => {
+          const { blockId, paths } = (e as CustomEvent).detail;
+          if (blockId !== props.block.id) return;
+          if (!notePath) return;
+
+          setBusy(true);
+          try {
+            const added: string[] = [];
+            for (const src of paths) {
+              // If it's already an asset URL or external URL (e.g. dragging an image block), use it directly.
+              if (src.startsWith("asset://") || src.startsWith("http") || src.startsWith("data:")) {
+                added.push(src);
+              } else {
+                try {
+                  const dest = await saveImageToNoteAssets(notePath, src);
+                  added.push(convertFileSrc(dest));
+                } catch (err) {
+                  console.error("[dmarchive] save failed:", err);
+                }
+              }
+            }
+            if (added.length > 0) {
+              const currentSrcs = (props.editor.getBlock(props.block.id)?.props.srcs as string) || "";
+              update({ srcs: joinSrcs([...parseSrcs(currentSrcs), ...added]) });
+              setViewOpen(true);
+            }
+          } finally {
+            setBusy(false);
+          }
+        };
+        window.addEventListener(`dmarchive-drop-${props.block.id}`, handleDrop);
+        return () => window.removeEventListener(`dmarchive-drop-${props.block.id}`, handleDrop);
+      }, [props.block.id, notePath]);
 
       // ────────────────────────────────────────────────────────────────
       // Confirmation strip

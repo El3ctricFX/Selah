@@ -415,6 +415,7 @@ type DropTarget =
   placement: "before" | "after" | "nested";
 }
 | { kind: "gallery"; blockId: string; row: number; col: number }
+| { kind: "dmarchive"; blockId: string }
 | null;
 
 /**
@@ -446,6 +447,16 @@ function resolveDropTarget(
     const col = Number(cellEl.getAttribute("data-gallery-col"));
     if (blockId && Number.isFinite(row) && Number.isFinite(col)) {
       return { kind: "gallery", blockId, row, col };
+    }
+  }
+
+  // ── DM Archive block ───────────────────────────────────────────
+  const dmArchiveEl = el.closest('[data-content-type="dmarchive"]') as HTMLElement | null;
+  if (dmArchiveEl) {
+    const blockEl = dmArchiveEl.closest("[data-id]");
+    if (blockEl && editorRoot.contains(blockEl)) {
+      const blockId = blockEl.getAttribute("data-id");
+      if (blockId) return { kind: "dmarchive", blockId };
     }
   }
 
@@ -1899,6 +1910,36 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         }
 
 
+        // ── Case 0b: dropped onto a DM Archive block ────────────────
+        const dmArchiveEl = under.closest('[data-content-type="dmarchive"]') as HTMLElement | null;
+        if (dmArchiveEl) {
+          const dmBlockEl = dmArchiveEl.closest("[data-id]");
+          const dmBlockId = dmBlockEl?.getAttribute("data-id");
+          const srcBlock = editor.getBlock(blockId);
+          const imgSrc = ((srcBlock?.props as any)?.url as string) || "";
+          if (dmBlockId && imgSrc) {
+            window.dispatchEvent(
+              new CustomEvent(`dmarchive-drop-${dmBlockId}`, {
+                detail: { blockId: dmBlockId, paths: [imgSrc] },
+              })
+            );
+            handlingDeleteRef.current = true;
+            try {
+              editor.removeBlocks([blockId]);
+            } catch (err) {
+              console.error("[drag] removeBlocks after dmarchive-fill failed:", err);
+            }
+            requestAnimationFrame(() => {
+              try {
+                prevImageUrlsRef.current = new Set(collectImageUrls(editor.document));
+              } catch {}
+              handlingDeleteRef.current = false;
+            });
+            clearSelection();
+            return;
+          }
+        }
+
         // ── Case 0: dropped onto a gallery cell ─────────────────────
         // Hand the image over to the gallery via the shared move event,
         // then delete the original block. The gallery block listens for
@@ -2985,6 +3026,21 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
 
     const saveAndInsertFilePaths = useCallback(
       async (paths: string[], target?: DropTarget | null) => {
+        if (target?.kind === "dmarchive") {
+          const imagePaths = paths.filter((p) => IMAGE_EXT_RE.test(p));
+          if (imagePaths.length > 0) {
+            window.dispatchEvent(
+              new CustomEvent(`dmarchive-drop-${target.blockId}`, {
+                detail: { blockId: target.blockId, paths: imagePaths },
+              })
+            );
+          }
+          const remaining = paths.filter((p) => !IMAGE_EXT_RE.test(p));
+          if (remaining.length === 0) return;
+          paths = remaining;
+          target = null;
+        }
+
         // ── Images ────────────────────────────────────────────────
         const imageUrls: string[] = [];
         for (const p of paths) {
@@ -3146,6 +3202,19 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
               } else if (target?.kind === "gallery") {
                 const el = root?.querySelector(
                   `[data-gallery-block-id="${target.blockId}"][data-gallery-row="${target.row}"][data-gallery-col="${target.col}"]`
+                ) as HTMLElement | null;
+                if (el) {
+                  const r = el.getBoundingClientRect();
+                  indicator = {
+                    left: r.left,
+                    top: r.top,
+                    width: r.width,
+                    height: r.height,
+                  };
+                }
+              } else if (target?.kind === "dmarchive") {
+                const el = root?.querySelector(
+                  `[data-id="${target.blockId}"]`
                 ) as HTMLElement | null;
                 if (el) {
                   const r = el.getBoundingClientRect();
@@ -4858,6 +4927,8 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
             className={
               dragOverlay.target?.kind === "gallery"
               ? "fixed z-[450] pointer-events-none rounded-md ring-2 ring-blue-400 bg-blue-500/15 transition-[top,left,width,height] duration-75"
+              : dragOverlay.target?.kind === "dmarchive"
+              ? "fixed z-[450] pointer-events-none rounded-md ring-2 ring-blue-400 bg-blue-500/10 transition-[top,left,width,height] duration-75"
               : dragOverlay.target?.kind === "insert" &&
               dragOverlay.target.placement === "nested"
               ? "fixed z-[450] pointer-events-none rounded-md ring-2 ring-blue-400/70 transition-[top,left,width,height] duration-75"
@@ -4880,7 +4951,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
             top: dragOverlay.y + 14,
           }}
           >
-          Drop to add
+          {dragOverlay.target?.kind === "dmarchive" ? "Drop to add to archive" : "Drop to add"}
           </div>
           </>
       )}
