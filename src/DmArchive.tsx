@@ -275,14 +275,22 @@ export const createDmArchive = createReactBlockSpec(
         suppressClickRef.current = true;
         setDragIdx(i);
         try {
-          e.dataTransfer.effectAllowed = "move";
-          e.dataTransfer.setData("text/plain", String(i));
+          e.dataTransfer.effectAllowed = "copyMove";
+          const url = resolvedSrcs[i];
+          if (url) {
+            // Allow dragging out of the archive into the note as a standard image
+            e.dataTransfer.setData("text/html", `<img src="${url}" />`);
+            e.dataTransfer.setData("text/plain", url);
+          }
+          // Keep custom MIME for internal reordering
+          e.dataTransfer.setData("application/x-dmarchive-index", String(i));
         } catch {}
       };
 
       const handleDragOver = (i: number) => (e: React.DragEvent) => {
         if (dragIdx === null) return;
         e.preventDefault();
+        e.stopPropagation();
         e.dataTransfer.dropEffect = "move";
         if (hoverIdx !== i) setHoverIdx(i);
       };
@@ -295,8 +303,9 @@ export const createDmArchive = createReactBlockSpec(
 
       const handleDrop = (i: number) => (e: React.DragEvent) => {
         e.preventDefault();
+        e.stopPropagation(); // Stop the editor from also handling this drop
         const from =
-          dragIdx ?? Number(e.dataTransfer.getData("text/plain"));
+          dragIdx ?? Number(e.dataTransfer.getData("application/x-dmarchive-index"));
         setDragIdx(null);
         setHoverIdx(null);
         if (!Number.isFinite(from) || from === i) return;
@@ -306,12 +315,22 @@ export const createDmArchive = createReactBlockSpec(
         update({ srcs: joinSrcs(next) });
       };
 
-      const handleDragEnd = () => {
+      const handleDragEnd = (e: React.DragEvent) => {
+        // If we have a drag index and the dropEffect isn't "none", it was dropped successfully.
+        // Since it's not "none", it means it was dropped outside the archive (internal drops clear dragIdx).
+        const droppedOutside = dragIdx !== null && e.dataTransfer.dropEffect !== "none";
+        const currentIdx = dragIdx;
+
         setDragIdx(null);
         setHoverIdx(null);
         setTimeout(() => {
           suppressClickRef.current = false;
         }, 0);
+
+        if (droppedOutside && currentIdx !== null) {
+          const next = srcs.filter((_, i) => i !== currentIdx);
+          update({ srcs: joinSrcs(next) });
+        }
       };
 
       const handleImageClick = (i: number) => (e: React.MouseEvent) => {
