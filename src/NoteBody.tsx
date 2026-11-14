@@ -5488,6 +5488,33 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
             const dest = await writeImageBytesToNoteAssets(path, bytes, `cropped-${Date.now()}.webp`);
             const newUrl = convertFileSrc(dest);
 
+            // Remember the original so Vault media never flags it as unused
+            try {
+              const origAbs = assetUrlToAbsolutePath(editingImage.originalUrl || editingImage.url);
+              if (origAbs) {
+                const norm = origAbs.replace(/\\/g, "/");
+                const slash = norm.lastIndexOf("/");
+                let keepDir = norm.slice(0, slash);
+                let keepName = norm.slice(slash + 1);
+                if (keepDir.endsWith("/proxy") && /\.webp$/i.test(keepName)) {
+                  keepDir = keepDir.slice(0, -"/proxy".length);
+                  keepName = keepName.slice(0, -5);
+                }
+                const keepPath = await join(keepDir, "keep.json");
+                let keepList: string[] = [];
+                try {
+                  const parsed = JSON.parse(await readTextFile(keepPath));
+                  if (Array.isArray(parsed)) keepList = parsed.filter((x: any) => typeof x === "string");
+                } catch {}
+                if (!keepList.includes(keepName)) {
+                  keepList.push(keepName);
+                  await writeFileAtomic(keepPath, JSON.stringify(keepList, null, 2));
+                }
+              }
+            } catch (e) {
+              console.warn("[crop] could not write keep.json:", e);
+            }
+
             // Delete the previous cropped image if it exists so we don't leave orphaned files
             if (editingImage.url !== editingImage.originalUrl) {
               const oldAbs = assetUrlToAbsolutePath(editingImage.url);
