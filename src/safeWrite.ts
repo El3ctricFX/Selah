@@ -1,7 +1,34 @@
 // src/safeWrite.ts
 import {
   writeTextFile, writeFile, rename as fsRename, exists,
+  readTextFile, copyFile,
 } from "@tauri-apps/plugin-fs";
+
+async function guardVaultMetadata(path: string, contents: string): Promise<void> {
+  if (!/[\\/]\.vault_metadata\.json$/.test(path)) return;
+  let current: any = null;
+  try {
+    if (await exists(path)) current = JSON.parse(await readTextFile(path));
+  } catch {
+    return;
+  }
+  if (!current || !Array.isArray(current.categories) || current.categories.length === 0) return;
+
+  let incoming: any = null;
+  try { incoming = JSON.parse(contents); } catch {}
+  const curIds = new Set((current.categories as any[]).map((c) => c.id));
+  const inIds  = new Set(Array.isArray(incoming?.categories) ? incoming.categories.map((c: any) => c.id) : []);
+  const missing = [...curIds].filter((id) => !inIds.has(id));
+  if (missing.length > 0) {
+    console.error("[safeWrite] blocked metadata write dropping categories:", missing);
+    throw new Error("Refusing to overwrite .vault_metadata.json: it would erase categories.");
+  }
+  try { await copyFile(path, path + ".bak"); } catch {}
+}
+
+export interface WriteFileAtomicOptions {
+  allowShrink?: boolean;
+}
 
 /**
  * Write `contents` to `path` without ever leaving `path` in a partially-
@@ -18,8 +45,12 @@ import {
  */
 export async function writeFileAtomic(
   path: string,
-  contents: string | Uint8Array
+  contents: string | Uint8Array,
+  options: WriteFileAtomicOptions = {}
 ): Promise<void> {
+  if (typeof contents === "string" && !options.allowShrink) {
+    await guardVaultMetadata(path, contents);
+  }
   const nonce = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
   const tmp = `${path}.${nonce}.tmp`;
 

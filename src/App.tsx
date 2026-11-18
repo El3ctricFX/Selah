@@ -1,7 +1,8 @@
 // src/App.tsx
 import { useCallback, useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
+import { readTextFile } from "@tauri-apps/plugin-fs";
+import { writeFileAtomic } from "./safeWrite";
 import { join } from "@tauri-apps/api/path";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PanelLeftOpen, Columns2 } from "lucide-react";
@@ -911,7 +912,7 @@ export default function App() {
     const fileName = `Untitled-${Date.now()}.selah`;
     const fullPath = `${dir}/${fileName}`;
     try {
-      await writeTextFile(fullPath, `---\ncreated: ${now}\nmodified: ${now}\n---\n\n${await getDefaultTemplateBody(dir)}`);
+      await writeFileAtomic(fullPath, `---\ncreated: ${now}\nmodified: ${now}\n---\n\n${await getDefaultTemplateBody(dir)}`);
       openNoteByPath(fullPath);
     } catch (e) {
       console.error("[app] failed to create note:", e);

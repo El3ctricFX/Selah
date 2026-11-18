@@ -222,7 +222,11 @@ export default function Sidebar(props: SidebarProps) {
     try {
       const raw = await readTextFile(await join(vaultPath, '.vault_metadata.json'));
       fresh = JSON.parse(raw);
-    } catch {}
+    } catch {
+      // Reordering from stale in-memory metadata is safe because the guard
+      // in safeWrite.ts will refuse any write that drops a category.
+      console.warn('[vault] reorder used stale metadata; write will be guarded');
+    }
 
     const catsArr: Category[] = Array.isArray(fresh.categories)
       ? fresh.categories
@@ -318,10 +322,20 @@ export default function Sidebar(props: SidebarProps) {
     let meta: any = {
       categories: [], categoryOrder: [], activeCategory: null, folderMeta: {},
     };
+    let readFailed = false;
     try {
       const raw = await readTextFile(await join(vaultPath, '.vault_metadata.json'));
       meta = { ...meta, ...JSON.parse(raw) };
-    } catch {}
+    } catch { readFailed = true; }
+
+    if (readFailed) {
+      try {
+        if (await exists(await join(vaultPath, '.vault_metadata.json'))) {
+          console.error('[vault] metadata exists but could not be read; not touching it');
+          return;
+        }
+      } catch {}
+    }
 
     if (!meta.categories?.length && Array.isArray(meta.sections) && meta.sections.length) {
       const migrated = meta.sections.map((s: any) => ({
@@ -357,6 +371,21 @@ export default function Sidebar(props: SidebarProps) {
       await saveMetadata(meta);
     } else {
       setMetadata(meta);
+    }
+
+    // Self-heal: promote the first journal to builtin if it isn't already.
+    // Older or repaired metadata can end up with a journal whose `builtin`
+    // flag was lost. Without this, the delete button reappears on the
+    // Daily Journal and the user can accidentally remove it.
+    if (Array.isArray(meta.categories)) {
+      const firstJournal = meta.categories.find(
+        (c: Category) => c.mode === "journal",
+      );
+      if (firstJournal && !firstJournal.builtin) {
+        firstJournal.builtin = true;
+        await saveMetadata(meta);
+        return; // saveMetadata fires metadata-changed → loadVault reruns
+      }
     }
 
     setFolderMeta(meta.folderMeta || {});
@@ -497,10 +526,21 @@ export default function Sidebar(props: SidebarProps) {
     }
 
     let latest: any = { categories: [], categoryOrder: [], folderMeta: {}, activeCategory: null };
+    let readOk = false;
     try {
       const raw = await readTextFile(await join(vaultPath, '.vault_metadata.json'));
       latest = { ...latest, ...JSON.parse(raw) };
+      readOk = true;
     } catch {}
+
+    if (!readOk) {
+      try {
+        if (await exists(await join(vaultPath, '.vault_metadata.json'))) {
+          await confirmAsync("Could not read the vault metadata. Please close any other apps that may have it open and try again.");
+          return;
+        }
+      } catch {}
+    }
 
     const currentCategories: Category[] = Array.isArray(latest.categories) ? latest.categories : [];
     const currentOrder: string[] = Array.isArray(latest.categoryOrder) ? latest.categoryOrder : [];
@@ -515,6 +555,7 @@ export default function Sidebar(props: SidebarProps) {
   };
 
   const renameCategory = async (cat: Category) => {
+    if (!isEdit) return;
     const newName = await promptAsync('Rename category:', cat.name);
     if (!newName) return;
 
@@ -555,6 +596,7 @@ export default function Sidebar(props: SidebarProps) {
   };
 
   const changeCategoryIcon = (cat: Category, x: number, y: number) => {
+    if (!isEdit) return;
     if (categoryIconPicker?.categoryId === cat.id) {
       setCategoryIconPicker(null);
       return;
@@ -572,6 +614,7 @@ export default function Sidebar(props: SidebarProps) {
   };
 
   const applyCategoryIcon = async (emoji: string) => {
+    if (!isEdit) return;
     if (!categoryIconPicker) return;
     const cat = categories.find((c) => c.id === categoryIconPicker.categoryId);
     if (!cat) {
@@ -588,8 +631,20 @@ export default function Sidebar(props: SidebarProps) {
     if (emoji === '') setCategoryIconPicker(null);
   };
 
+  // The Daily Journal is a first-class concept in Selah: it's the category
+  // the app auto-creates on a fresh vault, and it's what Home / Journal
+  // views key off of. It must never be deletable, regardless of what the
+  // metadata file says about `builtin` or `id` — both have been observed
+  // to be missing after a metadata wipe + repair cycle.
+  const isProtectedCategory = (cat: Category): boolean =>
+    cat.builtin === true ||
+    cat.id === "journal" ||
+    cat.mode === "journal" ||
+    cat.name === "Daily Journal";
+
   const deleteCategory = async (cat: Category) => {
-    if (cat.builtin) return;
+    if (!isEdit) return;
+    if (isProtectedCategory(cat)) return;
     const isRoot = !cat.dirName;
     if (isRoot) {
       const ok = await confirmAsync(`Remove "${cat.name}" from the sidebar?`);
@@ -610,12 +665,26 @@ export default function Sidebar(props: SidebarProps) {
       if (!k.startsWith(cat.id + '/')) cleanedFolderMeta[k] = folderMeta[k];
     }
     setFolderMeta(cleanedFolderMeta);
-    await saveMetadata({
+    // Intentional deletion — bypass the shrink guard.
+    setMetadata({
       ...metadata,
       categories: metadata.categories.filter((c: Category) => c.id !== cat.id),
       categoryOrder: (metadata.categoryOrder || []).filter((id: string) => id !== cat.id),
       folderMeta: cleanedFolderMeta,
     });
+    try {
+      await writeFileAtomic(
+        await join(vaultPath, '.vault_metadata.json'),
+        JSON.stringify({
+          ...metadata,
+          categories: metadata.categories.filter((c: Category) => c.id !== cat.id),
+          categoryOrder: (metadata.categoryOrder || []).filter((id: string) => id !== cat.id),
+          folderMeta: cleanedFolderMeta,
+        }, null, 2),
+        { allowShrink: true }
+      );
+      window.dispatchEvent(new Event('metadata-changed'));
+    } catch (e) { console.error('[vault] metadata write failed:', e); }
     await loadVault();
   };
 
@@ -632,7 +701,7 @@ export default function Sidebar(props: SidebarProps) {
         categories={categories}
       />
 
-      {categoryIconPicker && createPortal(
+      {categoryIconPicker && isEdit && createPortal(
         <div
           ref={categoryIconPickerRef}
           className="fixed z-[500] bg-[#1e2327] border border-[#2a3136] rounded-lg shadow-2xl overflow-hidden"
@@ -853,6 +922,7 @@ export default function Sidebar(props: SidebarProps) {
                       <Check size={12} className="text-blue-400 flex-shrink-0" />
                     )}
                   </button>
+                  {isEdit && (
                   <div className="flex items-center space-x-0.5 opacity-0 group-hover/cat:opacity-100 transition-opacity">
                   <button
                   onClick={(e) => { e.stopPropagation(); renameCategory(c); }}
@@ -876,7 +946,7 @@ export default function Sidebar(props: SidebarProps) {
                   >
                   <Smile size={11} />
                   </button>
-                  {!c.builtin && (
+                  {!isProtectedCategory(c) && (
                     <button
                     onClick={(e) => { e.stopPropagation(); deleteCategory(c); }}
                     className="text-gray-500 hover:text-red-400 p-1"
@@ -886,6 +956,7 @@ export default function Sidebar(props: SidebarProps) {
                     </button>
                   )}
                   </div>
+                  )}
                 </div>
               );
               })}

@@ -585,7 +585,27 @@ export function clearPlugins() {
 export async function setPluginEnabled(vaultPath: string, id: string, enabled: boolean) {
     const path = await join(vaultPath, ".vault_metadata.json");
     let meta: any = {};
-    try { meta = JSON.parse(await readTextFile(path)); } catch {}
+    let readOk = false;
+    try {
+        meta = JSON.parse(await readTextFile(path));
+        readOk = true;
+    } catch {}
+    if (!readOk) {
+        try {
+            if (await exists(path)) {
+                console.error("[plugins] metadata exists but is unreadable; refusing to overwrite");
+                throw new Error("Could not read vault metadata");
+            }
+        } catch (e) { throw e; }
+    }
+    if (!readOk) {
+        try {
+            if (await exists(path)) {
+                console.error("[plugins] metadata exists but is unreadable; refusing to overwrite");
+                throw new Error("Could not read vault metadata");
+            }
+        } catch (e) { throw e; }
+    }
     const set = new Set<string>(Array.isArray(meta?.plugins?.disabled) ? meta.plugins.disabled : []);
     if (enabled) set.delete(id); else set.add(id);
     meta.plugins = { ...(meta.plugins || {}), disabled: Array.from(set) };

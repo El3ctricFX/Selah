@@ -249,11 +249,27 @@ export function pluginTypesIn(body: string): string[] {
             const e = list[i];
             const oldBase = e.file.replace(/\.selah$/i, "");
             onProgress?.(`Importing "${oldBase}" (${i + 1} of ${list.length})…`);
-            const newBase = await uniqueBase(destDir, oldBase, claimed);
+
             let text = strFromU8(pack.files[`notes/${e.dir}/${e.file}`]);
+
+            // Extract the date to route it into the correct Year/Month folder.
+            // This matches what the Markdown importer does.
+            const parsed = parseNoteFile(text);
+            const dateStr = extractDateFromName(oldBase, parsed.frontmatter);
+
+            let targetDir = destDir;
+            if (dateStr && dateStr.includes("-")) {
+                const [y, m] = dateStr.split("-");
+                if (y && m) {
+                    targetDir = await join(destDir, y, m);
+                    await mkdir(targetDir, { recursive: true });
+                }
+            }
+
+            const newBase = await uniqueBase(targetDir, oldBase, claimed);
             if (newBase !== oldBase) text = rewriteAssetBase(text, oldBase, newBase);
 
-            const notePath = await join(destDir, `${newBase}.selah`);
+            const notePath = await join(targetDir, `${newBase}.selah`);
             await writeFileAtomic(notePath, text);
 
             const prefix = `notes/${e.dir}/assets/${oldBase}/`;

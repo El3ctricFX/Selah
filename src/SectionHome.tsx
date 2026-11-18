@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
-import { readDir, mkdir, writeTextFile, readTextFile, rename } from "@tauri-apps/plugin-fs";
+import { readDir, mkdir, writeTextFile, readTextFile, rename, exists } from "@tauri-apps/plugin-fs";
+import { writeFileAtomic } from "./safeWrite";
 import { join } from "@tauri-apps/api/path";
 import { ChevronRight, ChevronDown, Plus, FileText, Trash2, Smile } from "lucide-react";
 import { useModal } from "./Modal";
@@ -39,17 +40,28 @@ export default function SectionHome({ vaultPath, sectionDir, sectionName, sectio
   };
 
   const readMetadata = async () => {
+    const metaPath = await join(vaultPath, ".vault_metadata.json");
+    let fileExists = false;
     try {
-      const raw = await readTextFile(await join(vaultPath, ".vault_metadata.json"));
+      fileExists = await exists(metaPath);
+      if (!fileExists) {
+        return { icons: {}, order: {}, sections: [], sectionOrder: [] };
+      }
+      const raw = await readTextFile(metaPath);
       return JSON.parse(raw);
-    } catch {
+    } catch (e) {
+      console.error("[section-home] metadata read failed:", e);
+      // If the file exists but couldn't be parsed, don't return an empty
+      // fallback — that would let saveMetadata write back a category-wiping
+      // payload. Throwing here surfaces the problem instead of hiding it.
+      if (fileExists) throw e;
       return { icons: {}, order: {}, sections: [], sectionOrder: [] };
     }
   };
 
   const saveMetadata = async (meta: any) => {
     try {
-      await writeTextFile(await join(vaultPath, ".vault_metadata.json"), JSON.stringify(meta, null, 2));
+      await writeFileAtomic(await join(vaultPath, ".vault_metadata.json"), JSON.stringify(meta, null, 2));
     } catch (e) {
       console.error("Failed to save metadata:", e);
     }
@@ -119,8 +131,13 @@ export default function SectionHome({ vaultPath, sectionDir, sectionName, sectio
   };
 
   const load = async () => {
-    const meta = await readMetadata();
-    setTree(await readTree(sectionDir, meta.order || {}));
+    try {
+      const meta = await readMetadata();
+      setTree(await readTree(sectionDir, meta.order || {}));
+    } catch (e) {
+      console.error("[section-home] load failed:", e);
+      setTree([]);
+    }
   };
 
   useEffect(() => {

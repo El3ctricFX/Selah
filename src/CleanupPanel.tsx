@@ -9,6 +9,12 @@ import {
 import { auditVault, type VaultReport, type BrokenRef, type MissingProxiesForNote, type MissingThumbForNote, type ProxiesOffNote } from "./mediaVault";
 import { fixBrokenRef, fixAllBrokenRefsForNote, deleteUnusedFile, keepUnusedFile, fixOldLayout, buildProxiesForNote, buildThumbsForNote, removeProxiesForNote, removeBrokenRefFromNote, deleteOrphanedCategory, deleteOrphanedAssetFolder } from "./mediaFix";
 import { basename } from "./mediaVault";
+import {
+  previewVaultMetadataRepair,
+  applyVaultMetadataRepair,
+  type RepairPreview,
+  type RepairResult,
+} from "./metadataRepair";
 
 type Phase = "scanning" | "results" | "working" | "done" | "error";
 
@@ -28,6 +34,29 @@ export default function CleanupPanel({ open, onClose, vaultPath }: Props) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const scanSeq = useRef(0);
+
+  const [metaPreview, setMetaPreview] = useState<RepairPreview | null>(null);
+  const [metaPreviewOpen, setMetaPreviewOpen] = useState(false);
+  const [metaResult, setMetaResult] = useState<RepairResult | null>(null);
+
+  const openMetaPreview = async () => {
+    try {
+      const p = await previewVaultMetadataRepair(vaultPath);
+      setMetaPreview(p);
+      setMetaPreviewOpen(true);
+    } catch (e: any) {
+      console.error("[cleanup] metadata preview failed:", e);
+      setError(e?.message ?? String(e));
+    }
+  };
+
+  const applyMetaRepair = () =>
+    run("Repairing vault metadata", async () => {
+      const result = await applyVaultMetadataRepair(vaultPath);
+      setMetaResult(result);
+      setMetaPreviewOpen(false);
+      window.dispatchEvent(new Event("metadata-changed"));
+    });
 
   const scan = async (silent = false) => {
     const id = ++scanSeq.current;
@@ -355,6 +384,51 @@ export default function CleanupPanel({ open, onClose, vaultPath }: Props) {
                   </p>
                 </div>
               )}
+
+              {/* ── Vault metadata repair ─────────────────────────────── */}
+              <div className="mb-4 rounded-md border border-[#2a3136] bg-[#0f1315] px-3 py-2.5">
+                <div className="flex items-center gap-2">
+                  <Wrench size={13} className="text-emerald-400" />
+                  <span className="text-xs text-gray-200">Vault metadata</span>
+                  <span className="text-[10px] text-gray-500 ml-1">
+                    Re-link folders on disk to categories in{" "}
+                    <code className="px-1 rounded bg-black/40 font-mono">.vault_metadata.json</code>
+                  </span>
+                  <button
+                    onClick={openMetaPreview}
+                    disabled={working !== null}
+                    className="ml-auto flex items-center gap-1 px-2.5 py-1 text-xs bg-[#2a3136] hover:bg-[#30363d] disabled:opacity-40 border border-[#30363d] rounded text-gray-200"
+                  >
+                    <Wrench size={11} /> Repair…
+                  </button>
+                </div>
+                {metaResult && (
+                  <div className="mt-2 text-[11px] text-gray-400">
+                    Added <strong className="text-emerald-300">{metaResult.added.length}</strong>{" "}
+                    categor{metaResult.added.length === 1 ? "y" : "ies"} ·{" "}
+                    kept {metaResult.kept} existing{" "}
+                    {metaResult.unknownFolders.length > 0 && (
+                      <>
+                        ·{" "}
+                        <span className="text-amber-300">
+                          skipped {metaResult.unknownFolders.length} ambiguous folder
+                          {metaResult.unknownFolders.length === 1 ? "" : "s"}
+                        </span>
+                      </>
+                    )}
+                    {metaResult.orphanedCategories.length > 0 && (
+                      <>
+                        {" "}·{" "}
+                        <span className="text-amber-300">
+                          {metaResult.orphanedCategories.length} orphaned categor
+                          {metaResult.orphanedCategories.length === 1 ? "y" : "ies"}{" "}
+                          left untouched
+                        </span>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
 
               {/* ── Orphaned Folders ───────────────────────────────────── */}
               {report.orphanedCategories?.length > 0 && (
@@ -856,6 +930,124 @@ export default function CleanupPanel({ open, onClose, vaultPath }: Props) {
           <div className="border-t border-[#2a3136] bg-[#1a1e21] px-4 py-3 flex items-center gap-2 text-xs text-gray-400">
             <Loader2 size={12} className="animate-spin" />
             <span>{working}…</span>
+          </div>
+        )}
+
+        {metaPreviewOpen && metaPreview && (
+          <div
+            className="fixed inset-0 z-[260] bg-black/70 flex items-center justify-center p-6"
+            onClick={() => { if (working === null) setMetaPreviewOpen(false); }}
+          >
+            <div
+              data-opaque
+              className="bg-[#1e2327] border border-[#2a3136] rounded-lg shadow-2xl w-[640px] max-w-[94vw] max-h-[80vh] overflow-hidden flex flex-col"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center gap-2 px-4 py-3 border-b border-[#2a3136] bg-[#1a1e21]">
+                <Wrench size={14} className="text-emerald-400" />
+                <span className="text-sm font-medium text-gray-100">
+                  Repair vault metadata
+                </span>
+                <button
+                  onClick={() => setMetaPreviewOpen(false)}
+                  disabled={working !== null}
+                  className="ml-auto text-gray-500 hover:text-gray-300 p-0.5 disabled:opacity-40"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-4 text-xs text-gray-300 space-y-3">
+                {!metaPreview.hasMetadataFile && (
+                  <p className="text-amber-300">
+                    No <code className="px-1 rounded bg-black/40 font-mono">.vault_metadata.json</code> found.
+                    The repair will create one from the folders it finds.
+                  </p>
+                )}
+                {metaPreview.hasMetadataFile && !metaPreview.metadataReadable && (
+                  <p className="text-amber-300">
+                    The existing metadata file is corrupt or unreadable. The repair will salvage
+                    what it can, then add any missing categories.
+                  </p>
+                )}
+
+                <div>
+                  <div className="font-medium text-gray-200 mb-1">
+                    Will add {metaPreview.additions.length} categor
+                    {metaPreview.additions.length === 1 ? "y" : "ies"}
+                  </div>
+                  {metaPreview.additions.length === 0 ? (
+                    <p className="text-gray-500">Nothing to add.</p>
+                  ) : (
+                    <ul className="space-y-1">
+                      {metaPreview.additions.map((a) => (
+                        <li key={a.dirName} className="flex items-start gap-2">
+                          <span className="text-gray-500">·</span>
+                          <div>
+                            <span className="text-gray-200">{a.suggestedName}</span>{" "}
+                            <span className="text-gray-500">
+                              ({a.suggestedMode}, {a.reason})
+                            </span>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+
+                {metaPreview.unknownFolders.length > 0 && (
+                  <div>
+                    <div className="font-medium text-amber-300 mb-1">
+                      Skipped {metaPreview.unknownFolders.length} ambiguous folder
+                      {metaPreview.unknownFolders.length === 1 ? "" : "s"}
+                    </div>
+                    <ul className="space-y-1">
+                      {metaPreview.unknownFolders.map((u) => (
+                        <li key={u.name} className="text-gray-400">
+                          <span className="font-mono">{u.name}</span> — {u.reason}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {metaPreview.orphanedCategories.length > 0 && (
+                  <div>
+                    <div className="font-medium text-amber-300 mb-1">
+                      {metaPreview.orphanedCategories.length} orphaned categor
+                      {metaPreview.orphanedCategories.length === 1 ? "y" : "ies"} (left untouched)
+                    </div>
+                    <ul className="space-y-1">
+                      {metaPreview.orphanedCategories.map((o) => (
+                        <li key={o.id} className="text-gray-400">
+                          <span className="font-mono">{o.dirName}</span> — folder no longer exists
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+
+              <div className="border-t border-[#2a3136] bg-[#1a1e21] px-4 py-3 flex items-center justify-end gap-2">
+                <button
+                  onClick={() => setMetaPreviewOpen(false)}
+                  disabled={working !== null}
+                  className="px-3 py-1.5 text-xs text-gray-300 hover:text-gray-100 bg-[#2a3136] hover:bg-[#30363d] border border-[#30363d] rounded disabled:opacity-40"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={applyMetaRepair}
+                  disabled={working !== null || (metaPreview.additions.length === 0 && metaPreview.metadataReadable)}
+                  className="flex items-center gap-1 px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 text-white rounded disabled:opacity-40"
+                >
+                  <Wrench size={11} />
+                  {metaPreview.additions.length > 0
+                    ? `Add ${metaPreview.additions.length} categor${metaPreview.additions.length === 1 ? "y" : "ies"}`
+                    : "Repair file"}
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </div>

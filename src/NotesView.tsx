@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
-  readDir, readTextFile, writeTextFile, mkdir, stat, rename as fsRename,
+  readDir, readTextFile, writeTextFile, mkdir, stat, rename as fsRename, exists,
 } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import {
@@ -20,6 +20,7 @@ import { getDefaultTemplateBody } from "./templates";
 import TagPickerModal from "./TagPickerModal";
 import { scanAllVaultTags, invalidateTagCache } from "./TagEditor";
 import { makeFolderKey, type FolderMetaMap } from "./folderMeta";
+import { writeFileAtomic } from "./safeWrite";
 
 interface NotesViewProps {
   sectionDir: string;
@@ -291,13 +292,24 @@ export default function NotesView({
     setFolderMeta(next);
     try {
       let meta: any = {};
+      let readOk = false;
+      const metaPath = await join(vaultPath, ".vault_metadata.json");
       try {
-        const raw = await readTextFile(await join(vaultPath, ".vault_metadata.json"));
+        const raw = await readTextFile(metaPath);
         meta = JSON.parse(raw);
+        readOk = true;
       } catch {}
+      if (!readOk) {
+        try {
+          if (await exists(metaPath)) {
+            console.error("[notes] metadata exists but is unreadable; not overwriting");
+            return;
+          }
+        } catch {}
+      }
       meta.folderMeta = next;
-      await writeTextFile(
-        await join(vaultPath, ".vault_metadata.json"),
+      await writeFileAtomic(
+        metaPath,
         JSON.stringify(meta, null, 2)
       );
       window.dispatchEvent(new Event("metadata-changed"));
