@@ -320,7 +320,7 @@ function splitNoteBody(body: string): Segment[] {
       out.push({
         kind: "callout",
         callout: {
-          icon: attrs.icon || "💡",
+          icon: attrs.icon ?? "",
           color: attrs.color || "gray",
           inner: inner.join("\n").trimEnd(),
         },
@@ -952,7 +952,7 @@ async function parseBodyToBlocks(
       blocks.push({
         type: "callout",
         props: {
-          icon: seg.callout?.icon || "💡",
+          icon: seg.callout?.icon ?? "",
           color: seg.callout?.color || "gray",
         },
         content,

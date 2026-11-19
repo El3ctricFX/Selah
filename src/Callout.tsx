@@ -24,7 +24,7 @@ export const createCallout = createReactBlockSpec(
   {
     type: "callout",
     propSchema: {
-      icon: { default: "💡" },
+      icon: { default: "" },
       color: { default: "gray" },
     },
     content: "inline",
@@ -32,13 +32,36 @@ export const createCallout = createReactBlockSpec(
   {
     render: (props) => {
       const live = props.editor.getBlock(props.block.id) ?? props.block;
-      const icon = (live.props.icon as string) || "💡";
+      const rawIcon = (live.props.icon as string) || "";
+const icon = rawIcon === "none" ? "" : rawIcon;
       const colorKey = ((live.props.color as string) || "gray") as ColorKey;
       const activeBg = COLORS[colorKey]?.bg ?? COLORS.gray.bg;
 
       const [menuOpen, setMenuOpen] = useState(false);
       const [pickerOpen, setPickerOpen] = useState(false);
       const [anchor, setAnchor] = useState<{ top: number; left: number } | null>(null);
+
+      // BlockNote doesn't reliably re-render block components when the
+      // editor's `editable` flag flips, so we mirror it into local state
+      // and refresh it on a light interval. The setter bails out when the
+      // value hasn't changed, so this doesn't cause needless re-renders.
+      const [isEditable, setIsEditable] = useState<boolean>(true);
+      useEffect(() => {
+        const read = (): boolean => {
+          const ed = props.editor as any;
+          if (typeof ed.isEditable === "boolean") return ed.isEditable;
+          const el = props.contentRef.current as HTMLElement | null;
+          return el?.isContentEditable ?? true;
+        };
+        setIsEditable(read());
+        const id = setInterval(() => {
+          setIsEditable((prev) => {
+            const next = read();
+            return prev === next ? prev : next;
+          });
+        }, 200);
+        return () => clearInterval(id);
+      }, [props.editor, props.contentRef]);
 
       const iconRef = useRef<HTMLButtonElement>(null);
       const menuRef = useRef<HTMLDivElement>(null);
@@ -76,6 +99,7 @@ export const createCallout = createReactBlockSpec(
       };
 
       const openMenu = () => {
+        if (!isEditable) return;
         const a = computeAnchor();
         if (!a) return;
         setAnchor(a);
@@ -84,6 +108,7 @@ export const createCallout = createReactBlockSpec(
       };
 
       const openPicker = () => {
+        if (!isEditable) return;
         const a = computeAnchor();
         if (!a) return;
         setAnchor(a);
@@ -113,23 +138,26 @@ export const createCallout = createReactBlockSpec(
           className="flex items-start gap-3 my-2 w-full rounded-md px-4 py-3"
           style={{ backgroundColor: activeBg }}
         >
-          <div className="flex-shrink-0 pt-0.5">
-            <button
-              ref={iconRef}
-              contentEditable={false}
-              onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-              onClick={(e) => {
-                e.stopPropagation();
-                if (menuOpen) { setMenuOpen(false); return; }
-                if (pickerOpen) { setPickerOpen(false); return; }
-                openMenu();
-              }}
-              className="text-xl leading-none w-6 h-6 flex items-center justify-center rounded hover:bg-black/20 cursor-pointer transition-colors"
-              title="Change icon or color"
-            >
-              {icon}
-            </button>
-          </div>
+          {(icon || isEditable) && (
+            <div className="flex-shrink-0 pt-0.5">
+              <button
+                ref={iconRef}
+                contentEditable={false}
+                onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (!isEditable) return;
+                  if (menuOpen) { setMenuOpen(false); return; }
+                  if (pickerOpen) { setPickerOpen(false); return; }
+                  openMenu();
+                }}
+                className={`leading-none w-6 h-6 flex items-center justify-center rounded transition-colors ${isEditable ? "hover:bg-black/20 cursor-pointer" : "cursor-default"} ${icon ? "text-xl" : "text-sm text-gray-500/70"}`}
+                title={isEditable ? (icon ? "Change emoji or color" : "Add emoji or change color") : undefined}
+              >
+                {icon || "+"}
+              </button>
+            </div>
+          )}
 
           <div
             ref={props.contentRef}
@@ -149,8 +177,22 @@ export const createCallout = createReactBlockSpec(
                 className="w-full text-left px-3 py-2 text-sm text-gray-300 hover:bg-[#2a3136] flex items-center gap-2 border-b border-[#2a3136]"
               >
                 <span className="text-base">😀</span>
-                <span>Pick any emoji…</span>
+                <span>Change Emoji</span>
               </button>
+              {icon && (
+                <button
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    apply({ icon: "none" });
+                    setMenuOpen(false);
+                  }}
+                  className="w-full text-left px-3 py-2 text-sm text-gray-300 hover:bg-[#2a3136] flex items-center gap-2 border-b border-[#2a3136]"
+                >
+                  <span className="text-base opacity-60">🚫</span>
+                  <span>Remove Emoji</span>
+                </button>
+              )}
 
               <div className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wider text-gray-500">
                 Color
