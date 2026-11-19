@@ -1175,7 +1175,7 @@ export default function Editor({
           <button onClick={openSource} className="flex items-center justify-center w-8 h-8 rounded text-gray-400 hover:text-gray-100 hover:bg-[#1e2327] transition-colors cursor-pointer" title="Source">
             <Code2 size={16} />
           </button>
-          <button onClick={openCoverPanel} className="flex items-center justify-center w-8 h-8 rounded text-gray-400 hover:text-gray-100 hover:bg-[#1e2327] transition-colors cursor-pointer" title="Header settings">
+          <button onClick={openCoverPanel} className="flex items-center justify-center w-8 h-8 rounded text-gray-400 hover:text-gray-100 hover:bg-[#1e2327] transition-colors cursor-pointer" title="Note Settings">
             <Sliders size={16} />
           </button>
             </>
@@ -1240,7 +1240,7 @@ export default function Editor({
               <button onClick={toggleTextShadow} className={`p-1.5 rounded text-white transition-colors ${coverTextShadow ? "bg-black/60 hover:bg-black/80" : "bg-black/30 hover:bg-black/60 text-white/50"}`} title={coverTextShadow ? "Hide text shadow" : "Show text shadow"}>
                 <Sparkles size={12} />
               </button>
-              <button onClick={openCoverPanel} className="p-1.5 rounded bg-black/60 hover:bg-black/80 text-white" title="Header settings">
+              <button onClick={openCoverPanel} className="p-1.5 rounded bg-black/60 hover:bg-black/80 text-white" title="Note Settings">
                 <Sliders size={12} />
               </button>
               <button onClick={removeCover} className="p-1.5 rounded bg-black/60 hover:bg-black/80 text-white" title="Remove cover">
@@ -1376,7 +1376,7 @@ export default function Editor({
             <div className="flex items-center gap-2 text-sm font-medium text-gray-100">
               <GripHorizontal size={14} className="text-gray-500" />
               <Palette size={14} />
-              <span>Header</span>
+              <span>Note Settings</span>
             </div>
             <button data-no-drag onClick={() => setCoverPickerOpen(false)} className="text-gray-500 hover:text-gray-300 cursor-pointer" title="Close">
               <X size={14} />

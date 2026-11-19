@@ -1266,7 +1266,7 @@ useEffect(() => {
 
                 <button onClick={() => openCoverPanel()}
                   className="flex items-center justify-center w-7 h-7 rounded text-gray-400 hover:text-gray-100 hover:bg-[#1e2327] transition-colors cursor-pointer flex-shrink-0"
-                  title="Header settings">
+                  title="Note settings">
                   <Sliders size={15} />
                 </button>
                   </>
@@ -1405,7 +1405,7 @@ useEffect(() => {
                       </button>
                       <button onClick={openCoverPanel}
                         className="p-1.5 rounded bg-black/60 hover:bg-black/80 text-white"
-                        title="Header settings">
+                        title="Note settings">
                         <Sliders size={12} />
                       </button>
                       <button onClick={removeCover}
@@ -1678,7 +1678,7 @@ useEffect(() => {
             }}>
             <div className="flex items-center gap-2 text-sm font-medium text-gray-100">
               <GripHorizontal size={14} className="text-gray-500" />
-              <Palette size={14} /><span>Header</span>
+              <Palette size={14} /><span>Note Settings</span>
             </div>
             <button data-no-drag onClick={() => setCoverPickerOpen(false)}
               className="text-gray-500 hover:text-gray-300 cursor-pointer" title="Close">
