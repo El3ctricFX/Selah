@@ -63,17 +63,15 @@ html, body, #root {
    underline stays white. These rules move the underline to the colored
    child elements so the line matches the text. */
 .ProseMirror u {
-  text-decoration: none !important;
+  text-decoration: underline !important;
+  text-decoration-color: currentColor !important;
+  text-underline-offset: 2px;
 }
 .ProseMirror u span,
 .ProseMirror u a {
   text-decoration: underline !important;
   text-decoration-color: currentColor !important;
-}
-/* Fallback for regular text inside <u> that has no spans/links */
-.ProseMirror u:not(:has(span, a)) {
-  text-decoration: underline !important;
-  text-decoration-color: currentColor !important;
+  text-underline-offset: 2px;
 }
 
 .ProseMirror h2 { 
