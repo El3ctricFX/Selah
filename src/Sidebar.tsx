@@ -379,7 +379,7 @@ export default function Sidebar(props: SidebarProps) {
     // Daily Journal and the user can accidentally remove it.
     if (Array.isArray(meta.categories)) {
       const firstJournal = meta.categories.find(
-        (c: Category) => c.mode === "journal",
+        (c: Category) => c.id === "journal" || c.dirName === "Daily Journal",
       );
       if (firstJournal && !firstJournal.builtin) {
         firstJournal.builtin = true;
@@ -637,10 +637,8 @@ export default function Sidebar(props: SidebarProps) {
   // metadata file says about `builtin` or `id` — both have been observed
   // to be missing after a metadata wipe + repair cycle.
   const isProtectedCategory = (cat: Category): boolean =>
-    cat.builtin === true ||
     cat.id === "journal" ||
-    cat.mode === "journal" ||
-    cat.name === "Daily Journal";
+    (cat.builtin === true && cat.dirName === "Daily Journal");
 
   const deleteCategory = async (cat: Category) => {
     if (!isEdit) return;
