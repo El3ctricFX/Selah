@@ -17,6 +17,9 @@ import EmojiPicker, { Theme, EmojiStyle } from "emoji-picker-react";
 
 import NoteBody, { type NoteBodyHandle } from "./NoteBody";
 import PhotoLightbox from "./PhotoLightbox";
+import { Lock } from "lucide-react";
+import { useEncryptionFeature, encryptNoteFile, decryptNoteFile } from "./noteCrypto";
+import PasswordModal from "./PasswordModal";
 import { useNoteMode } from "./useNoteMode";
 import { useModal } from "./Modal";
 import { parseNoteFile, type Frontmatter } from "./noteFormat";
@@ -186,6 +189,9 @@ export default function Editor({
   const [titleFont, setTitleFont] = useState("default");
   const [docWidth, setDocWidth] = useState<DocWidthId>("default");
   const [proxiesOn, setProxiesOn] = useState(false);
+  const encFeature = useEncryptionFeature();
+  const [noteEncrypted, setNoteEncrypted] = useState(false);
+  const [encModal, setEncModal] = useState<null | "encrypt" | "decrypt">(null);
   const proxyFeature = useProxyFeature();
   const [showModifiedAt, setShowModifiedAt] = useState(true);
 
@@ -888,6 +894,36 @@ export default function Editor({
     } catch (e) { console.error("[editor] copy failed:", e); }
   };
 
+  const applyEncrypt = async (password: string): Promise<string | void> => {
+    try {
+      try { await noteBodyRef.current?.flush(); } catch {}
+      noteBodyRef.current?.dispose();
+      await encryptNoteFile(activeNote.path, password);
+      setNoteEncrypted(true);
+      setEncModal(null);
+      setSourceNonce((n) => n + 1);
+      window.dispatchEvent(new CustomEvent("file-changed", { detail: { path: activeNote.path } }));
+    } catch (e: any) {
+      noteBodyRef.current?.rearm();
+      return e?.message ?? String(e);
+    }
+  };
+
+  const applyDecrypt = async (password: string): Promise<string | void> => {
+    try {
+      try { await noteBodyRef.current?.flush(); } catch {}
+      noteBodyRef.current?.dispose();
+      await decryptNoteFile(activeNote.path, password);
+      setNoteEncrypted(false);
+      setEncModal(null);
+      setSourceNonce((n) => n + 1);
+      window.dispatchEvent(new CustomEvent("file-changed", { detail: { path: activeNote.path } }));
+    } catch (e: any) {
+      noteBodyRef.current?.rearm();
+      return e?.message ?? String(e);
+    }
+  };
+
   const sourceDirty = sourceDraft !== rawSource;
 
 
@@ -1075,6 +1111,20 @@ export default function Editor({
   return (
     <div className="w-full h-full bg-[#0f1315] text-gray-200 overflow-y-auto flex flex-col">
       {modal}
+      {encModal && (
+        <PasswordModal
+          title={encModal === "encrypt" ? "Encrypt this note" : "Remove encryption"}
+          description={
+            encModal === "encrypt"
+              ? "Choose a password. You'll need it every time you open this note."
+              : "Enter the password. The note will be saved back as a normal, readable .selah file."
+          }
+          requireConfirm={encModal === "encrypt"}
+          submitLabel={encModal === "encrypt" ? "Encrypt" : "Decrypt"}
+          onSubmit={encModal === "encrypt" ? applyEncrypt : applyDecrypt}
+          onClose={() => setEncModal(null)}
+        />
+      )}
 
       {lightbox && (
         <PhotoLightbox
@@ -1329,6 +1379,7 @@ export default function Editor({
               setTitleFont((fm.titleFont as string) || "default");
               setDocWidth(((fm.docWidth as string) as DocWidthId) || "default");
               setProxiesOn(fm.proxies === true);
+              setNoteEncrypted(fm.encrypted === true);
               setProxyPref(activeNote.path, fm.proxies === true);
               setShowModifiedAt(fm.freezeModified !== true);
               setCreatedAt(fm.created ? new Date(fm.created).toLocaleString("en-US", { year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : "");
@@ -1383,6 +1434,25 @@ export default function Editor({
             </button>
           </div>
           <div className="p-4 pr-5 overflow-y-auto space-y-4">
+            {(encFeature || noteEncrypted) && (
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-2 flex items-center gap-1.5">
+                  <Lock size={10} /> Encryption
+                </div>
+                <p className="text-[10px] text-gray-600 mb-2 leading-snug">
+                  {noteEncrypted
+                    ? "This note is encrypted on disk. Its password is required every time you open it."
+                    : "Password-protect this note. Its text is encrypted on disk, and the file is safe to send over the internet."}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setEncModal(noteEncrypted ? "decrypt" : "encrypt")}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-[#2a3136] hover:bg-[#30363d] border border-[#30363d] rounded text-gray-200 cursor-pointer"
+                >
+                  <Lock size={12} /> {noteEncrypted ? "Remove encryption…" : "Encrypt this note…"}
+                </button>
+              </div>
+            )}
             <div>
               <div className="flex items-center justify-between gap-3 mb-2">
                 <span className="text-[10px] uppercase tracking-wider text-gray-500 flex items-center gap-1.5"><Smile size={10} /> Icon</span>

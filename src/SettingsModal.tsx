@@ -22,6 +22,12 @@ import { BookOpen } from "lucide-react";
 import { pluginFeatureEnabled, setPluginFeatureEnabled } from "./pluginFeature";
 import { tabsFeatureEnabled, setTabsFeatureEnabled } from "./tabsFeature";
 import {
+  encryptionFeatureEnabled, setEncryptionFeatureEnabled,
+  scanEncryptedNotes, decryptNoteFileSafe,
+} from "./noteCrypto";
+import PasswordModal from "./PasswordModal";
+import { flushAll } from "./flushRegistry";
+import {
   HomeSettingsPanel,
   DEFAULT_HOME_SETTINGS,
   type HomeSettings,
@@ -528,6 +534,9 @@ function GeneralPanel({ vaultPath }: { vaultPath: string }) {
   const [plugins, setPlugins] = useState<boolean>(() => pluginFeatureEnabled());
   const [tabsOn, setTabsOn] = useState<boolean>(() => tabsFeatureEnabled());
   const [confirmOff, setConfirmOff] = useState(false);
+  const [encOn, setEncOn] = useState<boolean>(() => encryptionFeatureEnabled());
+  const [encOffOpen, setEncOffOpen] = useState(false);
+  const [encRemaining, setEncRemaining] = useState<string[]>([]);
 
   const toggleExtensions = () => {
     setShowExtensions((prev) => {
@@ -542,6 +551,45 @@ function GeneralPanel({ vaultPath }: { vaultPath: string }) {
     if (proxies) { setConfirmOff(true); return; } // turning off: ask first
     setProxies(true);
     setProxyFeatureEnabled(true);
+  };
+
+  const toggleEncryption = async () => {
+    if (!encOn) {
+      setEncOn(true);
+      setEncryptionFeatureEnabled(true);
+      return;
+    }
+    const list = await scanEncryptedNotes(vaultPath);
+    if (list.length === 0) {
+      setEncOn(false);
+      setEncryptionFeatureEnabled(false);
+      return;
+    }
+    setEncRemaining(list);
+    setEncOffOpen(true);
+  };
+
+  const decryptAll = async (pw: string): Promise<string | void> => {
+    try { await flushAll(); } catch {}
+    const still: string[] = [];
+    let done = 0;
+    for (const p of encRemaining) {
+      if (await decryptNoteFileSafe(p, pw)) {
+        done++;
+        window.dispatchEvent(new CustomEvent("note-rewritten", { detail: { path: p } }));
+      } else {
+        still.push(p);
+      }
+    }
+    setEncRemaining(still);
+    if (done === 0) return "That password didn't match any of the remaining encrypted notes.";
+    if (still.length === 0) {
+      setEncOffOpen(false);
+      setEncOn(false);
+      setEncryptionFeatureEnabled(false);
+      return;
+    }
+    return `Decrypted ${done}. ${still.length} more use a different password. Enter it to continue.`;
   };
 
   const finishOff = (deleteProxies: boolean) => {
@@ -559,6 +607,35 @@ function GeneralPanel({ vaultPath }: { vaultPath: string }) {
 
   return (
     <div className="p-5 space-y-6">
+    <div className="pb-4 border-b border-[#2a3136]">
+    <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-3">
+    Encryption
+    </div>
+    <label className="flex items-center justify-between text-xs text-gray-300 cursor-pointer py-1">
+    <span>Enable note encryption</span>
+    <Switch on={encOn} onClick={() => { void toggleEncryption(); }} />
+    </label>
+    <p className="text-[10px] text-gray-600 mt-2 leading-snug">
+    Off by default. When on, each note's Settings panel gets an "Encrypt this note…" button.
+    Turning this off asks for your password(s) and decrypts every encrypted note back to a normal
+    .selah file.
+    </p>
+    {encOffOpen && (
+      <PasswordModal
+        title="Decrypt notes to turn encryption off"
+        description={`${encRemaining.length} encrypted note${encRemaining.length === 1 ? "" : "s"} in this vault. Enter a password to decrypt every note that uses it. If your notes use different passwords, repeat for each one.`}
+        submitLabel="Decrypt"
+        onSubmit={decryptAll}
+        onClose={() => setEncOffOpen(false)}
+        secondaryLabel="Turn off anyway (notes stay encrypted)"
+        onSecondary={() => {
+          setEncOffOpen(false);
+          setEncOn(false);
+          setEncryptionFeatureEnabled(false);
+        }}
+      />
+    )}
+    </div>
     <div className="pb-4 border-b border-[#2a3136]">
     <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-3">
     Tabs

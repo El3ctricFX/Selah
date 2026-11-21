@@ -463,6 +463,8 @@ async function auditNote(
   let raw: string;
   try { raw = await readTextFile(notePath); } catch { return; }
   const { frontmatter, body } = parseNoteFile(raw);
+  if (frontmatter.encrypted === true) return; // body is encrypted, so asset usage can't be known
+  if (frontmatter.encrypted === true) return; // body is encrypted, so asset usage can't be known
   const refs = extractRefs(body, frontmatter as Record<string, unknown>);
 
   const topFiles = new Map<string, number>();   // name -> bytes

@@ -82,6 +82,11 @@ import {
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { createCallout } from "./Callout";
+import { Lock } from "lucide-react";
+import {
+  isEncryptedFm, getSessionKey, setSessionKey,
+  deriveKey, encryptText, decryptText,
+} from "./noteCrypto";
 import { createBookmark } from "./Bookmark";
 import { createVideo } from "./VideoBlock";
 import { createAudio } from "./AudioBlock";
@@ -681,6 +686,30 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
    ref
   ) => {
     const [isLoading, setIsLoading] = useState(true);
+    const [locked, setLocked] = useState<{ salt: string } | null>(null);
+    const lockedRef = useRef(false);
+    const [unlockNonce, setUnlockNonce] = useState(0);
+    const [unlockPw, setUnlockPw] = useState("");
+    const [unlockErr, setUnlockErr] = useState<string | null>(null);
+    const [unlockBusy, setUnlockBusy] = useState(false);
+
+    const tryUnlock = async () => {
+      if (!locked || !unlockPw || unlockBusy) return;
+      setUnlockBusy(true);
+      setUnlockErr(null);
+      try {
+        const k = await deriveKey(unlockPw, locked.salt);
+        const { frontmatter } = parseNoteFile(await readTextFile(path));
+        await decryptText(k, frontmatter.encIv as string, frontmatter.cipher as string);
+        setSessionKey(locked.salt, k);
+        setUnlockPw("");
+        setUnlockNonce((n) => n + 1); // re-runs the load effect, which now decrypts
+      } catch {
+        setUnlockErr("Wrong password.");
+      } finally {
+        setUnlockBusy(false);
+      }
+    };
     const [findOpen, setFindOpen] = useState(false);
     const [findText, setFindText] = useState("");
     const [replaceText, setReplaceText] = useState("");
@@ -2816,6 +2845,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       if (!editor) return;
       if (disposedRef.current) return;
       try {
+        if (lockedRef.current) return; // never save while locked
         const rawBody = await blocksToNoteBody(editor, editor.document);
         const withImgs = markdownImagesToRelativePaths(rawBody, noteDirOf(path));
         const withVideos = videoSrcsToRelativePaths(withImgs, noteDirOf(path));
@@ -2847,7 +2877,17 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
 
         // Atomic, crash-safe write. Never touches the original until the
         // new content is fully staged in a sibling .tmp file.
-        await writeFileAtomic(path, serializeNoteFile(fm, body));
+        const encSalt = typeof fm.encSalt === "string" ? fm.encSalt : "";
+        if (fm.encrypted === true && encSalt) {
+          const k = getSessionKey(encSalt);
+          if (!k) return; // locked: never overwrite the encrypted file
+          const { iv, cipher } = await encryptText(k, body);
+          fm = { ...fm, encIv: iv, cipher };
+          frontmatterRef.current = fm;
+          await writeFileAtomic(path, serializeNoteFile(fm, ""));
+        } else {
+          await writeFileAtomic(path, serializeNoteFile(fm, body));
+        }
         lastSaveAtRef.current = Date.now();
         dirtyRef.current = false;
         onSaved?.();
@@ -3554,7 +3594,29 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
             if (jd) raw += await getDefaultTemplateBody(noteDirOf(path), { date: jd });
           }
 
-          const { frontmatter, body } = parseNoteFile(raw);
+          const parsedFile = parseNoteFile(raw);
+          const frontmatter = parsedFile.frontmatter;
+          let body = parsedFile.body;
+          if (isEncryptedFm(frontmatter)) {
+            const salt = frontmatter.encSalt as string;
+            const k = getSessionKey(salt);
+            let ok = false;
+            if (k) {
+              try {
+                body = await decryptText(k, frontmatter.encIv as string, frontmatter.cipher as string);
+                ok = true;
+              } catch {}
+            }
+            if (!ok) {
+              frontmatterRef.current = frontmatter;
+              onFrontmatterLoaded?.(frontmatter);
+              lockedRef.current = true;
+              if (isMounted) setLocked({ salt });
+              return;
+            }
+          }
+          lockedRef.current = false;
+          if (isMounted) setLocked(null);
           frontmatterRef.current = frontmatter;
           onFrontmatterLoaded?.(frontmatter);
           onWordCountChange?.(countWords(body));
@@ -3659,7 +3721,7 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
         isMounted = false;
       };
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [path, editor]);
+    }, [path, editor, unlockNonce]);
 
     useEffect(() => {
       return () => {
@@ -4750,9 +4812,93 @@ const NoteBody = forwardRef<NoteBodyHandle, NoteBodyProps>(
       )}
       <div
       ref={wrapperRef}
-      className={mode === "read" ? "note-read-mode" : ""}
+      className={`${mode === "read" ? "note-read-mode" : ""} ${locked ? "relative min-h-[300px]" : ""}`}
       >
       {/* ── Find & Replace UI ─────────────────────────────────────── */}
+      {locked && (
+        <div
+          data-no-marquee
+          className="absolute inset-0 z-[60] bg-[#0f1315] flex flex-col items-center justify-center gap-3 rounded-md"
+        >
+          <Lock size={28} className="text-blue-400" />
+          <div className="text-sm text-gray-200 font-medium">This note is encrypted</div>
+          <input
+            autoFocus
+            type="password"
+            value={unlockPw}
+            onChange={(e) => { setUnlockPw(e.target.value); setUnlockErr(null); }}
+            onKeyDown={(e) => { if (e.key === "Enter") void tryUnlock(); }}
+            placeholder="Password"
+            className="w-64 bg-[#161a1d] border border-[#30363d] rounded px-3 py-2 text-sm text-gray-100 outline-none focus:ring-1 focus:ring-blue-500"
+          />
+          {unlockErr && <div className="text-xs text-red-400">{unlockErr}</div>}
+          <button
+            type="button"
+            onClick={() => void tryUnlock()}
+            disabled={unlockBusy || !unlockPw}
+            className="px-4 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white rounded font-medium"
+          >
+            {unlockBusy ? "Unlocking…" : "Unlock"}
+          </button>
+        </div>
+      )}
+
+      {locked && (
+        <div
+          data-no-marquee
+          className="absolute inset-0 z-[60] bg-[#0f1315] flex flex-col items-center justify-center gap-3 rounded-md"
+        >
+          <Lock size={28} className="text-blue-400" />
+          <div className="text-sm text-gray-200 font-medium">This note is encrypted</div>
+          <input
+            autoFocus
+            type="password"
+            value={unlockPw}
+            onChange={(e) => { setUnlockPw(e.target.value); setUnlockErr(null); }}
+            onKeyDown={(e) => { if (e.key === "Enter") void tryUnlock(); }}
+            placeholder="Password"
+            className="w-64 bg-[#161a1d] border border-[#30363d] rounded px-3 py-2 text-sm text-gray-100 outline-none focus:ring-1 focus:ring-blue-500"
+          />
+          {unlockErr && <div className="text-xs text-red-400">{unlockErr}</div>}
+          <button
+            type="button"
+            onClick={() => void tryUnlock()}
+            disabled={unlockBusy || !unlockPw}
+            className="px-4 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white rounded font-medium"
+          >
+            {unlockBusy ? "Unlocking…" : "Unlock"}
+          </button>
+        </div>
+      )}
+
+      {locked && (
+        <div
+          data-no-marquee
+          className="absolute inset-0 z-[60] bg-[#0f1315] flex flex-col items-center justify-center gap-3 rounded-md"
+        >
+          <Lock size={28} className="text-blue-400" />
+          <div className="text-sm text-gray-200 font-medium">This note is encrypted</div>
+          <input
+            autoFocus
+            type="password"
+            value={unlockPw}
+            onChange={(e) => { setUnlockPw(e.target.value); setUnlockErr(null); }}
+            onKeyDown={(e) => { if (e.key === "Enter") void tryUnlock(); }}
+            placeholder="Password"
+            className="w-64 bg-[#161a1d] border border-[#30363d] rounded px-3 py-2 text-sm text-gray-100 outline-none focus:ring-1 focus:ring-blue-500"
+          />
+          {unlockErr && <div className="text-xs text-red-400">{unlockErr}</div>}
+          <button
+            type="button"
+            onClick={() => void tryUnlock()}
+            disabled={unlockBusy || !unlockPw}
+            className="px-4 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white rounded font-medium"
+          >
+            {unlockBusy ? "Unlocking…" : "Unlock"}
+          </button>
+        </div>
+      )}
+
       {findOpen && (
         <div className="fixed top-16 right-8 z-[600] bg-[#1e2327] border border-[#2a3136] rounded-lg shadow-2xl p-3 w-[340px] flex flex-col gap-2">
           <div className="flex items-center justify-between mb-1">
