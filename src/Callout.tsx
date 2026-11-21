@@ -45,12 +45,13 @@ const icon = rawIcon === "none" ? "" : rawIcon;
       // editor's `editable` flag flips, so we mirror it into local state
       // and refresh it on a light interval. The setter bails out when the
       // value hasn't changed, so this doesn't cause needless re-renders.
+      const localContentRef = useRef<HTMLDivElement>(null);
       const [isEditable, setIsEditable] = useState<boolean>(true);
       useEffect(() => {
         const read = (): boolean => {
           const ed = props.editor as any;
           if (typeof ed.isEditable === "boolean") return ed.isEditable;
-          const el = props.contentRef.current as HTMLElement | null;
+          const el = localContentRef.current;
           return el?.isContentEditable ?? true;
         };
         setIsEditable(read());
@@ -160,7 +161,14 @@ const icon = rawIcon === "none" ? "" : rawIcon;
           )}
 
           <div
-            ref={props.contentRef}
+            ref={(node) => {
+              (localContentRef as any).current = node;
+              if (typeof props.contentRef === "function") {
+                props.contentRef(node);
+              } else if (props.contentRef && typeof props.contentRef === "object") {
+                (props.contentRef as any).current = node;
+              }
+            }}
             className="flex-1 min-w-0 outline-none text-gray-100 leading-relaxed"
             style={{ minHeight: "1.5em" }}
           />
