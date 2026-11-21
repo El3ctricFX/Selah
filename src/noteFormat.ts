@@ -612,64 +612,53 @@ function encodeColorsInBlocks(blocks: any[]): any[] {
 }
 
 function expandColorMarkers(text: string, baseStyles: any): any[] {
-  const runs: any[] = [];
-  let i = 0;
-  while (i < text.length) {
-    const start = text.indexOf(TC_START, i);
-    if (start === -1) {
-      if (i < text.length) {
-        runs.push({ type: "text", text: text.slice(i), styles: baseStyles });
-      }
-      break;
+  const out: any[] = [];
+  const regex = /\{\{([^}]+)\}\}(.*?)\{\{\/\}\}/g;
+  let lastIndex = 0;
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      out.push({ type: "text", text: text.slice(lastIndex, match.index), styles: baseStyles });
     }
-    if (start > i) {
-      runs.push({ type: "text", text: text.slice(i, start), styles: baseStyles });
-    }
-    const sep = text.indexOf(TC_SEP, start);
-    if (sep === -1) {
-      runs.push({ type: "text", text: text.slice(start), styles: baseStyles });
-      break;
-    }
-    const end = text.indexOf(TC_END, sep);
-    if (end === -1) {
-      runs.push({ type: "text", text: text.slice(start), styles: baseStyles });
-      break;
-    }
-    const meta = text.slice(start + TC_START.length, sep);
-    const inner = text.slice(sep + TC_SEP.length, end);
+    const meta = match[1];
+    const inner = match[2];
     const style = parseMarkerMeta(meta);
-    runs.push({
-      type: "text",
-      text: inner,
-      styles: { ...baseStyles, ...style },
-    });
-    i = end + TC_END.length;
+    out.push({ type: "text", text: inner, styles: { ...baseStyles, ...style } });
+    lastIndex = regex.lastIndex;
+  }
+  if (lastIndex < text.length) {
+    out.push({ type: "text", text: text.slice(lastIndex), styles: baseStyles });
   }
 
-  // Fallback: catch raw `c=#hex` or `c=colorname` strings that lost their invisible markers
-  const out: any[] = [];
-  for (const run of runs) {
-    if (run.type === "text" && run.text.includes("c=")) {
-      const parts = run.text.split(/(c=#[0-9a-fA-F]{3,6}|c=[a-zA-Z]+)/);
-      for (let j = 0; j < parts.length; j++) {
-        if (j % 2 === 1) {
-          const colorStr = parts[j].replace("c=", "");
-          const color = hexToColorName(colorStr);
-          if (parts[j + 1] !== undefined) {
-            out.push({ type: "text", text: parts[j + 1], styles: { ...run.styles, textColor: color } });
-            j++;
-          } else {
-            out.push({ type: "text", text: parts[j], styles: run.styles });
+  // Final pass: strip any stray markers and catch raw `c=...` strings
+  const finalOut: any[] = [];
+  for (const run of out) {
+    if (run.type === "text") {
+      let clean = run.text.replace(/\{\{[^}]+\}\}/g, "").replace(/\{\{\/\}\}/g, "");
+      if (clean.includes("c=")) {
+        const parts = clean.split(/(c=#[0-9a-fA-F]{3,6}|c=[a-zA-Z]+)/);
+        for (let j = 0; j < parts.length; j++) {
+          if (j % 2 === 1) {
+            const colorStr = parts[j].replace("c=", "");
+            const color = hexToColorName(colorStr);
+            if (parts[j + 1] !== undefined) {
+              finalOut.push({ type: "text", text: parts[j + 1], styles: { ...run.styles, textColor: color } });
+              j++;
+            } else {
+              finalOut.push({ type: "text", text: parts[j], styles: run.styles });
+            }
+          } else if (parts[j]) {
+            finalOut.push({ type: "text", text: parts[j], styles: run.styles });
           }
-        } else if (parts[j]) {
-          out.push({ type: "text", text: parts[j], styles: run.styles });
         }
+      } else if (clean) {
+        finalOut.push({ ...run, text: clean });
       }
     } else {
-      out.push(run);
+      finalOut.push(run);
     }
   }
-  return out;
+  return finalOut;
 }
 
 function sameStyles(a: any, b: any): boolean {
