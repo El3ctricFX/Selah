@@ -799,7 +799,7 @@ function injectLinks(blocks: any[], links: { url: string, label: string }[]): an
                   newContent.push({
                     type: "link",
                     href: linkData.url,
-                    content: [{ type: "text", text: linkData.label, styles: {} }]
+                    content: expandColorMarkers(linkData.label, {})
                   });
                 }
               }
