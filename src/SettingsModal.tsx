@@ -528,6 +528,10 @@ function GeneralPanel({ vaultPath }: { vaultPath: string }) {
     try { return localStorage.getItem("sidebar-show-extensions") === "true"; }
     catch { return false; }
   });
+  const [showWeekday, setShowWeekday] = useState<boolean>(() => {
+    try { return localStorage.getItem("journal-show-weekday") === "true"; }
+    catch { return false; }
+  });
   const [proxies, setProxies] = useState<boolean>(() => proxyFeatureEnabled());
   const [spellOn, setSpellOn] = useState<boolean>(() => isSpellcheckEnabled());
   const [dictionaryOpen, setDictionaryOpen] = useState(false);
@@ -543,6 +547,15 @@ function GeneralPanel({ vaultPath }: { vaultPath: string }) {
       const next = !prev;
       try { localStorage.setItem("sidebar-show-extensions", String(next)); } catch {}
       window.dispatchEvent(new Event("sidebar-show-extensions-changed"));
+      return next;
+    });
+  };
+
+  const toggleWeekday = () => {
+    setShowWeekday((prev) => {
+      const next = !prev;
+      try { localStorage.setItem("journal-show-weekday", String(next)); } catch {}
+      window.dispatchEvent(new Event("journal-show-weekday-changed"));
       return next;
     });
   };
@@ -667,6 +680,20 @@ function GeneralPanel({ vaultPath }: { vaultPath: string }) {
     <p className="text-[10px] text-gray-600 mt-2 leading-snug">
     Shows the file extension (e.g. <span className="font-mono">.selah</span>)
     next to entries in the sidebar tree.
+    </p>
+    </div>
+
+    <div className="border-t border-[#2a3136] pt-4">
+    <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-3">
+    Journal
+    </div>
+    <label className="flex items-center justify-between text-xs text-gray-300 cursor-pointer py-1">
+    <span>Show weekday under the date</span>
+    <Switch on={showWeekday} onClick={toggleWeekday} />
+    </label>
+    <p className="text-[10px] text-gray-600 mt-2 leading-snug">
+    Displays the day of the week (e.g. <span className="font-mono">Monday</span>)
+    as a small caption beneath the date in the day view. Off by default.
     </p>
     </div>
 

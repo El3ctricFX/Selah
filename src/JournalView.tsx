@@ -179,6 +179,10 @@ export default function JournalView({
   );
   const [mode, setMode] = useState<"day" | "month" | "year">(initialMode || "day");
   const [viewMode, setViewMode] = useState<"day" | "timeline">(initialViewMode || "day");
+  const [showWeekday, setShowWeekday] = useState<boolean>(() => {
+    try { return localStorage.getItem("journal-show-weekday") === "true"; }
+    catch { return false; }
+  });
   const [dayPath, setDayPath] = useState<string | null>(null);
   const [monthPath, setMonthPath] = useState<string | null>(null);
   const [yearPath, setYearPath] = useState<string | null>(null);
@@ -575,6 +579,14 @@ useEffect(() => {
     document.addEventListener("mousedown", onDown, true);
     return () => document.removeEventListener("mousedown", onDown, true);
   }, [widthMenuOpen]);
+
+  useEffect(() => {
+    const handler = () => {
+      try { setShowWeekday(localStorage.getItem("journal-show-weekday") === "true"); } catch {}
+    };
+    window.addEventListener("journal-show-weekday-changed", handler);
+    return () => window.removeEventListener("journal-show-weekday-changed", handler);
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -1377,12 +1389,19 @@ useEffect(() => {
           <button onClick={() => shiftDay(-1)} className="text-gray-500 hover:text-gray-200 cursor-pointer">
             <ChevronLeft size={18} />
           </button>
-          <button onClick={() => setMode("day")}
-            className={`text-lg transition-colors cursor-pointer ${
-              mode === "day" ? "text-gray-100 font-semibold" : "text-gray-500 hover:text-gray-300"
-            }`}>
-            {dayName}
-          </button>
+          <div className="flex flex-col items-center">
+            <button onClick={() => setMode("day")}
+              className={`text-lg transition-colors cursor-pointer ${
+                mode === "day" ? "text-gray-100 font-semibold" : "text-gray-500 hover:text-gray-300"
+              }`}>
+              {dayName}
+            </button>
+            {showWeekday && (
+              <span className="text-[10px] text-gray-600 uppercase tracking-[0.15em] mt-0.5 select-none">
+                {date.toLocaleString("en-US", { weekday: "long" })}
+              </span>
+            )}
+          </div>
           <button onClick={() => shiftDay(1)} className="text-gray-500 hover:text-gray-200 cursor-pointer">
             <ChevronRight size={18} />
           </button>
