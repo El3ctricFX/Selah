@@ -32,6 +32,9 @@ import {
 import { parseNoteFile, serializeNoteFile } from "./noteFormat";
 import { moveToTrash } from "./trash";
 import { getDefaultTemplateBody } from "./templates";
+import { Lock } from "lucide-react";
+import { useEncryptionFeature, encryptNoteFile, decryptNoteFile } from "./noteCrypto";
+import PasswordModal from "./PasswordModal";
 
 // ─── URL normalization ──────────────────────────────────────────────────────
 function normalizeUrl(raw: string): string {
@@ -2016,6 +2019,10 @@ function RichDetail({
   const [topic, setTopic] = useState<string>(entry.topic ?? "");
   const [created, setCreated] = useState<string>(entry.created ?? "");
   const [modified, setModified] = useState<string>(entry.modified ?? "");
+  const encFeature = useEncryptionFeature();
+  const [noteEncrypted, setNoteEncrypted] = useState(false);
+  const [encModal, setEncModal] = useState<null | "encrypt" | "decrypt">(null);
+  const [reloadNonce, setReloadNonce] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -2069,6 +2076,38 @@ function RichDetail({
     if (isNaN(d.getTime())) return "";
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   })();
+  const applyEncrypt = async (password: string): Promise<string | void> => {
+    if (!path) return "No note is open.";
+    try {
+      try { await noteBodyRef.current?.flush(); } catch {}
+      noteBodyRef.current?.dispose();
+      await encryptNoteFile(path, password);
+      setNoteEncrypted(true);
+      setEncModal(null);
+      setReloadNonce((n) => n + 1);
+      window.dispatchEvent(new CustomEvent("file-changed", { detail: { path } }));
+    } catch (e: any) {
+      noteBodyRef.current?.rearm();
+      return e?.message ?? String(e);
+    }
+  };
+
+  const applyDecrypt = async (password: string): Promise<string | void> => {
+    if (!path) return "No note is open.";
+    try {
+      try { await noteBodyRef.current?.flush(); } catch {}
+      noteBodyRef.current?.dispose();
+      await decryptNoteFile(path, password);
+      setNoteEncrypted(false);
+      setEncModal(null);
+      setReloadNonce((n) => n + 1);
+      window.dispatchEvent(new CustomEvent("file-changed", { detail: { path } }));
+    } catch (e: any) {
+      noteBodyRef.current?.rearm();
+      return e?.message ?? String(e);
+    }
+  };
+
   const showTopic = kind === "studies";
   const showLocation = kind === "events";
   const showLinks = kind === "events" || kind === "studies";
@@ -2190,6 +2229,33 @@ function RichDetail({
         </div>
       )}
 
+      {isEdit && (encFeature || noteEncrypted) && (
+        <div className="mt-4 flex justify-center">
+          <button
+            type="button"
+            onClick={() => setEncModal(noteEncrypted ? "decrypt" : "encrypt")}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-[#2a3136] hover:bg-[#30363d] border border-[#30363d] rounded text-gray-200 cursor-pointer"
+          >
+            <Lock size={12} /> {noteEncrypted ? "Remove encryption…" : "Encrypt this note…"}
+          </button>
+        </div>
+      )}
+
+      {encModal && (
+        <PasswordModal
+          title={encModal === "encrypt" ? "Encrypt this note" : "Remove encryption"}
+          description={
+            encModal === "encrypt"
+              ? "Choose a password. You'll need it every time you open this note."
+              : "Enter the password. The note will be saved back as a normal, readable .selah file."
+          }
+          requireConfirm={encModal === "encrypt"}
+          submitLabel={encModal === "encrypt" ? "Encrypt" : "Decrypt"}
+          onSubmit={encModal === "encrypt" ? applyEncrypt : applyDecrypt}
+          onClose={() => setEncModal(null)}
+        />
+      )}
+
       {linkedAbs && (
         <div className="mt-6 flex items-center gap-3 rounded-lg border border-blue-500/30 bg-blue-500/5 px-3 py-2.5">
           <LinkIcon size={14} className="text-blue-400 flex-shrink-0" />
@@ -2209,7 +2275,7 @@ function RichDetail({
       <div className="mt-6">
         <NoteBody
           ref={noteBodyRef}
-          key={path}
+          key={`${path}::${reloadNonce}`}
           path={path}
           vaultPath={vaultPath}
           onOpenNoteByPath={onOpenNoteByPath}
@@ -2220,6 +2286,7 @@ function RichDetail({
             if (typeof fm.topic === "string") setTopic(fm.topic);
             if (typeof fm.created === "string") setCreated(fm.created);
             if (typeof fm.modified === "string") setModified(fm.modified);
+            setNoteEncrypted(fm.encrypted === true);
           }}
           onSaved={() => setModified(new Date().toISOString())}
           onImageClick={onImageClick}
