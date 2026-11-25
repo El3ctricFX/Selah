@@ -7,6 +7,7 @@ import {
     X, Home, Palette, Info, Puzzle, Database, FileText,
   GripHorizontal, Eye, EyeOff, Crosshair, Sliders,
   ExternalLink, Heart, Code2, MessageCircle,
+  Lock, CalendarDays, Image as ImageIcon, LayoutGrid,
 } from "lucide-react";
 // (Deleted cache imports)
 import { writeFileAtomic } from "./safeWrite";
@@ -523,6 +524,40 @@ function Switch({ on, onClick }: { on: boolean; onClick: () => void }) {
   );
 }
 
+function SettingItem({
+  icon: Icon,
+  label,
+  description,
+  footer,
+  children,
+}: {
+  icon: any;
+  label: string;
+  description?: React.ReactNode;
+  footer?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <div className="flex items-center gap-3">
+        <div className="w-7 h-7 rounded-md bg-[#1e2327] border border-[#232a2f] flex items-center justify-center flex-shrink-0">
+          <Icon size={13} className="text-gray-500" />
+        </div>
+        <label className="flex-1 flex items-center justify-between text-xs text-gray-300 cursor-pointer">
+          <span>{label}</span>
+          {children}
+        </label>
+      </div>
+      {description && (
+        <div className="text-[10px] text-gray-600 mt-2 leading-relaxed pl-10">
+          {description}
+        </div>
+      )}
+      {footer && <div className="pl-10 mt-2">{footer}</div>}
+    </div>
+  );
+}
+
 function GeneralPanel({ vaultPath }: { vaultPath: string }) {
   const [showExtensions, setShowExtensions] = useState<boolean>(() => {
     try { return localStorage.getItem("sidebar-show-extensions") === "true"; }
@@ -619,182 +654,188 @@ function GeneralPanel({ vaultPath }: { vaultPath: string }) {
   };
 
   return (
-    <div className="p-5 space-y-6">
-    <div className="pb-4 border-b border-[#2a3136]">
-    <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-3">
-    Encryption
-    </div>
-    <label className="flex items-center justify-between text-xs text-gray-300 cursor-pointer py-1">
-    <span>Enable note encryption</span>
-    <Switch on={encOn} onClick={() => { void toggleEncryption(); }} />
-    </label>
-    <p className="text-[10px] text-gray-600 mt-2 leading-snug">
-    Off by default. When on, each note's Settings panel gets an "Encrypt this note…" button.
-    Turning this off asks for your password(s) and decrypts every encrypted note back to a normal
-    .selah file.
-    </p>
-    {encOffOpen && (
-      <PasswordModal
-        title="Decrypt notes to turn encryption off"
-        description={`${encRemaining.length} encrypted note${encRemaining.length === 1 ? "" : "s"} in this vault. Enter a password to decrypt every note that uses it. If your notes use different passwords, repeat for each one.`}
-        submitLabel="Decrypt"
-        onSubmit={decryptAll}
-        onClose={() => setEncOffOpen(false)}
-        secondaryLabel="Turn off anyway (notes stay encrypted)"
-        onSecondary={() => {
-          setEncOffOpen(false);
-          setEncOn(false);
-          setEncryptionFeatureEnabled(false);
-        }}
-      />
-    )}
-    </div>
-    <div className="pb-4 border-b border-[#2a3136]">
-    <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-3">
-    Tabs
-    </div>
-    <label className="flex items-center justify-between text-xs text-gray-300 cursor-pointer py-1">
-    <span>Enable tabs</span>
-    <Switch on={tabsOn} onClick={() => {
-        const next = !tabsOn;
-        setTabsOn(next);
-        setTabsFeatureEnabled(next);
-    }} />
-    </label>
-    <p className="text-[10px] text-gray-600 mt-2 leading-snug">
-    Off by default. When on, a tab bar appears and you can keep several views open.
-    <span className="font-mono"> Ctrl+T</span> new tab ·
-    <span className="font-mono"> Ctrl+W</span> close tab ·
-    <span className="font-mono"> Ctrl+Shift+T</span> reopen closed tab ·
-    <span className="font-mono"> Ctrl+Tab</span> next tab. Turning this off closes all but your current tab.
-    </p>
-    </div>
-    <div>
-    <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-3">
-    Sidebar
-    </div>
-    <label className="flex items-center justify-between text-xs text-gray-300 cursor-pointer py-1">
-    <span>Show file extensions</span>
-    <Switch on={showExtensions} onClick={toggleExtensions} />
-    </label>
-    <p className="text-[10px] text-gray-600 mt-2 leading-snug">
-    Shows the file extension (e.g. <span className="font-mono">.selah</span>)
-    next to entries in the sidebar tree.
-    </p>
-    </div>
+    <div className="p-5">
+      <div className="rounded-lg border border-[#2a3136] bg-[#131819] p-5 space-y-5">
+        <SettingItem
+          icon={Lock}
+          label="Enable note encryption"
+          description={
+            <>
+              Off by default. When on, each note's Settings panel gets an "Encrypt this note…"
+              button. Turning this off asks for your password(s) and decrypts every encrypted
+              note back to a normal <span className="font-mono">.selah</span> file.
+            </>
+          }
+        >
+          <Switch on={encOn} onClick={() => { void toggleEncryption(); }} />
+        </SettingItem>
 
-    <div className="border-t border-[#2a3136] pt-4">
-    <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-3">
-    Journal
-    </div>
-    <label className="flex items-center justify-between text-xs text-gray-300 cursor-pointer py-1">
-    <span>Show weekday under the date</span>
-    <Switch on={showWeekday} onClick={toggleWeekday} />
-    </label>
-    <p className="text-[10px] text-gray-600 mt-2 leading-snug">
-    Displays the day of the week (e.g. <span className="font-mono">Monday</span>)
-    as a small caption beneath the date in the day view. Off by default.
-    </p>
-    </div>
+        <SettingItem
+          icon={LayoutGrid}
+          label="Enable tabs"
+          description={
+            <>
+              Off by default. When on, a tab bar appears and you can keep several views open.
+              <span className="font-mono"> Ctrl+T</span> new tab ·
+              <span className="font-mono"> Ctrl+W</span> close tab ·
+              <span className="font-mono"> Ctrl+Shift+T</span> reopen closed tab ·
+              <span className="font-mono"> Ctrl+Tab</span> next tab. Turning this off closes all
+              but your current tab.
+            </>
+          }
+        >
+          <Switch
+            on={tabsOn}
+            onClick={() => {
+              const next = !tabsOn;
+              setTabsOn(next);
+              setTabsFeatureEnabled(next);
+            }}
+          />
+        </SettingItem>
 
-    <div className="border-t border-[#2a3136] pt-4">
-    <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-3">
-    Plugins
-    </div>
-    <label className="flex items-center justify-between text-xs text-gray-300 cursor-pointer py-1">
-    <span>Enable plugins</span>
-    <Switch on={plugins} onClick={() => {
-        const next = !plugins;
-        setPlugins(next);
-        setPluginFeatureEnabled(next);
-    }} />
-    </label>
-    <p className="text-[10px] text-gray-600 mt-2 leading-snug">
-    Off by default. When enabled, Selah will scan the <span className="font-mono">.plugins</span> folder in your vault and load any custom tools, categories, or templates you've installed.
-    </p>
-    </div>
+        <SettingItem
+          icon={Eye}
+          label="Show file extensions"
+          description={
+            <>
+              Shows the file extension (e.g. <span className="font-mono">.selah</span>) next to
+              entries in the sidebar tree.
+            </>
+          }
+        >
+          <Switch on={showExtensions} onClick={toggleExtensions} />
+        </SettingItem>
 
-    <div className="border-t border-[#2a3136] pt-4">
-    <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-3">
-    Spell check
-    </div>
-    <label className="flex items-center justify-between text-xs text-gray-300 cursor-pointer py-1">
-    <span>Underline misspelled words</span>
-    <Switch on={spellOn} onClick={() => {
-        const next = !spellOn;
-        setSpellOn(next);
-        setSpellcheckEnabled(next);
-    }} />
-    </label>
-    <p className="text-[10px] text-gray-600 mt-2 leading-snug mb-3">
-    Right-click an underlined word for suggestions. Only runs in edit mode.
-    </p>
+        <SettingItem
+          icon={CalendarDays}
+          label="Show weekday under the date"
+          description={
+            <>
+              Displays the day of the week (e.g. <span className="font-mono">Monday</span>) as a
+              small caption beneath the date in the day view. Off by default.
+            </>
+          }
+        >
+          <Switch on={showWeekday} onClick={toggleWeekday} />
+        </SettingItem>
 
-    {spellOn && (
-      <button
-        type="button"
-        onClick={() => setDictionaryOpen(true)}
-        className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-[#2a3136] hover:bg-[#30363d] border border-[#30363d] rounded text-gray-200 transition-colors cursor-pointer"
-      >
-        <BookOpen size={13} /> Manage Dictionary…
-      </button>
-    )}
+        <SettingItem
+          icon={Puzzle}
+          label="Enable plugins"
+          description={
+            <>
+              Off by default. When enabled, Selah will scan the{" "}
+              <span className="font-mono">.plugins</span> folder in your vault and load any custom
+              tools, categories, or templates you've installed.
+            </>
+          }
+        >
+          <Switch
+            on={plugins}
+            onClick={() => {
+              const next = !plugins;
+              setPlugins(next);
+              setPluginFeatureEnabled(next);
+            }}
+          />
+        </SettingItem>
 
-    {dictionaryOpen && (
-      <DictionaryModal onClose={() => setDictionaryOpen(false)} />
-    )}
-    </div>
+        <SettingItem
+          icon={BookOpen}
+          label="Underline misspelled words"
+          description={
+            <>Right-click an underlined word for suggestions. Only runs in edit mode.</>
+          }
+          footer={
+            spellOn && (
+              <button
+                type="button"
+                onClick={() => setDictionaryOpen(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-[#2a3136] hover:bg-[#30363d] border border-[#30363d] rounded text-gray-200 transition-colors cursor-pointer"
+              >
+                <BookOpen size={13} /> Manage Dictionary…
+              </button>
+            )
+          }
+        >
+          <Switch
+            on={spellOn}
+            onClick={() => {
+              const next = !spellOn;
+              setSpellOn(next);
+              setSpellcheckEnabled(next);
+            }}
+          />
+        </SettingItem>
 
-    <div className="border-t border-[#2a3136] pt-4">
-    <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-3">
-    Images
-    </div>
-    <label className="flex items-center justify-between text-xs text-gray-300 cursor-pointer py-1">
-    <span>Enable image proxies</span>
-    <Switch on={proxies} onClick={toggleProxies} />
-    </label>
-    <p className="text-[10px] text-gray-600 mt-2 leading-snug">
-    Off by default. When on, a Proxies button appears in each note's toolbar
-    and you choose which notes get smaller WebP copies for smoother scrolling.
-    When you turn this off, you'll be asked whether to delete the existing
-    proxies or keep them.
-    </p>
-
-    {confirmOff && (
-      <div className="mt-3 rounded-md border border-[#2a3136] bg-[#0f1315] p-3">
-      <div className="text-xs text-gray-200 mb-1">Delete existing proxies?</div>
-      <p className="text-[10px] text-gray-500 leading-snug mb-3">
-      <span className="text-gray-300">Yes</span> moves every proxy and thumbnail in
-      this vault to your system trash and points your notes back at the original
-      photos. <span className="text-gray-300">No</span> keeps everything as it is:
-      notes keep using the proxies they already have, but new photos won't get any.
-      </p>
-      <div className="flex items-center gap-2">
-      <button
-      type="button"
-      onClick={() => finishOff(true)}
-      className="px-3 py-1 text-xs bg-red-600 hover:bg-red-500 text-white rounded cursor-pointer"
-      >
-      Yes, delete them
-      </button>
-      <button
-      type="button"
-      onClick={() => finishOff(false)}
-      className="px-3 py-1 text-xs bg-[#2a3136] hover:bg-[#343c42] text-gray-200 rounded cursor-pointer"
-      >
-      No, keep them
-      </button>
-      <button
-      type="button"
-      onClick={() => setConfirmOff(false)}
-      className="px-2 py-1 text-xs text-gray-500 hover:text-gray-300 cursor-pointer"
-      >
-      Cancel
-      </button>
+        <SettingItem
+          icon={ImageIcon}
+          label="Enable image proxies"
+          description={
+            <>
+              Off by default. When on, a Proxies button appears in each note's toolbar and you
+              choose which notes get smaller WebP copies for smoother scrolling. When you turn
+              this off, you'll be asked whether to delete the existing proxies or keep them.
+            </>
+          }
+          footer={
+            confirmOff && (
+              <div className="rounded-md border border-[#2a3136] bg-[#0f1315] p-3">
+                <div className="text-xs text-gray-200 mb-1">Delete existing proxies?</div>
+                <p className="text-[10px] text-gray-500 leading-snug mb-3">
+                  <span className="text-gray-300">Yes</span> moves every proxy and thumbnail in
+                  this vault to your system trash and points your notes back at the original
+                  photos. <span className="text-gray-300">No</span> keeps everything as it is:
+                  notes keep using the proxies they already have, but new photos won't get any.
+                </p>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => finishOff(true)}
+                    className="px-3 py-1 text-xs bg-red-600 hover:bg-red-500 text-white rounded cursor-pointer"
+                  >
+                    Yes, delete them
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => finishOff(false)}
+                    className="px-3 py-1 text-xs bg-[#2a3136] hover:bg-[#343c42] text-gray-200 rounded cursor-pointer"
+                  >
+                    No, keep them
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmOff(false)}
+                    className="px-2 py-1 text-xs text-gray-500 hover:text-gray-300 cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )
+          }
+        >
+          <Switch on={proxies} onClick={toggleProxies} />
+        </SettingItem>
       </div>
-      </div>
-    )}
-    </div>
+
+      {encOffOpen && (
+        <PasswordModal
+          title="Decrypt notes to turn encryption off"
+          description={`${encRemaining.length} encrypted note${encRemaining.length === 1 ? "" : "s"} in this vault. Enter a password to decrypt every note that uses it. If your notes use different passwords, repeat for each one.`}
+          submitLabel="Decrypt"
+          onSubmit={decryptAll}
+          onClose={() => setEncOffOpen(false)}
+          secondaryLabel="Turn off anyway (notes stay encrypted)"
+          onSecondary={() => {
+            setEncOffOpen(false);
+            setEncOn(false);
+            setEncryptionFeatureEnabled(false);
+          }}
+        />
+      )}
+      {dictionaryOpen && <DictionaryModal onClose={() => setDictionaryOpen(false)} />}
     </div>
   );
 }
