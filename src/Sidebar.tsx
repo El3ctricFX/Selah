@@ -621,9 +621,29 @@ export default function Sidebar(props: SidebarProps) {
       setCategoryIconPicker(null);
       return;
     }
+
+    // Optimistic update — flips the switcher button icon, the dropdown
+    // row, and any active-category display immediately. The async
+    // metadata write below will then bring the on-disk state in line.
+    setCategories((prev) =>
+      prev.map((c) => (c.id === cat.id ? { ...c, icon: emoji } : c))
+    );
+
+    // Read the freshest metadata before writing so a concurrent change
+    // (rename, reorder, builtin self-heal) isn't clobbered by our copy.
+    let latest: any = { ...metadata };
+    try {
+      const raw = await readTextFile(await join(vaultPath, '.vault_metadata.json'));
+      latest = { ...latest, ...JSON.parse(raw) };
+    } catch {}
+
+    const latestCats: Category[] = Array.isArray(latest.categories)
+      ? latest.categories
+      : categories;
+
     await saveMetadata({
-      ...metadata,
-      categories: metadata.categories.map((c: Category) =>
+      ...latest,
+      categories: latestCats.map((c: Category) =>
         c.id === cat.id ? { ...c, icon: emoji } : c
       ),
     });

@@ -364,17 +364,47 @@ export default function App() {
       return;
     }
     let cancelled = false;
-    (async () => {
+
+    const load = async () => {
       try {
         const raw = await readTextFile(await join(vaultPath, ".vault_metadata.json"));
         const meta = JSON.parse(raw);
         if (cancelled) return;
-        setVaultCategories(Array.isArray(meta.categories) ? meta.categories : []);
+        const cats: any[] = Array.isArray(meta.categories) ? meta.categories : [];
+        setVaultCategories(cats);
+
+        // Keep already-open views in sync with the category's icon/name.
+        const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
+        const patch = (v: ActiveView): ActiveView => {
+          if (!v || v.kind === "note" || v.kind === "journal" || v.kind === "gallery") return v;
+
+          let cat = null;
+          // Prefer matching by categoryId so duplicate folder names don't clash.
+          if ("categoryId" in v && v.categoryId) {
+             cat = cats.find((c) => c.id === v.categoryId);
+          }
+          if (!cat) {
+             cat = cats.find((c) => c.dirName && norm(`${vaultPath}/${c.dirName}`) === norm(v.dir));
+          }
+
+          if (!cat) return v;
+          const nextIcon = cat.icon || "";
+          if (v.name === cat.name && v.icon === nextIcon) return v;
+          return { ...v, name: cat.name, icon: nextIcon } as ActiveView;
+        };
+        setMainView(patch);
+        setSplitView(patch);
       } catch {
-        if (!cancelled) setVaultCategories([]);
+        /* leave existing state alone on a transient read failure */
       }
-    })();
-    return () => { cancelled = true; };
+    };
+
+    void load();
+    window.addEventListener("metadata-changed", load);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("metadata-changed", load);
+    };
   }, [vaultPath]);
 
   // ── View history (mouse-back / Alt+← navigation) ─────────────────────

@@ -580,8 +580,32 @@ export default function Editor({
     return () => document.removeEventListener("mousedown", onDown, true);
   }, [widthMenuOpen]);
 
+  const titleSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Drop any pending title save when switching notes so it can't land on the wrong one.
+  useEffect(() => {
+    return () => {
+      if (titleSaveTimerRef.current) {
+        clearTimeout(titleSaveTimerRef.current);
+        titleSaveTimerRef.current = null;
+      }
+    };
+  }, [activeNote.path]);
+
+  const scheduleEntryTitleSave = (value: string) => {
+    if (titleSaveTimerRef.current) clearTimeout(titleSaveTimerRef.current);
+    titleSaveTimerRef.current = setTimeout(() => {
+      titleSaveTimerRef.current = null;
+      void noteBodyRef.current?.updateFrontmatter({ title: value.trim() });
+    }, 350);
+  };
+
   const handleTitleSubmit = async () => {
     if (entryMode) {
+      if (titleSaveTimerRef.current) {
+        clearTimeout(titleSaveTimerRef.current);
+        titleSaveTimerRef.current = null;
+      }
       await noteBodyRef.current?.updateFrontmatter({ title: title.trim() });
       return;
     }
@@ -1028,7 +1052,11 @@ export default function Editor({
     <input
       type="text"
       value={title}
-      onChange={(e) => setTitle(e.target.value)}
+      onChange={(e) => {
+        const v = e.target.value;
+        setTitle(v);
+        if (entryMode) scheduleEntryTitleSave(v);
+      }}
       onBlur={handleTitleSubmit}
       onKeyDown={(e) => {
         if (e.key === "Enter") e.currentTarget.blur();

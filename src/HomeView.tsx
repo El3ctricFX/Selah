@@ -149,7 +149,8 @@ export default function HomeView({
   // Load categories + home settings.
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+
+    const load = async () => {
       try {
         const raw = await readTextFile(
           await join(vaultPath, ".vault_metadata.json")
@@ -167,8 +168,16 @@ export default function HomeView({
         setCategories([]);
         setSettings(DEFAULT_HOME_SETTINGS);
       }
-    })();
-    return () => { cancelled = true; };
+    };
+
+    void load();
+
+    // Listen for icon/name updates from the sidebar
+    window.addEventListener("metadata-changed", load);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("metadata-changed", load);
+    };
   }, [vaultPath]);
 
   // React to changes saved from the Settings modal.
